@@ -56,11 +56,6 @@ class _AnswerPageState extends State<AnswerPage> {
             const SizedBox(height: 16),
             // 题目内容卡片
             _buildQuestionCard(q, isLight),
-            // 词汇剖析面板
-            if (_showAnalysis) ...[
-              const SizedBox(height: 16),
-              _buildAnalysisPanel(q, isLight),
-            ],
             const SizedBox(height: 16),
             // 答题区
             _buildAnswerArea(q, isLight),
@@ -128,7 +123,35 @@ class _AnswerPageState extends State<AnswerPage> {
         border: Border.all(color: isLight ? const Color(0xFFE8E8F0) : Colors.white12),
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text(s.directionLabel, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: _primary)),
+        Row(children: [
+          Text(s.directionLabel, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: _primary)),
+          const Spacer(),
+          // 词汇剖析按钮
+          InkWell(
+            onTap: () {
+              setState(() => _showAnalysis = !_showAnalysis);
+              if (_showAnalysis && s.analysisTokens.isEmpty) {
+                s.analyzeWords(q.text, force: true);
+              }
+            },
+            borderRadius: BorderRadius.circular(6),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                color: _showAnalysis ? _primary.withValues(alpha: 0.15) : Colors.grey.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                Icon(Icons.search_rounded, size: 14, color: _showAnalysis ? _primary : Colors.grey),
+                const SizedBox(width: 4),
+                Text(
+                  _showAnalysis ? '收起剖析' : '词汇剖析',
+                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: _showAnalysis ? _primary : Colors.grey.shade600),
+                ),
+              ]),
+            ),
+          ),
+        ]),
         const SizedBox(height: 12),
         // 阅读理解：展示短文
         if (q.type == QType.reading && q.passage.isNotEmpty) ...[
@@ -139,19 +162,136 @@ class _AnswerPageState extends State<AnswerPage> {
               color: const Color(0xFFF8F6FF),
               borderRadius: BorderRadius.circular(12),
             ),
-            child: Text(q.passage, style: const TextStyle(fontSize: 14, height: 1.8, color: Color(0xFF1A1A2E))),
+            child: _showAnalysis && s.analysisTokens.isNotEmpty
+                ? _buildAnalyzedText(q.passage, isLight)
+                : Text(q.passage, style: const TextStyle(fontSize: 14, height: 1.8, color: Color(0xFF1A1A2E))),
           ),
           const SizedBox(height: 16),
         ],
         // 题目文本
         if (q.type != QType.reading || q.passage.isEmpty)
-          Text(q.text, style: const TextStyle(fontSize: 15, height: 1.7, color: Color(0xFF1A1A2E))),
+          _showAnalysis && s.analysisTokens.isNotEmpty
+              ? _buildAnalyzedText(q.text, isLight)
+              : Text(q.text, style: const TextStyle(fontSize: 15, height: 1.7, color: Color(0xFF1A1A2E))),
         // 选择题：显示题干
         if (q.type == QType.choice && q.question.isNotEmpty) ...[
           const SizedBox(height: 12),
           Text(q.question, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Color(0xFF1A1A2E))),
         ],
+        // 分析中提示
+        if (_showAnalysis && s.analyzing) ...[
+          const SizedBox(height: 8),
+          Row(children: [
+            const SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2)),
+            const SizedBox(width: 8),
+            Text('分析中...', style: TextStyle(fontSize: 12, color: Colors.grey.shade500)),
+          ]),
+        ],
       ]),
+    );
+  }
+
+  // ===== 在原文上标注词汇剖析 =====
+  Widget _buildAnalyzedText(String text, bool isLight) {
+    final tokens = s.analysisTokens;
+    if (tokens.isEmpty) return Text(text, style: const TextStyle(fontSize: 15, height: 1.7));
+
+    return Wrap(
+      spacing: 0,
+      runSpacing: 4,
+      children: tokens.map((token) {
+        final isWord = token.type == 'word' || token.type == 'phrase';
+        if (!isWord) {
+          return Text(token.text, style: TextStyle(fontSize: 15, height: 1.7, color: const Color(0xFF1A1A2E)));
+        }
+
+        final isPhrase = token.type == 'phrase';
+        return InkWell(
+          onTap: () => _showWordPopup(context, token),
+          child: Text(
+            token.text,
+            style: TextStyle(
+              fontSize: 15,
+              height: 1.7,
+              color: const Color(0xFF1A1A2E),
+              decoration: TextDecoration.underline,
+              decorationStyle: isPhrase ? TextDecorationStyle.double : TextDecorationStyle.solid,
+              decorationColor: isPhrase ? _primary : const Color(0xFF666666),
+              decorationThickness: 1.2,
+            ),
+          ),
+        );
+      }).toList(),
+    );
+  }
+
+  // ===== 单词弹窗 =====
+  void _showWordPopup(BuildContext context, WordToken token) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => Container(
+        margin: const EdgeInsets.all(8),
+        padding: const EdgeInsets.all(20),
+        decoration: BoxDecoration(
+          color: Theme.of(ctx).brightness == Brightness.light ? Colors.white : const Color(0xFF2A2A40),
+          borderRadius: BorderRadius.circular(16),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // 单词
+            Text(
+              token.word.isNotEmpty ? token.word : token.text,
+              style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700, color: Color(0xFF1A1A2E)),
+            ),
+            if (token.pos.isNotEmpty) ...[
+              const SizedBox(height: 4),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                decoration: BoxDecoration(
+                  color: _primary.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text(token.pos, style: TextStyle(fontSize: 12, color: _primary, fontWeight: FontWeight.w500)),
+              ),
+            ],
+            const SizedBox(height: 12),
+            // 释义
+            if (token.translation.isNotEmpty)
+              Text(token.translation, style: const TextStyle(fontSize: 16, color: Color(0xFF1A1A2E), height: 1.5)),
+            if (token.other.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Text(token.other, style: TextStyle(fontSize: 14, color: Colors.grey.shade600, height: 1.5)),
+            ],
+            const SizedBox(height: 16),
+            // 收藏按钮
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: () {
+                  // TODO: 收藏单词到生词本
+                  Navigator.pop(ctx);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('已收藏: ${token.word.isNotEmpty ? token.word : token.text}'),
+                      duration: const Duration(seconds: 2),
+                      backgroundColor: _success,
+                    ),
+                  );
+                },
+                icon: const Icon(Icons.bookmark_add_rounded, size: 18),
+                label: const Text('收藏到生词本'),
+                style: FilledButton.styleFrom(
+                  backgroundColor: _primary,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -370,29 +510,8 @@ class _AnswerPageState extends State<AnswerPage> {
         ),
       ]),
       const SizedBox(height: 12),
-      // 第二行：词汇剖析 + 一键收藏单词
+      // 第二行：一键收藏单词
       Row(children: [
-        SizedBox(
-          height: 36,
-          child: OutlinedButton.icon(
-            style: OutlinedButton.styleFrom(
-              foregroundColor: _showAnalysis ? _primary : Colors.grey.shade600,
-              side: BorderSide(color: _showAnalysis ? _primary : Colors.grey.shade300),
-              backgroundColor: _showAnalysis ? _primary.withValues(alpha: 0.08) : null,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-            ),
-            onPressed: () {
-              setState(() => _showAnalysis = !_showAnalysis);
-              if (_showAnalysis && s.analysisTokens.isEmpty) {
-                s.analyzeWords(q.text, force: true);
-              }
-            },
-            icon: Icon(Icons.search_rounded, size: 16),
-            label: Text(_showAnalysis ? '收起剖析' : '词汇剖析', style: const TextStyle(fontSize: 13)),
-          ),
-        ),
-        const SizedBox(width: 12),
         SizedBox(
           height: 36,
           child: OutlinedButton.icon(
@@ -427,78 +546,6 @@ class _AnswerPageState extends State<AnswerPage> {
         ),
       ]),
     ]);
-  }
-
-  // ===== 词汇剖析面板 =====
-  Widget _buildAnalysisPanel(Question q, bool isLight) {
-    final tokens = s.analysisTokens;
-    final isLoading = s.analyzing;
-
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: isLight ? Colors.white : const Color(0xFF2A2A40),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: isLight ? const Color(0xFFE8E8F0) : Colors.white12),
-      ),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Row(children: [
-          Icon(Icons.search_rounded, size: 18, color: _primary),
-          const SizedBox(width: 8),
-          const Text('词汇剖析', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
-          const Spacer(),
-          if (isLoading)
-            const SizedBox(
-              width: 16,
-              height: 16,
-              child: CircularProgressIndicator(strokeWidth: 2),
-            ),
-          if (!isLoading && tokens.isNotEmpty) ...[
-            TextButton.icon(
-              onPressed: () => s.analyzeWords(q.text, force: true),
-              icon: const Icon(Icons.refresh_rounded, size: 16),
-              label: const Text('重新分析', style: TextStyle(fontSize: 12)),
-            ),
-          ],
-        ]),
-        const SizedBox(height: 16),
-        if (tokens.isEmpty && !isLoading)
-          const Text('点击"词汇剖析"按钮开始分析', style: TextStyle(color: Colors.grey))
-        else if (tokens.isNotEmpty)
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: tokens.map((token) {
-              final isPhrase = token.type == 'phrase';
-              final bgColor = isPhrase
-                  ? _primary.withValues(alpha: 0.15)
-                  : (isLight ? const Color(0xFFF5F5F5) : const Color(0xFF3A3A50));
-              return Tooltip(
-                message: token.translation.isEmpty ? '分析中...' : token.translation,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: bgColor,
-                    borderRadius: BorderRadius.circular(8),
-                    border: isPhrase
-                        ? Border.all(color: _primary, width: 1.5)
-                        : null,
-                  ),
-                  child: Text(
-                    token.word,
-                    style: TextStyle(
-                      fontSize: 14,
-                      fontWeight: isPhrase ? FontWeight.w600 : FontWeight.normal,
-                      color: isPhrase ? _primary : null,
-                    ),
-                  ),
-                ),
-              );
-            }).toList(),
-          ),
-      ]),
-    );
   }
 
   // ===== 批改结果 =====
