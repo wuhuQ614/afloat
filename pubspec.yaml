@@ -1,0 +1,30 @@
+name: smartenglish
+description: SmartEnglish 智能英语学习（Flutter Windows 桌面版，与网页版功能一致）
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.4.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  http: ^1.2.2
+  shared_preferences: ^2.3.2
+  file_picker: ^8.1.2
+  path_provider: ^2.1.4
+  window_manager: ^0.4.3
+  flutter_svg: ^2.0.10
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/dict.json
+    - assets/zsb-dict.json
+    - assets/questions.json
+    - assets/ai-icons/
