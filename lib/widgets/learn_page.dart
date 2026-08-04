@@ -32,14 +32,22 @@ class AnswerPage extends StatefulWidget {
 class _AnswerPageState extends State<AnswerPage> {
   final TextEditingController _answerCtrl = TextEditingController();
   bool _showAnalysis = false;
+  OverlayEntry? _wordPopup;
+  final GlobalKey _popupAnchorKey = GlobalKey();
 
   @override
   void dispose() {
+    _dismissWordPopup();
     _answerCtrl.dispose();
     super.dispose();
   }
 
   AppState get s => widget.state;
+
+  void _dismissWordPopup() {
+    _wordPopup?.remove();
+    _wordPopup = null;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -207,7 +215,7 @@ class _AnswerPageState extends State<AnswerPage> {
 
         final isPhrase = token.type == 'phrase';
         return InkWell(
-          onTap: () => _showWordPopup(context, token),
+          onTap: () => _showWordPopupAbove(context, token),
           child: Text(
             token.text,
             style: TextStyle(
@@ -225,74 +233,135 @@ class _AnswerPageState extends State<AnswerPage> {
     );
   }
 
-  // ===== 单词弹窗 =====
-  void _showWordPopup(BuildContext context, WordToken token) {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.transparent,
-      builder: (ctx) => Container(
-        margin: const EdgeInsets.all(8),
-        padding: const EdgeInsets.all(20),
-        decoration: BoxDecoration(
-          color: Theme.of(ctx).brightness == Brightness.light ? Colors.white : const Color(0xFF2A2A40),
-          borderRadius: BorderRadius.circular(16),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // 单词
-            Text(
-              token.word.isNotEmpty ? token.word : token.text,
-              style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700, color: Color(0xFF1A1A2E)),
+  // ===== 在单词上方显示气泡 =====
+  void _showWordPopupAbove(BuildContext context, WordToken token) {
+    _dismissWordPopup();
+
+    final renderBox = context.findRenderObject() as RenderBox?;
+    if (renderBox == null) return;
+
+    final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
+    final overlayOffset = renderBox.localToGlobal(Offset.zero);
+    final overlaySize = overlay.size;
+
+    // 气泡尺寸估算
+    const bubbleWidth = 280.0;
+    const bubbleHeight = 140.0;
+    const arrowHeight = 8.0;
+
+    // 计算气泡位置（在单词上方居中）
+    double left = overlayOffset.dx + (overlaySize.width - bubbleWidth) / 2;
+    double top = overlayOffset.dy - bubbleHeight - arrowHeight - 10;
+
+    // 如果上方空间不够，显示在下方
+    if (top < 20) {
+      top = overlayOffset.dy + 40;
+    }
+
+    // 确保不超出左右边界
+    if (left < 10) left = 10;
+    if (left + bubbleWidth > overlaySize.width - 10) {
+      left = overlaySize.width - bubbleWidth - 10;
+    }
+
+    final isLight = Theme.of(context).brightness == Brightness.light;
+
+    _wordPopup = OverlayEntry(
+      builder: (context) => Stack(
+        children: [
+          // 背景遮罩（点击关闭）
+          Positioned.fill(
+            child: GestureDetector(
+              onTap: _dismissWordPopup,
+              behavior: HitTestBehavior.translucent,
             ),
-            if (token.pos.isNotEmpty) ...[
-              const SizedBox(height: 4),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+          ),
+          // 气泡
+          Positioned(
+            left: left,
+            top: top,
+            child: Material(
+              color: Colors.transparent,
+              child: Container(
+                width: bubbleWidth,
+                padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
-                  color: _primary.withValues(alpha: 0.1),
-                  borderRadius: BorderRadius.circular(4),
-                ),
-                child: Text(token.pos, style: TextStyle(fontSize: 12, color: _primary, fontWeight: FontWeight.w500)),
-              ),
-            ],
-            const SizedBox(height: 12),
-            // 释义
-            if (token.translation.isNotEmpty)
-              Text(token.translation, style: const TextStyle(fontSize: 16, color: Color(0xFF1A1A2E), height: 1.5)),
-            if (token.other.isNotEmpty) ...[
-              const SizedBox(height: 8),
-              Text(token.other, style: TextStyle(fontSize: 14, color: Colors.grey.shade600, height: 1.5)),
-            ],
-            const SizedBox(height: 16),
-            // 收藏按钮
-            SizedBox(
-              width: double.infinity,
-              child: FilledButton.icon(
-                onPressed: () {
-                  // TODO: 收藏单词到生词本
-                  Navigator.pop(ctx);
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text('已收藏: ${token.word.isNotEmpty ? token.word : token.text}'),
-                      duration: const Duration(seconds: 2),
-                      backgroundColor: _success,
+                  color: isLight ? Colors.white : const Color(0xFF2A2A40),
+                  borderRadius: BorderRadius.circular(12),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.15),
+                      blurRadius: 12,
+                      offset: const Offset(0, 4),
                     ),
-                  );
-                },
-                icon: const Icon(Icons.bookmark_add_rounded, size: 18),
-                label: const Text('收藏到生词本'),
-                style: FilledButton.styleFrom(
-                  backgroundColor: _primary,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  ],
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // 单词
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            token.word.isNotEmpty ? token.word : token.text,
+                            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700, color: Color(0xFF1A1A2E)),
+                          ),
+                        ),
+                        if (token.pos.isNotEmpty)
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: _primary.withValues(alpha: 0.1),
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                            child: Text(token.pos, style: TextStyle(fontSize: 11, color: _primary, fontWeight: FontWeight.w500)),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    // 释义
+                    if (token.translation.isNotEmpty)
+                      Text(token.translation, style: const TextStyle(fontSize: 14, color: Color(0xFF1A1A2E), height: 1.5)),
+                    if (token.other.isNotEmpty) ...[
+                      const SizedBox(height: 4),
+                      Text(token.other, style: TextStyle(fontSize: 12, color: Colors.grey.shade600, height: 1.4)),
+                    ],
+                    const SizedBox(height: 12),
+                    // 收藏按钮
+                    SizedBox(
+                      width: double.infinity,
+                      height: 32,
+                      child: TextButton.icon(
+                        onPressed: () {
+                          _dismissWordPopup();
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text('已收藏: ${token.word.isNotEmpty ? token.word : token.text}'),
+                              duration: const Duration(seconds: 2),
+                              backgroundColor: _success,
+                            ),
+                          );
+                        },
+                        icon: const Icon(Icons.bookmark_add_rounded, size: 16),
+                        label: const Text('收藏到生词本', style: TextStyle(fontSize: 12)),
+                        style: TextButton.styleFrom(
+                          foregroundColor: _primary,
+                          padding: const EdgeInsets.symmetric(horizontal: 8),
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
+
+    Overlay.of(context).insert(_wordPopup!);
   }
 
   // ===== 答题区 =====
