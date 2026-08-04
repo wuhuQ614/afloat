@@ -31,6 +31,7 @@ class AnswerPage extends StatefulWidget {
 
 class _AnswerPageState extends State<AnswerPage> {
   final TextEditingController _answerCtrl = TextEditingController();
+  bool _showAnalysis = false;
 
   @override
   void dispose() {
@@ -55,6 +56,11 @@ class _AnswerPageState extends State<AnswerPage> {
             const SizedBox(height: 16),
             // 题目内容卡片
             _buildQuestionCard(q, isLight),
+            // 词汇剖析面板
+            if (_showAnalysis) ...[
+              const SizedBox(height: 16),
+              _buildAnalysisPanel(q, isLight),
+            ],
             const SizedBox(height: 16),
             // 答题区
             _buildAnswerArea(q, isLight),
@@ -309,58 +315,190 @@ class _AnswerPageState extends State<AnswerPage> {
     final hasAnswer = (q.type == QType.choice && q.userAnswerIdx != null) ||
         (q.type == QType.reading && q.questions.isNotEmpty && q.userAnswers.any((a) => a != null)) ||
         (q.type != QType.choice && q.type != QType.reading && _answerCtrl.text.trim().isNotEmpty);
-    return Row(children: [
-      Expanded(
-        child: SizedBox(
-          height: 44,
-          child: FilledButton(
-            style: FilledButton.styleFrom(backgroundColor: _primary, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
-            onPressed: hasAnswer && !s.submitting
-                ? () async {
-                    if (q.type != QType.choice && q.type != QType.reading) {
-                      s.textAnswerValue = _answerCtrl.text.trim();
+    return Column(children: [
+      Row(children: [
+        Expanded(
+          child: SizedBox(
+            height: 44,
+            child: FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: _primary, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
+              onPressed: hasAnswer && !s.submitting
+                  ? () async {
+                      if (q.type != QType.choice && q.type != QType.reading) {
+                        s.textAnswerValue = _answerCtrl.text.trim();
+                      }
+                      await s.submitCurrent();
                     }
-                    await s.submitCurrent();
-                  }
-                : null,
-            child: s.submitting
-                ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                : const Text('提交答案', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Colors.white)),
+                  : null,
+              child: s.submitting
+                  ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                  : const Text('提交答案', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Colors.white)),
+            ),
           ),
         ),
-      ),
-      const SizedBox(width: 12),
-      SizedBox(
-        height: 44,
-        child: OutlinedButton(
-          style: OutlinedButton.styleFrom(
-            foregroundColor: _primary,
-            side: const BorderSide(color: _primary),
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        const SizedBox(width: 12),
+        SizedBox(
+          height: 44,
+          child: OutlinedButton(
+            style: OutlinedButton.styleFrom(
+              foregroundColor: _primary,
+              side: const BorderSide(color: _primary),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            ),
+            onPressed: () {
+              s.nextQuestion();
+              _answerCtrl.clear();
+              s.textAnswerValue = '';
+              _showAnalysis = false;
+            },
+            child: const Text('换一道', style: TextStyle(fontSize: 14)),
           ),
-          onPressed: () {
-            s.nextQuestion();
-            _answerCtrl.clear();
-            s.textAnswerValue = '';
-          },
-          child: const Text('换一道', style: TextStyle(fontSize: 14)),
         ),
-      ),
-      const SizedBox(width: 12),
-      SizedBox(
-        height: 44,
-        child: OutlinedButton.icon(
-          style: OutlinedButton.styleFrom(
-            foregroundColor: s.isCurrentFavorite ? _primary : Colors.grey.shade500,
-            side: BorderSide(color: s.isCurrentFavorite ? _primary : Colors.grey.shade300),
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        const SizedBox(width: 12),
+        SizedBox(
+          height: 44,
+          child: OutlinedButton.icon(
+            style: OutlinedButton.styleFrom(
+              foregroundColor: s.isCurrentFavorite ? _primary : Colors.grey.shade500,
+              side: BorderSide(color: s.isCurrentFavorite ? _primary : Colors.grey.shade300),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            ),
+            onPressed: () => s.toggleFavorite(),
+            icon: Icon(s.isCurrentFavorite ? Icons.bookmark_rounded : Icons.bookmark_border_rounded, size: 18),
+            label: Text(s.isCurrentFavorite ? '已收藏' : '收藏', style: const TextStyle(fontSize: 13)),
           ),
-          onPressed: () => s.toggleFavorite(),
-          icon: Icon(s.isCurrentFavorite ? Icons.bookmark_rounded : Icons.bookmark_border_rounded, size: 18),
-          label: Text(s.isCurrentFavorite ? '已收藏' : '收藏', style: const TextStyle(fontSize: 13)),
         ),
-      ),
+      ]),
+      const SizedBox(height: 12),
+      // 第二行：词汇剖析 + 一键收藏单词
+      Row(children: [
+        SizedBox(
+          height: 36,
+          child: OutlinedButton.icon(
+            style: OutlinedButton.styleFrom(
+              foregroundColor: _showAnalysis ? _primary : Colors.grey.shade600,
+              side: BorderSide(color: _showAnalysis ? _primary : Colors.grey.shade300),
+              backgroundColor: _showAnalysis ? _primary.withValues(alpha: 0.08) : null,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+            ),
+            onPressed: () {
+              setState(() => _showAnalysis = !_showAnalysis);
+              if (_showAnalysis && s.analysisTokens.isEmpty) {
+                s.analyzeWords(q.text, force: true);
+              }
+            },
+            icon: Icon(Icons.search_rounded, size: 16),
+            label: Text(_showAnalysis ? '收起剖析' : '词汇剖析', style: const TextStyle(fontSize: 13)),
+          ),
+        ),
+        const SizedBox(width: 12),
+        SizedBox(
+          height: 36,
+          child: OutlinedButton.icon(
+            style: OutlinedButton.styleFrom(
+              foregroundColor: Colors.grey.shade600,
+              side: BorderSide(color: Colors.grey.shade300),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+            ),
+            onPressed: () {
+              final result = s.recordWordsFromQuestion();
+              if (result != null) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text('已记录 ${result.total} 个单词（${result.newCount} 个新词）'),
+                    duration: const Duration(seconds: 2),
+                    backgroundColor: _success,
+                  ),
+                );
+              } else {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('未检测到可记录的英文单词'),
+                    duration: Duration(seconds: 2),
+                  ),
+                );
+              }
+            },
+            icon: Icon(Icons.bookmark_add_outlined, size: 16),
+            label: const Text('一键收藏单词', style: TextStyle(fontSize: 13)),
+          ),
+        ),
+      ]),
     ]);
+  }
+
+  // ===== 词汇剖析面板 =====
+  Widget _buildAnalysisPanel(Question q, bool isLight) {
+    final tokens = s.analysisTokens;
+    final isLoading = s.analyzing;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: isLight ? Colors.white : const Color(0xFF2A2A40),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: isLight ? const Color(0xFFE8E8F0) : Colors.white12),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Icon(Icons.search_rounded, size: 18, color: _primary),
+          const SizedBox(width: 8),
+          const Text('词汇剖析', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
+          const Spacer(),
+          if (isLoading)
+            const SizedBox(
+              width: 16,
+              height: 16,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+          if (!isLoading && tokens.isNotEmpty) ...[
+            TextButton.icon(
+              onPressed: () => s.analyzeWords(q.text, force: true),
+              icon: const Icon(Icons.refresh_rounded, size: 16),
+              label: const Text('重新分析', style: TextStyle(fontSize: 12)),
+            ),
+          ],
+        ]),
+        const SizedBox(height: 16),
+        if (tokens.isEmpty && !isLoading)
+          const Text('点击"词汇剖析"按钮开始分析', style: TextStyle(color: Colors.grey))
+        else if (tokens.isNotEmpty)
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: tokens.map((token) {
+              final isPhrase = token.type == 'phrase';
+              final bgColor = isPhrase
+                  ? _primary.withValues(alpha: 0.15)
+                  : (isLight ? const Color(0xFFF5F5F5) : const Color(0xFF3A3A50));
+              return Tooltip(
+                message: token.translation.isEmpty ? '分析中...' : token.translation,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: bgColor,
+                    borderRadius: BorderRadius.circular(8),
+                    border: isPhrase
+                        ? Border.all(color: _primary, width: 1.5)
+                        : null,
+                  ),
+                  child: Text(
+                    token.word,
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: isPhrase ? FontWeight.w600 : FontWeight.normal,
+                      color: isPhrase ? _primary : null,
+                    ),
+                  ),
+                ),
+              );
+            }).toList(),
+          ),
+      ]),
+    );
   }
 
   // ===== 批改结果 =====
