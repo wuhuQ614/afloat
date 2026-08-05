@@ -5,8 +5,11 @@ import 'dart:async';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import '../models.dart';
+import '../services/dict_service.dart';
+import '../services/tts_service.dart';
 import '../state.dart';
-import '../theme_colors.dart' show kPrimary, kPrimaryLight, kSuccess, kDanger, kGradientStart, kGradientEnd;
+import '../theme_colors.dart' show kPrimary, kPrimaryLight, kSuccess, kDanger, AppColors;
+import 'settings_dialog.dart';
 
 const _primary = kPrimary;
 const _primaryLight = kPrimaryLight;
@@ -35,8 +38,28 @@ class _AnswerPageState extends State<AnswerPage> {
   OverlayEntry? _wordPopup;
   final GlobalKey _popupAnchorKey = GlobalKey();
 
+  /// 记录当前题目对应的 questionSeq，换题（对话指令出题/换一道等）时自动清空作答区
+  late int _questionSeq;
+
+  @override
+  void initState() {
+    super.initState();
+    _questionSeq = widget.state.questionSeq;
+    widget.state.addListener(_onQuestionChanged);
+  }
+
+  void _onQuestionChanged() {
+    if (widget.state.questionSeq == _questionSeq) return;
+    _questionSeq = widget.state.questionSeq;
+    _answerCtrl.clear();
+    widget.state.textAnswerValue = '';
+    _showAnalysis = false;
+    if (mounted) setState(() {});
+  }
+
   @override
   void dispose() {
+    widget.state.removeListener(_onQuestionChanged);
     _dismissWordPopup();
     _answerCtrl.dispose();
     super.dispose();
@@ -83,10 +106,11 @@ class _AnswerPageState extends State<AnswerPage> {
 
   // ===== 题目标签栏 =====
   Widget _buildQuestionHeader(Question q) {
+    final c = AppColors.of(context);
     return Row(children: [
       _Tag(text: qTypeName(q.type), color: _primary),
       const SizedBox(width: 8),
-      _Tag(text: levelName(q.level), color: const Color(0xFFF59E0B)),
+      _Tag(text: levelName(q.level), color: c.warning),
       if (q.type == QType.translation) ...[
         const SizedBox(width: 12),
         InkWell(
@@ -95,13 +119,13 @@ class _AnswerPageState extends State<AnswerPage> {
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
             decoration: BoxDecoration(
-              color: _primary.withValues(alpha: 0.08),
+              color: c.primaryBg,
               borderRadius: BorderRadius.circular(6),
             ),
             child: Row(mainAxisSize: MainAxisSize.min, children: [
-              Icon(Icons.swap_horiz_rounded, size: 14, color: _primary),
+              Icon(Icons.swap_horiz_rounded, size: 14, color: c.primaryText),
               const SizedBox(width: 4),
-              Text(s.isZh2En ? '中→英' : '英→中', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: _primary)),
+              Text(s.isZh2En ? '中→英' : '英→中', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: c.primaryText)),
             ]),
           ),
         ),
@@ -122,43 +146,94 @@ class _AnswerPageState extends State<AnswerPage> {
 
   // ===== 题目内容卡片 =====
   Widget _buildQuestionCard(Question q, bool isLight) {
+    final c = AppColors(isLight);
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
-        color: isLight ? Colors.white : const Color(0xFF2A2A40),
+        color: c.card,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: isLight ? const Color(0xFFE8E8F0) : Colors.white12),
+        border: Border.all(color: c.border),
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Row(children: [
-          Text(s.directionLabel, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: _primary)),
+          Text(s.directionLabel, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: c.primaryText)),
           const Spacer(),
+          // 剖析模式三选一分段控件（快速/正常/深度）
+          _buildAnalysisModeSwitcher(q, c),
+          const SizedBox(width: 8),
           // 词汇剖析按钮
           InkWell(
             onTap: () {
+              // 检查API配置（正常/深度模式需要API）
+              if ((s.analysisMode == 'normal' || s.analysisMode == 'deep') && !s.apiConfig.ready) {
+                showDialog(
+                  context: context,
+                  builder: (ctx) => AlertDialog(
+                    title: const Text('API 未配置'),
+                    content: const Text('API 尚未配置，请前往设置页面中配置。'),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.of(ctx).pop(),
+                        child: const Text('取消'),
+                      ),
+                      TextButton(
+                        onPressed: () {
+                          Navigator.of(ctx).pop();
+                          showDialog(context: context, builder: (_) => const ChatSettingsDialog());
+                        },
+                        child: const Text('去设置'),
+                      ),
+                    ],
+                  ),
+                );
+                return;
+              }
+              
               setState(() => _showAnalysis = !_showAnalysis);
-              if (_showAnalysis && s.analysisTokens.isEmpty) {
-                s.analyzeWords(q.text, force: true);
+              if (_showAnalysis) {
+                s.analyzeWords(q.text);
               }
             },
             borderRadius: BorderRadius.circular(6),
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
               decoration: BoxDecoration(
-                color: _showAnalysis ? _primary.withValues(alpha: 0.15) : Colors.grey.withValues(alpha: 0.1),
+                color: _showAnalysis ? c.primaryBgStrong : c.textTertiary.withValues(alpha: 0.1),
                 borderRadius: BorderRadius.circular(6),
               ),
               child: Row(mainAxisSize: MainAxisSize.min, children: [
-                Icon(Icons.search_rounded, size: 14, color: _showAnalysis ? _primary : Colors.grey),
+                Icon(Icons.search_rounded, size: 14, color: _showAnalysis ? c.primaryText : c.textTertiary),
                 const SizedBox(width: 4),
                 Text(
                   _showAnalysis ? '收起剖析' : '词汇剖析',
-                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: _showAnalysis ? _primary : Colors.grey.shade600),
+                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: _showAnalysis ? c.primaryText : c.textSecondary),
                 ),
               ]),
             ),
           ),
+          const SizedBox(width: 8),
+          // 朗读按钮
+          if (TtsService.instance.available)
+            InkWell(
+              onTap: () {
+                final textToSpeak = q.type == QType.reading && q.passage.isNotEmpty ? q.passage : q.text;
+                TtsService.instance.speakText(textToSpeak);
+              },
+              borderRadius: BorderRadius.circular(6),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: c.textTertiary.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Row(mainAxisSize: MainAxisSize.min, children: [
+                  Icon(Icons.volume_up_rounded, size: 14, color: c.textSecondary),
+                  const SizedBox(width: 4),
+                  Text('朗读', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: c.textSecondary)),
+                ]),
+              ),
+            ),
         ]),
         const SizedBox(height: 12),
         // 阅读理解：展示短文
@@ -167,42 +242,113 @@ class _AnswerPageState extends State<AnswerPage> {
             width: double.infinity,
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
-              color: const Color(0xFFF8F6FF),
+              color: c.cardAlt,
               borderRadius: BorderRadius.circular(12),
             ),
             child: _showAnalysis && s.analysisTokens.isNotEmpty
                 ? _buildAnalyzedText(q.passage, isLight)
-                : Text(q.passage, style: const TextStyle(fontSize: 14, height: 1.8, color: Color(0xFF1A1A2E))),
+                : Text(q.passage, style: TextStyle(fontSize: 14, height: 1.8, color: c.text)),
           ),
           const SizedBox(height: 16),
         ],
-        // 题目文本
+        // 题目文本（翻译题显示实时进度变色）
         if (q.type != QType.reading || q.passage.isEmpty)
-          _showAnalysis && s.analysisTokens.isNotEmpty
-              ? _buildAnalyzedText(q.text, isLight)
-              : Text(q.text, style: const TextStyle(fontSize: 15, height: 1.7, color: Color(0xFF1A1A2E))),
+          q.type == QType.translation && s.textAnswerValue.isNotEmpty && !_showAnalysis
+              ? _buildTextWithProgress(q, isLight)
+              : (_showAnalysis && s.analysisTokens.isNotEmpty
+                  ? _buildAnalyzedText(q.text, isLight)
+                  : Text(q.text, style: TextStyle(fontSize: 15, height: 1.7, color: c.text))),
         // 选择题：显示题干
         if (q.type == QType.choice && q.question.isNotEmpty) ...[
           const SizedBox(height: 12),
-          Text(q.question, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Color(0xFF1A1A2E))),
+          Text(q.question, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: c.text)),
         ],
         // 分析中提示
         if (_showAnalysis && s.analyzing) ...[
           const SizedBox(height: 8),
           Row(children: [
-            const SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2)),
+            SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2, color: c.primaryText)),
             const SizedBox(width: 8),
-            Text('分析中...', style: TextStyle(fontSize: 12, color: Colors.grey.shade500)),
+            Text('分析中...', style: TextStyle(fontSize: 12, color: c.textTertiary)),
           ]),
         ],
       ]),
     );
   }
 
+  // ===== 剖析模式三选一分段控件 =====
+  Widget _buildAnalysisModeSwitcher(Question q, AppColors c) {
+    const modes = [('fast', '快速'), ('normal', '正常'), ('deep', '深度')];
+    return Container(
+      padding: const EdgeInsets.all(2),
+      decoration: BoxDecoration(
+        color: c.textTertiary.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(7),
+        border: Border.all(color: c.border),
+      ),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        for (final (mode, label) in modes)
+          InkWell(
+            onTap: s.analyzing
+                ? null
+                : () {
+                    if (s.analysisMode == mode) return;
+                    // 检查API配置（正常/深度模式需要API）
+                    if ((mode == 'normal' || mode == 'deep') && !s.apiConfig.ready) {
+                      showDialog(
+                        context: context,
+                        builder: (ctx) => AlertDialog(
+                          title: const Text('API 未配置'),
+                          content: const Text('API 尚未配置，请前往设置页面中配置。'),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.of(ctx).pop(),
+                              child: const Text('取消'),
+                            ),
+                            TextButton(
+                              onPressed: () {
+                                Navigator.of(ctx).pop();
+                                showDialog(context: context, builder: (_) => const ChatSettingsDialog());
+                              },
+                              child: const Text('去设置'),
+                            ),
+                          ],
+                        ),
+                      );
+                      return;
+                    }
+                    s.setAnalysisMode(mode);
+                    // 已有剖析结果时按新模式重新剖析（缓存 key 含 mode，命中缓存则即时切换）
+                    if (_showAnalysis && s.analysisTokens.isNotEmpty) {
+                      s.analyzeWords(q.text);
+                    }
+                  },
+            borderRadius: BorderRadius.circular(5),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(
+                color: s.analysisMode == mode ? c.primaryBgStrong : Colors.transparent,
+                borderRadius: BorderRadius.circular(5),
+              ),
+              child: Text(
+                label,
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: s.analysisMode == mode ? FontWeight.w600 : FontWeight.w400,
+                  color: s.analysisMode == mode ? c.primaryText : c.textTertiary,
+                ),
+              ),
+            ),
+          ),
+      ]),
+    );
+  }
+
   // ===== 在原文上标注词汇剖析 =====
   Widget _buildAnalyzedText(String text, bool isLight) {
+    final c = AppColors(isLight);
     final tokens = s.analysisTokens;
-    if (tokens.isEmpty) return Text(text, style: const TextStyle(fontSize: 15, height: 1.7));
+    if (tokens.isEmpty) return Text(text, style: TextStyle(fontSize: 15, height: 1.7, color: c.text));
 
     return Wrap(
       spacing: 0,
@@ -210,26 +356,142 @@ class _AnswerPageState extends State<AnswerPage> {
       children: tokens.map((token) {
         final isWord = token.type == 'word' || token.type == 'phrase';
         if (!isWord) {
-          return Text(token.text, style: TextStyle(fontSize: 15, height: 1.7, color: const Color(0xFF1A1A2E)));
+          return Text(token.text, style: TextStyle(fontSize: 15, height: 1.7, color: c.text));
         }
 
         final isPhrase = token.type == 'phrase';
-        return InkWell(
-          onTap: () => _showWordPopupAbove(context, token),
-          child: Text(
-            token.text,
-            style: TextStyle(
-              fontSize: 15,
-              height: 1.7,
-              color: const Color(0xFF1A1A2E),
-              decoration: TextDecoration.underline,
-              decorationStyle: isPhrase ? TextDecorationStyle.double : TextDecorationStyle.solid,
-              decorationColor: isPhrase ? _primary : const Color(0xFF666666),
-              decorationThickness: 1.2,
+        return Builder(
+          builder: (ctx) => InkWell(
+            onTap: () => _showWordPopupAbove(ctx, token),
+            child: Text(
+              token.text,
+              style: TextStyle(
+                fontSize: 15,
+                height: 1.7,
+                color: c.text,
+                decoration: TextDecoration.underline,
+                decorationStyle: isPhrase ? TextDecorationStyle.double : TextDecorationStyle.solid,
+                decorationColor: isPhrase ? c.primaryText : c.textTertiary,
+                decorationThickness: 1.2,
+              ),
             ),
           ),
         );
       }).toList(),
+    );
+  }
+
+  // ===== 翻译进度：在原文上直接变色（已翻译单词变紫色） =====
+  Widget _buildTextWithProgress(Question q, bool isLight) {
+    final c = AppColors(isLight);
+    final originalText = q.text; // 原文（用户要翻译的文本）
+    final targetText = s.isZh2En ? q.english : q.chinese; // 目标译文
+    final userInput = s.textAnswerValue.trim();
+
+    if (originalText.isEmpty || targetText.isEmpty || userInput.isEmpty) {
+      return Text(originalText, style: TextStyle(fontSize: 15, height: 1.7, color: c.text));
+    }
+
+    // 提取原文中的"词"
+    final List<String> originalWords;
+    final List<int> originalWordStarts; // 每个词在原文中的起始位置
+    if (s.isZh2En) {
+      // 中文原文：按字拆分
+      originalWords = <String>[];
+      originalWordStarts = <int>[];
+      for (var i = 0; i < originalText.length; i++) {
+        final ch = originalText[i];
+        if (ch.trim().isNotEmpty && !RegExp(r'[\s\p{P}]', unicode: true).hasMatch(ch)) {
+          originalWords.add(ch);
+          originalWordStarts.add(i);
+        }
+      }
+    } else {
+      // 英文原文：按单词拆分
+      originalWords = <String>[];
+      originalWordStarts = <int>[];
+      final re = RegExp(r"[A-Za-z']+");
+      for (final m in re.allMatches(originalText)) {
+        originalWords.add(m.group(0)!);
+        originalWordStarts.add(m.start);
+      }
+    }
+
+    if (originalWords.isEmpty) {
+      return Text(originalText, style: TextStyle(fontSize: 15, height: 1.7, color: c.text));
+    }
+
+    // 提取用户输入中的"词"
+    final List<String> userWords;
+    if (s.isZh2En) {
+      // 用户输入英文
+      userWords = RegExp(r"[A-Za-z']+")
+          .allMatches(userInput.toLowerCase())
+          .map((m) => m.group(0)!)
+          .toList();
+    } else {
+      // 用户输入中文
+      userWords = userInput
+          .split('')
+          .where((c) => c.trim().isNotEmpty && !RegExp(r'[\s\p{P}]', unicode: true).hasMatch(c))
+          .map((c) => c.toLowerCase())
+          .toList();
+    }
+
+    // 子序列匹配：用户输入按顺序匹配目标译文中的词
+    // 然后计算匹配比例，标记原文中对应位置的词为"已完成"
+    final targetWords = s.isZh2En
+        ? RegExp(r"[A-Za-z']+").allMatches(targetText).map((m) => m.group(0)!.toLowerCase()).toList()
+        : targetText.split('').where((c) => c.trim().isNotEmpty && !RegExp(r'[\s\p{P}]', unicode: true).hasMatch(c)).map((c) => c.toLowerCase()).toList();
+
+    // 计算用户输入匹配了多少目标词
+    int matchedTargetCount = 0;
+    int userIdx = 0;
+    for (var i = 0; i < targetWords.length && userIdx < userWords.length; i++) {
+      if (targetWords[i] == userWords[userIdx]) {
+        matchedTargetCount++;
+        userIdx++;
+      }
+    }
+
+    // 根据匹配比例，标记原文中前 N 个词为"已完成"
+    final progressRatio = targetWords.isNotEmpty ? matchedTargetCount / targetWords.length : 0.0;
+    final completedOriginalCount = (progressRatio * originalWords.length).round();
+
+    // 构建带颜色的原文
+    final spans = <InlineSpan>[];
+    int wordIdx = 0;
+    int pos = 0;
+    final highlightColor = c.primaryText;
+
+    while (pos < originalText.length) {
+      // 找到当前位置是否是某个词的起始
+      final wordPos = originalWordStarts.indexOf(pos);
+      if (wordPos >= 0 && wordPos < originalWords.length) {
+        final isCompleted = wordIdx < completedOriginalCount;
+        spans.add(TextSpan(
+          text: originalWords[wordIdx],
+          style: TextStyle(
+            fontSize: 15,
+            height: 1.7,
+            color: isCompleted ? highlightColor : c.text,
+            fontWeight: isCompleted ? FontWeight.w700 : FontWeight.normal,
+          ),
+        ));
+        wordIdx++;
+        pos += originalWords[wordIdx - 1].length;
+      } else {
+        // 非词字符（标点、空格等）
+        spans.add(TextSpan(
+          text: originalText[pos],
+          style: TextStyle(fontSize: 15, height: 1.7, color: c.text),
+        ));
+        pos++;
+      }
+    }
+
+    return RichText(
+      text: TextSpan(children: spans),
     );
   }
 
@@ -240,31 +502,77 @@ class _AnswerPageState extends State<AnswerPage> {
     final renderBox = context.findRenderObject() as RenderBox?;
     if (renderBox == null) return;
 
-    final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
-    final overlayOffset = renderBox.localToGlobal(Offset.zero);
-    final overlaySize = overlay.size;
+    // 单词自身的位置和尺寸
+    final wordSize = renderBox.size;
+    final wordOffset = renderBox.localToGlobal(Offset.zero);
 
-    // 气泡尺寸估算
-    const bubbleWidth = 280.0;
-    const bubbleHeight = 140.0;
-    const arrowHeight = 8.0;
+    // 屏幕尺寸（用于边界判断）
+    final mediaQuery = MediaQuery.of(context);
+    final screenWidth = mediaQuery.size.width;
+    final screenHeight = mediaQuery.size.height;
 
-    // 计算气泡位置（在单词上方居中）
-    double left = overlayOffset.dx + (overlaySize.width - bubbleWidth) / 2;
-    double top = overlayOffset.dy - bubbleHeight - arrowHeight - 10;
+    // 气泡尺寸（紧凑型）
+    const bubbleWidth = 220.0;
 
-    // 如果上方空间不够，显示在下方
-    if (top < 20) {
-      top = overlayOffset.dy + 40;
+    // 先用 TextPainter 测量释义高度，动态估算气泡高度
+    final translation = token.translation;
+    final other = token.other;
+    final wordText = token.word.isNotEmpty ? token.word : token.text;
+    final phonetic = DictService.lookup(wordText.toLowerCase())?.phonetic ?? '';
+    final ttsReady = TtsService.instance.available;
+
+    final isLight = Theme.of(context).brightness == Brightness.light;
+    final c = AppColors(isLight);
+
+    final tp = TextPainter(
+      text: TextSpan(
+        text: translation,
+        style: TextStyle(fontSize: 13, color: c.text, height: 1.4),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout(maxWidth: bubbleWidth - 24);
+    final translationLines = (tp.height / (13 * 1.4)).ceil();
+
+    final tpOther = TextPainter(
+      text: TextSpan(
+        text: other,
+        style: TextStyle(fontSize: 11, color: c.textTertiary, height: 1.3),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout(maxWidth: bubbleWidth - 24);
+    final otherLines = (tpOther.height / (11 * 1.3)).ceil();
+
+    // 气泡高度：单词行 + 音标行 + 释义 + 词典释义 + 用法 + 收藏按钮 + padding
+    double bubbleHeight = 30 + // 单词行
+        ((phonetic.isNotEmpty || ttsReady) ? 22 : 0) + // 音标行（含发音按钮）
+        (translation.isNotEmpty ? 4 + translationLines * 18.2 : 0) +
+        (token.contextTranslation.isNotEmpty ? 3 + 14.3 : 0) +
+        (other.isNotEmpty ? 3 + otherLines * 14.3 : 0) +
+        8 + // 分隔
+        28 + // 收藏按钮
+        16; // padding
+
+    // 气泡居中到单词正上方，紧贴单词（仅2px间隙）
+    double left = wordOffset.dx + (wordSize.width - bubbleWidth) / 2;
+    double top = wordOffset.dy - bubbleHeight - 2;
+
+    // 如果上方空间不够，显示在单词下方（紧贴单词下方）
+    if (top < 10) {
+      top = wordOffset.dy + wordSize.height + 2;
+    }
+
+    // 如果下方也超出屏幕，就贴顶
+    if (top + bubbleHeight > screenHeight - 10) {
+      top = screenHeight - bubbleHeight - 10;
     }
 
     // 确保不超出左右边界
-    if (left < 10) left = 10;
-    if (left + bubbleWidth > overlaySize.width - 10) {
-      left = overlaySize.width - bubbleWidth - 10;
+    if (left < 8) left = 8;
+    if (left + bubbleWidth > screenWidth - 8) {
+      left = screenWidth - bubbleWidth - 8;
     }
 
-    final isLight = Theme.of(context).brightness == Brightness.light;
+    final isInWordBook = s.wordbook.any((e) => e.word.toLowerCase() == wordText.toLowerCase());
 
     _wordPopup = OverlayEntry(
       builder: (context) => Stack(
@@ -284,15 +592,17 @@ class _AnswerPageState extends State<AnswerPage> {
               color: Colors.transparent,
               child: Container(
                 width: bubbleWidth,
-                padding: const EdgeInsets.all(16),
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                 decoration: BoxDecoration(
-                  color: isLight ? Colors.white : const Color(0xFF2A2A40),
-                  borderRadius: BorderRadius.circular(12),
+                  // overlay 保持不透明：气泡浮在题目文字上，不能用半透明玻璃值（会透字）
+                  color: c.overlay,
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: c.border),
                   boxShadow: [
                     BoxShadow(
-                      color: Colors.black.withValues(alpha: 0.15),
-                      blurRadius: 12,
-                      offset: const Offset(0, 4),
+                      color: Colors.black.withValues(alpha: 0.3),
+                      blurRadius: 10,
+                      offset: const Offset(0, 2),
                     ),
                   ],
                 ),
@@ -300,57 +610,77 @@ class _AnswerPageState extends State<AnswerPage> {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // 单词
+                    // 单词 + 词性
                     Row(
+                      mainAxisSize: MainAxisSize.min,
                       children: [
-                        Expanded(
+                        Flexible(
                           child: Text(
-                            token.word.isNotEmpty ? token.word : token.text,
-                            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700, color: Color(0xFF1A1A2E)),
+                            wordText,
+                            style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: c.text),
+                            overflow: TextOverflow.ellipsis,
                           ),
                         ),
-                        if (token.pos.isNotEmpty)
+                        if (token.pos.isNotEmpty) ...[
+                          const SizedBox(width: 6),
                           Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
                             decoration: BoxDecoration(
-                              color: _primary.withValues(alpha: 0.1),
-                              borderRadius: BorderRadius.circular(4),
+                              color: c.primaryBgStrong,
+                              borderRadius: BorderRadius.circular(3),
                             ),
-                            child: Text(token.pos, style: TextStyle(fontSize: 11, color: _primary, fontWeight: FontWeight.w500)),
+                            child: Text(token.pos, style: TextStyle(fontSize: 10, color: c.primaryText, fontWeight: FontWeight.w500)),
                           ),
+                        ],
                       ],
                     ),
-                    const SizedBox(height: 8),
-                    // 释义
-                    if (token.translation.isNotEmpty)
-                      Text(token.translation, style: const TextStyle(fontSize: 14, color: Color(0xFF1A1A2E), height: 1.5)),
-                    if (token.other.isNotEmpty) ...[
-                      const SizedBox(height: 4),
-                      Text(token.other, style: TextStyle(fontSize: 12, color: Colors.grey.shade600, height: 1.4)),
-                    ],
-                    const SizedBox(height: 12),
-                    // 收藏按钮
-                    SizedBox(
-                      width: double.infinity,
-                      height: 32,
-                      child: TextButton.icon(
-                        onPressed: () {
-                          _dismissWordPopup();
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              content: Text('已收藏: ${token.word.isNotEmpty ? token.word : token.text}'),
-                              duration: const Duration(seconds: 2),
-                              backgroundColor: _success,
+                    if (phonetic.isNotEmpty || ttsReady) ...[
+                      const SizedBox(height: 2),
+                      Row(children: [
+                        if (ttsReady)
+                          InkWell(
+                            onTap: () => TtsService.instance.speakWord(wordText),
+                            borderRadius: BorderRadius.circular(4),
+                            child: Padding(
+                              padding: const EdgeInsets.all(2),
+                              child: Icon(Icons.volume_up, size: 14, color: c.primaryText),
                             ),
-                          );
-                        },
-                        icon: const Icon(Icons.bookmark_add_rounded, size: 16),
-                        label: const Text('收藏到生词本', style: TextStyle(fontSize: 12)),
-                        style: TextButton.styleFrom(
-                          foregroundColor: _primary,
-                          padding: const EdgeInsets.symmetric(horizontal: 8),
-                        ),
-                      ),
+                          ),
+                        if (ttsReady && phonetic.isNotEmpty) const SizedBox(width: 4),
+                        if (phonetic.isNotEmpty)
+                          Flexible(
+                            child: Text('/$phonetic/', style: TextStyle(fontSize: 12, color: c.textTertiary), overflow: TextOverflow.ellipsis),
+                          ),
+                      ]),
+                    ],
+                    if (translation.isNotEmpty) ...[
+                      const SizedBox(height: 4),
+                      Text(translation, style: TextStyle(fontSize: 13, color: c.text, height: 1.4)),
+                    ],
+                    if (token.contextTranslation.isNotEmpty) ...[
+                      const SizedBox(height: 3),
+                      Row(children: [
+                        Text('词典：', style: TextStyle(fontSize: 11, color: c.textTertiary, fontWeight: FontWeight.w600)),
+                        Expanded(child: Text(token.contextTranslation, style: TextStyle(fontSize: 11, color: c.textTertiary, height: 1.3))),
+                      ]),
+                    ],
+                    if (other.isNotEmpty) ...[
+                      const SizedBox(height: 3),
+                      Text(other, style: TextStyle(fontSize: 11, color: c.textTertiary, height: 1.3)),
+                    ],
+                    const SizedBox(height: 8),
+                    // 收藏按钮
+                    Divider(height: 1, color: c.border),
+                    const SizedBox(height: 4),
+                    _WordBookButton(
+                      word: wordText,
+                      translation: translation,
+                      added: isInWordBook,
+                      state: s,
+                      onChanged: () {
+                        // 收藏状态变化后关闭气泡
+                        if (mounted) _dismissWordPopup();
+                      },
                     ),
                   ],
                 ),
@@ -380,31 +710,36 @@ class _AnswerPageState extends State<AnswerPage> {
 
   // ===== 文本作答区 =====
   Widget _buildTextAnswer(Question q, bool isLight) {
+    final c = AppColors(isLight);
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
-        color: isLight ? Colors.white : const Color(0xFF2A2A40),
+        color: c.card,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: isLight ? const Color(0xFFE8E8F0) : Colors.white12),
+        border: Border.all(color: c.border),
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text('你的答案：', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Colors.grey.shade600)),
+        Text('你的答案：', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: c.textSecondary)),
         const SizedBox(height: 10),
         TextField(
           controller: _answerCtrl,
           maxLines: 5,
           maxLength: 500,
-          style: const TextStyle(fontSize: 14, height: 1.6),
+          style: TextStyle(fontSize: 14, height: 1.6, color: c.text),
           decoration: InputDecoration(
             hintText: s.answerPlaceholder,
-            hintStyle: TextStyle(fontSize: 13, color: Colors.grey.shade400),
+            hintStyle: TextStyle(fontSize: 13, color: c.textTertiary),
             filled: true,
-            fillColor: isLight ? const Color(0xFFF8F6FF) : const Color(0xFF1E1E32),
+            fillColor: c.inputFill,
             border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+            enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
             focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: _primary, width: 1.5)),
             contentPadding: const EdgeInsets.all(14),
           ),
-          onChanged: (v) => s.textAnswerValue = v,
+          onChanged: (v) {
+            s.textAnswerValue = v;
+            setState(() {}); // 触发重建以更新翻译进度
+          },
         ),
       ]),
     );
@@ -412,15 +747,17 @@ class _AnswerPageState extends State<AnswerPage> {
 
   // ===== 选择题作答区 =====
   Widget _buildChoiceAnswer(Question q, bool isLight) {
+    final c = AppColors(isLight);
+    final highlight = c.primaryText;
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
-        color: isLight ? Colors.white : const Color(0xFF2A2A40),
+        color: c.card,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: isLight ? const Color(0xFFE8E8F0) : Colors.white12),
+        border: Border.all(color: c.border),
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text('请选择答案：', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Colors.grey.shade600)),
+        Text('请选择答案：', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: c.textSecondary)),
         const SizedBox(height: 12),
         ...List.generate(q.options.length, (i) {
           final letter = 'ABCDEFGH'[i];
@@ -430,30 +767,30 @@ class _AnswerPageState extends State<AnswerPage> {
             child: InkWell(
               onTap: s.submitting ? null : () {
                 s.currentQuestion = q.copyWith(userAnswerIdx: i);
-                s.notifyListeners();
+                s.touch();
               },
               borderRadius: BorderRadius.circular(12),
               child: AnimatedContainer(
                 duration: const Duration(milliseconds: 150),
                 padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                 decoration: BoxDecoration(
-                  color: selected ? _primary.withValues(alpha: 0.08) : (isLight ? const Color(0xFFF8F6FF) : const Color(0xFF1E1E32)),
+                  color: selected ? c.primaryBgStrong : c.cardAlt,
                   borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: selected ? _primary : (isLight ? const Color(0xFFE5E7EB) : Colors.white12), width: selected ? 2 : 1),
+                  border: Border.all(color: selected ? highlight : c.chipBorder, width: selected ? 2 : 1),
                 ),
                 child: Row(children: [
                   Container(
                     width: 28, height: 28,
                     decoration: BoxDecoration(
-                      color: selected ? _primary : (isLight ? Colors.white : const Color(0xFF2A2A40)),
+                      color: selected ? highlight : c.card,
                       shape: BoxShape.circle,
-                      border: Border.all(color: selected ? _primary : Colors.grey.shade300),
+                      border: Border.all(color: selected ? highlight : c.chipBorder),
                     ),
-                    child: Center(child: Text(letter, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: selected ? Colors.white : Colors.grey.shade500))),
+                    child: Center(child: Text(letter, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: selected ? Colors.white : c.textTertiary))),
                   ),
                   const SizedBox(width: 12),
-                  Expanded(child: Text(q.options[i], style: TextStyle(fontSize: 13.5, color: selected ? _primary : const Color(0xFF1A1A2E)))),
-                  if (selected) Icon(Icons.check_circle_rounded, size: 20, color: _primary),
+                  Expanded(child: Text(q.options[i], style: TextStyle(fontSize: 13.5, color: selected ? highlight : c.text))),
+                  if (selected) Icon(Icons.check_circle_rounded, size: 20, color: highlight),
                 ]),
               ),
             ),
@@ -465,15 +802,17 @@ class _AnswerPageState extends State<AnswerPage> {
 
   // ===== 阅读理解作答区 =====
   Widget _buildReadingAnswer(Question q, bool isLight) {
+    final c = AppColors(isLight);
+    final highlight = c.primaryText;
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
-        color: isLight ? Colors.white : const Color(0xFF2A2A40),
+        color: c.card,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: isLight ? const Color(0xFFE8E8F0) : Colors.white12),
+        border: Border.all(color: c.border),
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text('阅读理解作答：', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Colors.grey.shade600)),
+        Text('阅读理解作答：', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: c.textSecondary)),
         const SizedBox(height: 12),
         ...List.generate(q.questions.length, (qi) {
           final sub = q.questions[qi];
@@ -482,7 +821,7 @@ class _AnswerPageState extends State<AnswerPage> {
           return Padding(
             padding: const EdgeInsets.only(bottom: 16),
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text('${qi + 1}. ${sub.question}', style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600, color: Color(0xFF1A1A2E))),
+              Text('${qi + 1}. ${sub.question}', style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600, color: c.text)),
               const SizedBox(height: 8),
               ...List.generate(sub.options.length, (i) {
                 final letter = 'ABCDEFGH'[i];
@@ -493,20 +832,20 @@ class _AnswerPageState extends State<AnswerPage> {
                     onTap: s.submitting ? null : () {
                       userAnswers[qi] = i;
                       s.currentQuestion = q.copyWith(userAnswers: userAnswers);
-                      s.notifyListeners();
+                      s.touch();
                     },
                     borderRadius: BorderRadius.circular(8),
                     child: Container(
                       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                       decoration: BoxDecoration(
-                        color: selected ? _primary.withValues(alpha: 0.08) : Colors.transparent,
+                        color: selected ? c.primaryBgStrong : Colors.transparent,
                         borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: selected ? _primary : const Color(0xFFE5E7EB), width: selected ? 2 : 1),
+                        border: Border.all(color: selected ? highlight : c.chipBorder, width: selected ? 2 : 1),
                       ),
                       child: Row(children: [
-                        Text('$letter.', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: selected ? _primary : Colors.grey.shade500)),
+                        Text('$letter.', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: selected ? highlight : c.textTertiary)),
                         const SizedBox(width: 8),
-                        Expanded(child: Text(sub.options[i], style: TextStyle(fontSize: 13, color: selected ? _primary : const Color(0xFF1A1A2E)))),
+                        Expanded(child: Text(sub.options[i], style: TextStyle(fontSize: 13, color: selected ? highlight : c.text))),
                       ]),
                     ),
                   ),
@@ -521,6 +860,7 @@ class _AnswerPageState extends State<AnswerPage> {
 
   // ===== 操作栏 =====
   Widget _buildActionBar(Question q) {
+    final c = AppColors.of(context);
     final hasAnswer = (q.type == QType.choice && q.userAnswerIdx != null) ||
         (q.type == QType.reading && q.questions.isNotEmpty && q.userAnswers.any((a) => a != null)) ||
         (q.type != QType.choice && q.type != QType.reading && _answerCtrl.text.trim().isNotEmpty);
@@ -568,8 +908,8 @@ class _AnswerPageState extends State<AnswerPage> {
           height: 44,
           child: OutlinedButton.icon(
             style: OutlinedButton.styleFrom(
-              foregroundColor: s.isCurrentFavorite ? _primary : Colors.grey.shade500,
-              side: BorderSide(color: s.isCurrentFavorite ? _primary : Colors.grey.shade300),
+              foregroundColor: s.isCurrentFavorite ? _primary : c.textTertiary,
+              side: BorderSide(color: s.isCurrentFavorite ? _primary : c.chipBorder),
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
             ),
             onPressed: () => s.toggleFavorite(),
@@ -585,8 +925,8 @@ class _AnswerPageState extends State<AnswerPage> {
           height: 36,
           child: OutlinedButton.icon(
             style: OutlinedButton.styleFrom(
-              foregroundColor: Colors.grey.shade600,
-              side: BorderSide(color: Colors.grey.shade300),
+              foregroundColor: c.textSecondary,
+              side: BorderSide(color: c.chipBorder),
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
               padding: const EdgeInsets.symmetric(horizontal: 12),
             ),
@@ -621,44 +961,45 @@ class _AnswerPageState extends State<AnswerPage> {
   Widget _buildGradingResult(Question q, bool isLight) {
     final grading = s.lastGrading;
     if (grading == null) return const SizedBox();
-    final scoreColor = grading.score >= 80 ? _success : grading.score >= 60 ? const Color(0xFFF59E0B) : _danger;
+    final c = AppColors(isLight);
+    final scoreColor = grading.score >= 80 ? c.scoreHigh : grading.score >= 60 ? c.scoreMid : c.scoreLow;
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
-        color: isLight ? Colors.white : const Color(0xFF2A2A40),
+        color: c.card,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: isLight ? const Color(0xFFE8E8F0) : Colors.white12),
+        border: Border.all(color: c.border),
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         // 标题 + 分数
         Row(children: [
-          const Text('AI 批改结果', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: Color(0xFF1A1A2E))),
+          Text('AI 批改结果', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: c.text)),
           const Spacer(),
-          Text('得分：', style: TextStyle(fontSize: 13, color: Colors.grey.shade500)),
+          Text('得分：', style: TextStyle(fontSize: 13, color: c.textTertiary)),
           Text('${grading.score}', style: TextStyle(fontSize: 24, fontWeight: FontWeight.w800, color: scoreColor)),
-          Text('/100', style: TextStyle(fontSize: 13, color: Colors.grey.shade500)),
+          Text('/100', style: TextStyle(fontSize: 13, color: c.textTertiary)),
         ]),
-        const Divider(height: 24),
+        Divider(height: 24, color: c.border),
         // 正确答案
         if (grading.correctAnswer.isNotEmpty) ...[
-          Text('正确答案', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Colors.grey.shade600)),
+          Text('正确答案', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: c.textSecondary)),
           const SizedBox(height: 6),
           Container(
             width: double.infinity,
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
-              color: _success.withValues(alpha: 0.06),
+              color: c.successBg,
               borderRadius: BorderRadius.circular(10),
-              border: Border.all(color: _success.withValues(alpha: 0.2)),
+              border: Border.all(color: c.successBorder),
             ),
-            child: Text(grading.correctAnswer, style: TextStyle(fontSize: 13.5, color: _success, fontWeight: FontWeight.w500)),
+            child: Text(grading.correctAnswer, style: TextStyle(fontSize: 13.5, color: c.scoreHigh, fontWeight: FontWeight.w500)),
           ),
           const SizedBox(height: 16),
         ],
         // 错误分析
         if (grading.errors.isNotEmpty) ...[
-          Text('错误分析', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Colors.grey.shade600)),
+          Text('错误分析', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: c.textSecondary)),
           const SizedBox(height: 8),
           ...List.generate(grading.errors.length, (i) {
             final e = grading.errors[i];
@@ -668,15 +1009,15 @@ class _AnswerPageState extends State<AnswerPage> {
                 width: double.infinity,
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
-                  color: _danger.withValues(alpha: 0.04),
+                  color: c.dangerBg,
                   borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: _danger.withValues(alpha: 0.15)),
+                  border: Border.all(color: c.dangerBorder),
                 ),
                 child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Text('${i + 1}. ${e.item}', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: _danger)),
+                  Text('${i + 1}. ${e.item}', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: c.scoreLow)),
                   if (e.explain.isNotEmpty) ...[
                     const SizedBox(height: 4),
-                    Text(e.explain, style: TextStyle(fontSize: 12.5, color: Colors.grey.shade600, height: 1.5)),
+                    Text(e.explain, style: TextStyle(fontSize: 12.5, color: c.textSecondary, height: 1.5)),
                   ],
                 ]),
               ),
@@ -686,18 +1027,18 @@ class _AnswerPageState extends State<AnswerPage> {
         ],
         // 知识点
         if (grading.knowledge.isNotEmpty) ...[
-          Text('知识点总结', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Colors.grey.shade600)),
+          Text('知识点总结', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: c.textSecondary)),
           const SizedBox(height: 8),
           Wrap(spacing: 8, runSpacing: 8, children: [
             for (final k in grading.knowledge)
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                 decoration: BoxDecoration(
-                  color: _primary.withValues(alpha: 0.06),
+                  color: c.primaryBg,
                   borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: _primary.withValues(alpha: 0.15)),
+                  border: Border.all(color: c.primaryBorder),
                 ),
-                child: Text(k, style: TextStyle(fontSize: 12, color: _primary)),
+                child: Text(k, style: TextStyle(fontSize: 12, color: c.primaryText)),
               ),
           ]),
         ],
@@ -730,6 +1071,8 @@ class _LearnPageState extends State<LearnPage> {
 
   @override
   Widget build(BuildContext context) {
+    final c = AppColors.of(context);
+    final isMixed = _selectedType == 'mixed';
     return SingleChildScrollView(
       padding: const EdgeInsets.all(24),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -761,19 +1104,57 @@ class _LearnPageState extends State<LearnPage> {
           ),
         ]),
         const SizedBox(height: 24),
-        // 04. 题目规模与时间估算
-        _buildCard(
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Row(children: [
-              _buildSectionHeader('04. 题目规模与时间估算'),
-              const Spacer(),
-              Text('预估耗时: ${_estimateTime()}分钟',
-                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: _primary)),
+        // 04. 题目规模与时间估算（综合模拟套卷为固定76题，隐藏滑块）
+        if (!isMixed)
+          _buildCard(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Row(children: [
+                _buildSectionHeader('04. 题目规模与时间估算'),
+                const Spacer(),
+                Text('预估耗时: ${_estimateTime()}',
+                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: c.primaryText)),
+              ]),
+              const SizedBox(height: 16),
+              _buildScaleSliders(),
             ]),
-            const SizedBox(height: 16),
-            _buildScaleSliders(),
-          ]),
-        ),
+          ),
+        if (isMixed)
+          _buildCard(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Row(children: [
+                _buildSectionHeader('04. 全卷信息'),
+                const Spacer(),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: c.primaryBg,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text('考试时间 120 分钟', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: c.primaryText)),
+                ),
+              ]),
+              const SizedBox(height: 14),
+              Container(
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: c.chipUnselected,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Row(children: [
+                  _buildMetricChip('76', '题量', c),
+                  const SizedBox(width: 12),
+                  _buildMetricChip('150', '总分', c),
+                  const SizedBox(width: 12),
+                  _buildMetricChip('7', '题型', c),
+                  const SizedBox(width: 12),
+                  _buildMetricChip('120', '分钟', c),
+                ]),
+              ),
+              const SizedBox(height: 10),
+              Text('题型包含：词汇语法20 + 阅读20 + 完形15 + 补全对话5 + 选词填空10 + 英译汉5 + 写作1',
+                  style: TextStyle(fontSize: 11.5, color: c.textTertiary, height: 1.5)),
+            ]),
+          ),
         const SizedBox(height: 24),
         // 自定义提示
         _buildCard(
@@ -783,12 +1164,14 @@ class _LearnPageState extends State<LearnPage> {
             TextField(
               controller: _customReqCtrl,
               maxLines: 2,
-              style: const TextStyle(fontSize: 13),
+              style: TextStyle(fontSize: 13, color: c.text),
               decoration: InputDecoration(
-                hintText: '例如：要求 50 词以内、中译英方向、侧重商务话题...',
-                hintStyle: TextStyle(fontSize: 12.5, color: Colors.grey.shade400),
+                hintText: isMixed
+                    ? '例如：侧重商务话题、指定写作文体...'
+                    : '例如：要求 50 词以内、中译英方向、侧重商务话题...',
+                hintStyle: TextStyle(fontSize: 12.5, color: c.hintText),
                 filled: true,
-                fillColor: const Color(0xFFF8F6FF),
+                fillColor: c.chipUnselected,
                 border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
                 enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
                 focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: kPrimary, width: 1.5)),
@@ -808,13 +1191,13 @@ class _LearnPageState extends State<LearnPage> {
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
               textStyle: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
             ),
-            onPressed: widget.state.generating ? null : () => _generate(widget.state),
-            child: widget.state.generating
+            onPressed: (widget.state.generating || widget.state.generatingFullExam) ? null : () => _generate(widget.state),
+            child: (widget.state.generating || widget.state.generatingFullExam)
                 ? const SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2.5, color: Colors.white))
-                : const Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-                    Icon(Icons.auto_awesome_rounded, color: Colors.white, size: 20),
-                    SizedBox(width: 8),
-                    Text('生成题目', style: TextStyle(color: Colors.white)),
+                : Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                    Icon(isMixed ? Icons.assignment_rounded : Icons.auto_awesome_rounded, color: Colors.white, size: 20),
+                    const SizedBox(width: 8),
+                    Text(isMixed ? '生成全卷' : '生成题目', style: const TextStyle(color: Colors.white)),
                   ]),
           ),
         ),
@@ -823,28 +1206,95 @@ class _LearnPageState extends State<LearnPage> {
     );
   }
 
+  // ===== 语法学习快捷入口卡片 =====
+  Widget _buildGrammarEntry(AppColors c) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: () => widget.state.setPage(12),
+        borderRadius: BorderRadius.circular(16),
+        child: Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: c.card,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: c.border),
+          ),
+          child: Row(children: [
+            Container(
+              width: 44,
+              height: 44,
+              decoration: BoxDecoration(
+                gradient: c.primaryGradient,
+                borderRadius: BorderRadius.circular(12),
+                boxShadow: [BoxShadow(color: c.primary.withValues(alpha: 0.25), blurRadius: 8, offset: const Offset(0, 2))],
+              ),
+              child: const Icon(Icons.school_rounded, size: 22, color: Colors.white),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text('语法学习', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: c.text)),
+                const SizedBox(height: 3),
+                Text('从零学会专升本语法', style: TextStyle(fontSize: 12, color: c.textTertiary)),
+              ]),
+            ),
+            Icon(Icons.chevron_right_rounded, size: 20, color: c.textTertiary),
+          ]),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMetricChip(String value, String label, AppColors c) {
+    return Expanded(
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 10),
+        decoration: BoxDecoration(
+          color: c.card,
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Column(children: [
+          Text(value, style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800, color: c.primaryText)),
+          const SizedBox(height: 2),
+          Text(label, style: TextStyle(fontSize: 11, color: c.textTertiary)),
+        ]),
+      ),
+    );
+  }
+
   String _estimateTime() {
     final count = _countSlider.round();
-    if (_selectedType == 'reading') return '${(count * 3).clamp(1, 30)}';
-    if (_selectedType == 'writing') return '${(count * 2).clamp(1, 20)}';
-    return '${count.clamp(1, 50)}';
+    int totalSeconds;
+    if (_selectedType == 'reading') {
+      totalSeconds = count * 60; // 每题约1分钟（含阅读短文+3-4道小题）
+    } else if (_selectedType == 'writing') {
+      totalSeconds = count * 40; // 每题约40秒
+    } else {
+      totalSeconds = count * 20; // 每题20秒
+    }
+    if (totalSeconds < 60) return '${totalSeconds}秒';
+    final minutes = (totalSeconds / 60).ceil();
+    return '$minutes分钟';
   }
 
   Widget _buildSectionHeader(String text) {
+    final c = AppColors.of(context);
     return Row(mainAxisSize: MainAxisSize.min, children: [
       Container(width: 8, height: 8, decoration: BoxDecoration(color: _primary, shape: BoxShape.circle)),
       const SizedBox(width: 8),
-      Text(text, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: Color(0xFF4A4A6A))),
+      Text(text, style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: c.text)),
     ]);
   }
 
   Widget _buildCard({required Widget child}) {
+    final c = AppColors.of(context);
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: c.card,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFFE8E8F0)),
+        border: Border.all(color: c.border),
       ),
       child: child,
     );
@@ -888,6 +1338,7 @@ class _LearnPageState extends State<LearnPage> {
 
   // ===== 02. 难度选择 =====
   Widget _buildDifficultyChips() {
+    final c = AppColors.of(context);
     final levels = [
       ('cet4', '四级'),
       ('zsb', '专升本'),
@@ -904,12 +1355,12 @@ class _LearnPageState extends State<LearnPage> {
             duration: const Duration(milliseconds: 200),
             padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
             decoration: BoxDecoration(
-              color: _selectedLevel == l.$1 ? _primary : Colors.white,
+              color: _selectedLevel == l.$1 ? c.chipSelectedBg : c.card,
               borderRadius: BorderRadius.circular(20),
-              border: Border.all(color: _selectedLevel == l.$1 ? _primary : const Color(0xFFE5E7EB)),
-              boxShadow: _selectedLevel == l.$1 ? [BoxShadow(color: _primary.withValues(alpha: 0.2), blurRadius: 8, offset: const Offset(0, 2))] : null,
+              border: Border.all(color: _selectedLevel == l.$1 ? c.chipSelectedBorder : c.chipBorder),
+              boxShadow: _selectedLevel == l.$1 ? [BoxShadow(color: kPrimary.withValues(alpha: 0.1), blurRadius: 12, offset: const Offset(0, 2))] : null,
             ),
-            child: Text(l.$2, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: _selectedLevel == l.$1 ? Colors.white : Colors.grey.shade600)),
+            child: Text(l.$2, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: _selectedLevel == l.$1 ? c.chipSelectedText : c.textSecondary)),
           ),
         ),
     ]);
@@ -917,6 +1368,7 @@ class _LearnPageState extends State<LearnPage> {
 
   // ===== 03. 强化侧重点（多选） =====
   Widget _buildFocusChips() {
+    final c = AppColors.of(context);
     return Wrap(spacing: 10, runSpacing: 10, children: [
       for (final f in _focusAreaOptions)
         InkWell(
@@ -932,11 +1384,11 @@ class _LearnPageState extends State<LearnPage> {
             duration: const Duration(milliseconds: 200),
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
             decoration: BoxDecoration(
-              color: _focusAreas.contains(f.$1) ? _primary.withValues(alpha: 0.1) : const Color(0xFFF8F6FF),
+              color: _focusAreas.contains(f.$1) ? c.chipSelectedBg : c.chipUnselected,
               borderRadius: BorderRadius.circular(20),
-              border: Border.all(color: _focusAreas.contains(f.$1) ? _primary : const Color(0xFFE5E7EB)),
+              border: Border.all(color: _focusAreas.contains(f.$1) ? c.chipSelectedBorder : c.chipBorder),
             ),
-            child: Text(f.$2, style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w500, color: _focusAreas.contains(f.$1) ? _primary : Colors.grey.shade600)),
+            child: Text(f.$2, style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w500, color: _focusAreas.contains(f.$1) ? c.chipSelectedText : c.textSecondary)),
           ),
         ),
     ]);
@@ -944,6 +1396,7 @@ class _LearnPageState extends State<LearnPage> {
 
   // ===== 04. 题目规模滑块 =====
   Widget _buildScaleSliders() {
+    final c = AppColors.of(context);
     final count = _countSlider.round();
     final wordCount = _wordCountSlider.round();
     return Row(children: [
@@ -952,13 +1405,13 @@ class _LearnPageState extends State<LearnPage> {
         width: 80,
         padding: const EdgeInsets.symmetric(vertical: 12),
         decoration: BoxDecoration(
-          color: const Color(0xFFF8F6FF),
+          color: c.chipUnselected,
           borderRadius: BorderRadius.circular(12),
         ),
         child: Column(children: [
-          Text('$count', style: TextStyle(fontSize: 28, fontWeight: FontWeight.w800, color: _primary)),
+          Text('$count', style: TextStyle(fontSize: 28, fontWeight: FontWeight.w800, color: c.primaryText)),
           const SizedBox(height: 2),
-          Text('题量', style: TextStyle(fontSize: 12, color: Colors.grey.shade500)),
+          Text('题量', style: TextStyle(fontSize: 12, color: c.textTertiary)),
         ]),
       ),
       const SizedBox(width: 20),
@@ -1000,6 +1453,7 @@ class _LearnPageState extends State<LearnPage> {
     required ValueChanged<double> onChanged,
     required Map<double, String> marks,
   }) {
+    final c = AppColors.of(context);
     return Column(children: [
       SliderTheme(
         data: SliderThemeData(
@@ -1007,10 +1461,10 @@ class _LearnPageState extends State<LearnPage> {
           thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 9),
           overlayShape: SliderComponentShape.noOverlay,
           activeTrackColor: _primary,
-          inactiveTrackColor: const Color(0xFFE5E7EB),
+          inactiveTrackColor: c.sliderInactive,
           thumbColor: _primary,
           activeTickMarkColor: _primary,
-          inactiveTickMarkColor: const Color(0xFFE5E7EB),
+          inactiveTickMarkColor: c.sliderInactive,
         ),
         child: Slider(
           value: value,
@@ -1025,7 +1479,7 @@ class _LearnPageState extends State<LearnPage> {
         padding: const EdgeInsets.symmetric(horizontal: 4),
         child: Row(children: [
           for (final entry in marks.entries) ...[
-            Expanded(child: Text(entry.value, textAlign: TextAlign.center, style: TextStyle(fontSize: 10.5, color: Colors.grey.shade400))),
+            Expanded(child: Text(entry.value, textAlign: TextAlign.center, style: TextStyle(fontSize: 10.5, color: c.textTertiary))),
           ],
         ]),
       ),
@@ -1035,6 +1489,38 @@ class _LearnPageState extends State<LearnPage> {
   Future<void> _generate(AppState s) async {
     s.selectedType = _selectedType;
     s.selectedLevel = _selectedLevel;
+
+    // 综合模拟套卷：先弹出确认对话框，确认后进入考场并逐批生成
+    if (_selectedType == 'mixed') {
+      final customText = _customReqCtrl.text.trim();
+      // 弹出确认对话框
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('综合模拟套卷'),
+          content: const Text('进入考场后，AI将逐批生成题目（每次约10题），共76题。\n\n是否进入考场？'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('进入考场'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true) return;
+      
+      final ok = await s.generateFullExam(customReq: customText);
+      if (!mounted) return;
+      if (!ok) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('进入考场失败，请检查 API 配置后重试'), behavior: SnackBarBehavior.floating));
+      }
+      return;
+    }
+
     final actualCount = _countSlider.round();
     final wordCount = _wordCountSlider.round();
 
@@ -1077,6 +1563,7 @@ class _TypeCardV2 extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final c = AppColors.of(context);
     return InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(16),
@@ -1084,9 +1571,9 @@ class _TypeCardV2 extends StatelessWidget {
         duration: const Duration(milliseconds: 200),
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
-          color: selected ? const Color(0xFFF5F3FF) : Colors.white,
+          color: selected ? c.primaryBg : c.card,
           borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: selected ? _primary : const Color(0xFFE5E7EB), width: selected ? 2 : 1),
+          border: Border.all(color: selected ? c.chipSelectedBorder : c.chipBorder, width: selected ? 2 : 1),
           boxShadow: selected ? [BoxShadow(color: kPrimary.withValues(alpha: 0.1), blurRadius: 12, offset: const Offset(0, 2))] : null,
         ),
         child: Stack(children: [
@@ -1101,9 +1588,9 @@ class _TypeCardV2 extends StatelessWidget {
               child: Icon(icon, size: 20, color: iconColor),
             ),
             const SizedBox(height: 12),
-            Text(title, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: selected ? kPrimary : const Color(0xFF1A1A2E))),
+            Text(title, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: selected ? c.primaryText : c.text)),
             const SizedBox(height: 4),
-            Text(subtitle, style: TextStyle(fontSize: 11, color: Colors.grey.shade500)),
+            Text(subtitle, style: TextStyle(fontSize: 11, color: c.textTertiary)),
           ]),
           if (isMixed)
             Positioned(
@@ -1112,10 +1599,10 @@ class _TypeCardV2 extends StatelessWidget {
               child: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                 decoration: BoxDecoration(
-                  color: kPrimary.withValues(alpha: 0.1),
+                  color: c.primaryBg,
                   borderRadius: BorderRadius.circular(6),
                 ),
-                child: const Text('MIX', style: TextStyle(fontSize: 9, fontWeight: FontWeight.w700, color: kPrimary)),
+                child: Text('MIX', style: TextStyle(fontSize: 9, fontWeight: FontWeight.w700, color: c.primaryText)),
               ),
             ),
           if (selected && !isMixed)
@@ -1142,10 +1629,74 @@ class _Tag extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isLight = Theme.of(context).brightness == Brightness.light;
+    // 深色模式下给文字提亮一些，对比度更好
+    final effectiveColor = isLight ? color : Color.lerp(color, Colors.white, 0.25) ?? color;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-      decoration: BoxDecoration(color: color.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(6)),
-      child: Text(text, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: color)),
+      decoration: BoxDecoration(color: effectiveColor.withValues(alpha: isLight ? 0.12 : 0.22), borderRadius: BorderRadius.circular(6)),
+      child: Text(text, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: effectiveColor)),
     );
+  }
+}
+
+/// 词汇剖析气泡中的收藏按钮
+class _WordBookButton extends StatefulWidget {
+  final String word;
+  final String translation;
+  final bool added;
+  final AppState state;
+  final VoidCallback? onChanged;
+
+  const _WordBookButton({
+    required this.word,
+    required this.translation,
+    required this.added,
+    required this.state,
+    this.onChanged,
+  });
+
+  @override
+  State<_WordBookButton> createState() => _WordBookButtonState();
+}
+
+class _WordBookButtonState extends State<_WordBookButton> {
+  late bool _added = widget.added;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppColors.of(context);
+    final addedColor = c.scoreHigh;
+    final unaddedColor = c.primaryText;
+    return SizedBox(
+      width: double.infinity,
+      height: 28,
+      child: TextButton.icon(
+        onPressed: _toggle,
+        icon: Icon(
+          _added ? Icons.bookmark_rounded : Icons.bookmark_add_outlined,
+          size: 14,
+          color: _added ? addedColor : unaddedColor,
+        ),
+        label: Text(
+          _added ? '已加入生词本' : '加入生词本',
+          style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: _added ? addedColor : unaddedColor),
+        ),
+        style: TextButton.styleFrom(
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+        ),
+      ),
+    );
+  }
+
+  void _toggle() {
+    if (_added) {
+      widget.state.removeFromWordBook(widget.word);
+    } else {
+      widget.state.addToWordBook(widget.word, widget.translation);
+    }
+    setState(() => _added = !_added);
+    widget.onChanged?.call();
   }
 }

@@ -6,8 +6,9 @@ import 'package:flutter/material.dart';
 import '../models.dart';
 import '../services/api_service.dart' as api;
 import '../services/dict_service.dart';
+import '../services/tts_service.dart';
 import '../state.dart';
-import '../theme_colors.dart' show kPrimary, kSuccess, kDanger;
+import '../theme_colors.dart' show kPrimary, kSuccess, kDanger, kDarkCard, AppColors;
 import 'learn_page.dart' show AppScope;
 
 const _primary = kPrimary;
@@ -27,12 +28,13 @@ class _WrongBookPageState extends State<WrongBookPage> {
   @override
   Widget build(BuildContext context) {
     final s = AppScope.of(context);
+    final c = AppColors.of(context);
     final list = s.wrongQuestions.where((w) => _filter == 'all' || (_filter == 'pending' && !w.mastered) || (_filter == 'mastered' && w.mastered)).toList();
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Padding(
         padding: const EdgeInsets.all(20),
         child: Row(children: [
-          const Expanded(child: Text('错题本', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold))),
+          Expanded(child: Text('错题本', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: c.text))),
           TextButton(onPressed: () {
             if (s.wrongQuestions.isEmpty) return;
             s.clearWrongQuestions();
@@ -74,12 +76,13 @@ class _WrongBookPageState extends State<WrongBookPage> {
   }
 
   Widget _buildCard(WrongItem w, AppState s) {
+    final c = AppColors.of(context);
     final q = w.question;
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(14),
-        side: BorderSide(color: w.mastered ? _success.withValues(alpha: 0.4) : Colors.transparent),
+        side: BorderSide(color: w.mastered ? c.successBorder : Colors.transparent),
       ),
       child: Padding(
         padding: const EdgeInsets.all(14),
@@ -88,23 +91,23 @@ class _WrongBookPageState extends State<WrongBookPage> {
             _Tag(text: qTypeName(q.type), color: _primary),
             const SizedBox(width: 6),
             _Tag(text: levelName(q.level), color: Colors.orange),
-            if (w.mastered) ...[const SizedBox(width: 6), _Tag(text: '已掌握', color: _success)],
+            if (w.mastered) ...[const SizedBox(width: 6), _Tag(text: '已掌握', color: c.scoreHigh)],
             const Spacer(),
-            Text('${w.score}分', style: TextStyle(fontWeight: FontWeight.bold, color: w.score >= 60 ? _success : _danger)),
+            Text('${w.score}分', style: TextStyle(fontWeight: FontWeight.bold, color: w.score >= 60 ? c.scoreHigh : c.scoreLow)),
           ]),
           const SizedBox(height: 8),
-          Text(w.question.text.isEmpty ? w.question.chinese : w.question.text, style: const TextStyle(fontSize: 13.5, height: 1.6)),
+          Text(w.question.text.isEmpty ? w.question.chinese : w.question.text, style: TextStyle(fontSize: 13.5, height: 1.6, color: c.text)),
           if (w.userAnswer.isNotEmpty) ...[
             const SizedBox(height: 6),
-            Text('你的作答：${w.userAnswer}', style: TextStyle(fontSize: 12.5, color: Colors.grey.shade700)),
+            Text('你的作答：${w.userAnswer}', style: TextStyle(fontSize: 12.5, color: c.textSecondary)),
           ],
           if (w.correctAnswer.isNotEmpty) ...[
             const SizedBox(height: 4),
-            Text('正确答案：${w.correctAnswer}', style: TextStyle(fontSize: 12.5, color: _success)),
+            Text('正确答案：${w.correctAnswer}', style: TextStyle(fontSize: 12.5, color: c.scoreHigh)),
           ],
           const SizedBox(height: 8),
           Row(children: [
-            Text('错误 ${w.wrongCount} 次 · ${_fmtTime(w.lastWrongTime)}', style: TextStyle(fontSize: 11.5, color: Colors.grey)),
+            Text('错误 ${w.wrongCount} 次 · ${_fmtTime(w.lastWrongTime)}', style: TextStyle(fontSize: 11.5, color: c.textTertiary)),
             const Spacer(),
             TextButton(onPressed: () => s.retryWrong(w), child: const Text('重新练习', style: TextStyle(fontSize: 12.5))),
             TextButton(onPressed: () => s.toggleMastered(w.id), child: Text(w.mastered ? '标记未掌握' : '标记掌握', style: const TextStyle(fontSize: 12.5))),
@@ -123,10 +126,13 @@ class _Tag extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isLight = Theme.of(context).brightness == Brightness.light;
+    // 深色模式下给文字提亮一些，对比度更好
+    final effectiveColor = isLight ? color : Color.lerp(color, Colors.white, 0.25) ?? color;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-      decoration: BoxDecoration(color: color.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(5)),
-      child: Text(text, style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.w600, color: color)),
+      decoration: BoxDecoration(color: effectiveColor.withValues(alpha: isLight ? 0.12 : 0.22), borderRadius: BorderRadius.circular(5)),
+      child: Text(text, style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.w600, color: effectiveColor)),
     );
   }
 }
@@ -138,21 +144,22 @@ class _Stat extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final c = AppColors.of(context);
     return Container(
       padding: const EdgeInsets.fromLTRB(14, 12, 18, 12),
       decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surface,
+        color: c.card,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Theme.of(context).colorScheme.outlineVariant.withValues(alpha: 0.4)),
-        boxShadow: [BoxShadow(color: _primary.withValues(alpha: 0.04), blurRadius: 12, offset: const Offset(0, 3))],
+        border: Border.all(color: c.border),
+        boxShadow: [BoxShadow(color: c.shadowLight, blurRadius: 12, offset: const Offset(0, 3))],
       ),
       child: Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
         Container(width: 3, height: 30, decoration: BoxDecoration(color: _primary, borderRadius: BorderRadius.circular(2))),
         const SizedBox(width: 12),
         Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(value, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: _primary, height: 1.1)),
+          Text(value, style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: c.primaryText, height: 1.1)),
           const SizedBox(height: 2),
-          Text(label, style: TextStyle(fontSize: 11.5, color: Colors.grey.shade600)),
+          Text(label, style: TextStyle(fontSize: 11.5, color: c.textSecondary)),
         ]),
       ]),
     );
@@ -168,22 +175,23 @@ class _EmptyState extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final c = AppColors.of(context);
     return Center(
       child: Column(mainAxisSize: MainAxisSize.min, children: [
         Container(
           width: 64,
           height: 64,
           decoration: BoxDecoration(
-            color: _primary.withValues(alpha: 0.08),
+            color: c.primaryBg,
             shape: BoxShape.circle,
           ),
-          child: Icon(icon, size: 30, color: _primary.withValues(alpha: 0.55)),
+          child: Icon(icon, size: 30, color: c.primaryText.withValues(alpha: 0.7)),
         ),
         const SizedBox(height: 16),
-        Text(title, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: Colors.grey)),
+        Text(title, style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: c.textSecondary)),
         if (subtitle != null) ...[
           const SizedBox(height: 6),
-          Text(subtitle!, style: TextStyle(fontSize: 12.5, color: Colors.grey.shade400)),
+          Text(subtitle!, style: TextStyle(fontSize: 12.5, color: c.textTertiary)),
         ],
       ]),
     );
@@ -208,6 +216,7 @@ class ReportPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final s = AppScope.of(context);
+    final c = AppColors.of(context);
     final records = s.studyRecords;
     final total = records.length;
     final sum = records.fold<int>(0, (acc, r) => acc + r.score);
@@ -219,7 +228,7 @@ class ReportPage extends StatelessWidget {
       Padding(
         padding: const EdgeInsets.all(20),
         child: Row(children: [
-          const Expanded(child: Text('学习报告', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold))),
+          Expanded(child: Text('学习报告', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: c.text))),
           TextButton(onPressed: s.studyRecords.isEmpty ? null : () => s.clearStudyRecords(), child: const Text('清空记录')),
         ]),
       ),
@@ -235,13 +244,91 @@ class ReportPage extends StatelessWidget {
           _Stat(label: '学习时长', value: totalSec >= 60 ? '${(totalSec / 60).round()}分钟' : '${totalSec}秒'),
         ]),
       ),
+      // 模拟考试成绩（交卷后持久化的最近一次成绩 + 历史摘要）
+      if (s.currentExamResult != null || s.examHistory.isNotEmpty)
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 20, 20, 0),
+          child: Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Row(children: [
+                  Icon(Icons.assignment_turned_in_rounded, size: 16, color: c.primaryText),
+                  const SizedBox(width: 6),
+                  Text('模拟考试成绩', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: c.text)),
+                  const Spacer(),
+                  if (s.currentExamResult != null)
+                    TextButton(onPressed: () => s.setPage(11), child: const Text('查看成绩分析', style: TextStyle(fontSize: 12.5))),
+                ]),
+                if (s.currentExamResult != null) ...[
+                  const SizedBox(height: 10),
+                  Builder(builder: (context) {
+                    final r = s.currentExamResult!;
+                    final good = r.rank == 'A' || r.rank == 'B';
+                    return Row(children: [
+                      Container(
+                        width: 40,
+                        height: 40,
+                        decoration: BoxDecoration(
+                          color: good ? c.successBg : c.dangerBg,
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        alignment: Alignment.center,
+                        child: Text(r.rank, style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: good ? c.scoreHigh : c.scoreLow)),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                          Text(r.paper.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: c.text)),
+                          const SizedBox(height: 2),
+                          Text(
+                            '${_fmtTime(r.submittedAt)} · 用时 ${r.durationSec >= 60 ? '${(r.durationSec / 60).round()}分钟' : '${r.durationSec}秒'}',
+                            style: TextStyle(fontSize: 11.5, color: c.textTertiary),
+                          ),
+                        ]),
+                      ),
+                      Text('${r.totalScore}', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: good ? c.scoreHigh : c.scoreLow)),
+                      Text(' / ${r.maxScore}分', style: TextStyle(fontSize: 12, color: c.textTertiary)),
+                    ]);
+                  }),
+                ],
+                if (s.examHistory.isNotEmpty) ...[
+                  const SizedBox(height: 12),
+                  Divider(height: 1, color: c.divider),
+                  const SizedBox(height: 8),
+                  Text('历史成绩（最近 ${s.examHistory.length} 次）', style: TextStyle(fontSize: 12, color: c.textTertiary)),
+                  const SizedBox(height: 4),
+                  for (final h in s.examHistory.take(10))
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 4),
+                      child: Row(children: [
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                          decoration: BoxDecoration(
+                            color: (h.rank == 'A' || h.rank == 'B') ? c.successBg : ((h.rank == 'C') ? c.card : c.dangerBg),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Text(h.rank, style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: (h.rank == 'A' || h.rank == 'B') ? c.scoreHigh : ((h.rank == 'C') ? c.primaryText : c.scoreLow))),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(child: Text(h.title.isEmpty ? '模拟全卷' : h.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 12.5, color: c.text))),
+                        Text('${h.totalScore}/${h.maxScore}', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: c.text)),
+                        const SizedBox(width: 12),
+                        Text(_fmtTime(h.submittedAt), style: TextStyle(fontSize: 11.5, color: c.textTertiary)),
+                      ]),
+                    ),
+                ],
+              ]),
+            ),
+          ),
+        ),
       Padding(
         padding: const EdgeInsets.all(20),
         child: Card(
           child: Padding(
             padding: const EdgeInsets.all(16),
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              const Text('最近 7 天作答趋势', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+              Text('最近 7 天作答趋势', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: c.text)),
               const SizedBox(height: 14),
               SizedBox(height: 140, child: _TrendChart(records: records)),
             ]),
@@ -254,10 +341,10 @@ class ReportPage extends StatelessWidget {
           child: Padding(
             padding: const EdgeInsets.all(16),
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              const Text('最近作答记录', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+              Text('最近作答记录', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: c.text)),
               const SizedBox(height: 8),
               if (records.isEmpty)
-                Padding(padding: const EdgeInsets.all(20), child: Center(child: Text('暂无作答记录，快去练习吧！', style: TextStyle(color: Colors.grey.shade400, fontSize: 13))))
+                Padding(padding: const EdgeInsets.all(20), child: Center(child: Text('暂无作答记录，快去练习吧！', style: TextStyle(color: c.textTertiary, fontSize: 13))))
               else
                 for (final r in records.take(20))
                   Padding(
@@ -265,16 +352,16 @@ class ReportPage extends StatelessWidget {
                     child: Row(children: [
                       Container(
                         padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                        decoration: BoxDecoration(color: (r.isWrong ? _danger : _success).withValues(alpha: 0.12), borderRadius: BorderRadius.circular(4)),
-                        child: Text(r.isWrong ? '错' : '对', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: r.isWrong ? _danger : _success)),
+                        decoration: BoxDecoration(color: (r.isWrong ? c.dangerBg : c.successBg), borderRadius: BorderRadius.circular(4)),
+                        child: Text(r.isWrong ? '错' : '对', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: r.isWrong ? c.scoreLow : c.scoreHigh)),
                       ),
                       const SizedBox(width: 8),
-                      Text(qTypeName(r.type), style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
+                      Text(qTypeName(r.type), style: TextStyle(fontSize: 12, color: c.textSecondary)),
                       const SizedBox(width: 8),
-                      Expanded(child: Text(r.text, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12.5))),
-                      Text('${r.score}分', style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600)),
+                      Expanded(child: Text(r.text, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 12.5, color: c.text))),
+                      Text('${r.score}分', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: c.text)),
                       const SizedBox(width: 12),
-                      Text(_fmtTime(r.timestamp), style: TextStyle(fontSize: 11.5, color: Colors.grey)),
+                      Text(_fmtTime(r.timestamp), style: TextStyle(fontSize: 11.5, color: c.textTertiary)),
                     ]),
                   ),
             ]),
@@ -291,6 +378,7 @@ class _TrendChart extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final c = AppColors.of(context);
     final days = <({String label, int count})>[];
     final now = DateTime.now();
     for (var i = 6; i >= 0; i--) {
@@ -305,7 +393,7 @@ class _TrendChart extends StatelessWidget {
       for (final d in days)
         Expanded(
           child: Column(mainAxisAlignment: MainAxisAlignment.end, children: [
-            Text(d.count > 0 ? '${d.count}题' : '', style: const TextStyle(fontSize: 10, color: Colors.grey)),
+            Text(d.count > 0 ? '${d.count}题' : '', style: TextStyle(fontSize: 10, color: c.textTertiary)),
             const SizedBox(height: 4),
             Container(
               width: 24,
@@ -313,13 +401,15 @@ class _TrendChart extends StatelessWidget {
               decoration: BoxDecoration(
                 gradient: d.count == 0
                     ? null
-                    : const LinearGradient(begin: Alignment.bottomCenter, end: Alignment.topCenter, colors: [Color(0xFF4F6EF7), Color(0xFF8B5CF6)]),
-                color: d.count == 0 ? Colors.grey.shade300 : null,
+                    : (c.isLight
+                        ? const LinearGradient(begin: Alignment.bottomCenter, end: Alignment.topCenter, colors: [Color(0xFF4F6EF7), Color(0xFF8B5CF6)])
+                        : const LinearGradient(begin: Alignment.bottomCenter, end: Alignment.topCenter, colors: [Color(0xFF7C8FF7), Color(0xFFB794F6)])),
+                color: d.count == 0 ? c.sliderInactive : null,
                 borderRadius: const BorderRadius.vertical(top: Radius.circular(4)),
               ),
             ),
             const SizedBox(height: 4),
-            Text(d.label, style: const TextStyle(fontSize: 10, color: Colors.grey)),
+            Text(d.label, style: TextStyle(fontSize: 10, color: c.textTertiary)),
           ]),
         ),
     ]);
@@ -341,11 +431,12 @@ class _WordBookPageState extends State<WordBookPage> {
   @override
   Widget build(BuildContext context) {
     final s = AppScope.of(context);
+    final c = AppColors.of(context);
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Padding(
         padding: const EdgeInsets.all(20),
         child: Row(children: [
-          const Expanded(child: Text('生词本', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold))),
+          Expanded(child: Text('生词本', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: c.text))),
           if (s.wordbook.isNotEmpty)
             OutlinedButton(onPressed: () => setState(() { _reviewing = true; _flashIdx = 0; }), child: const Text('开始复习')),
           const SizedBox(width: 8),
@@ -374,15 +465,30 @@ class _WordBookPageState extends State<WordBookPage> {
                     itemCount: s.wordbook.length,
                     itemBuilder: (ctx, i) {
                       final w = s.wordbook[i];
+                      final ph = DictService.lookup(w.word)?.phonetic ?? '';
                       return Card(
                         margin: const EdgeInsets.only(bottom: 8),
                         child: ListTile(
                           dense: true,
-                          title: Text(w.word, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
-                          subtitle: Text(w.translation, style: const TextStyle(fontSize: 12.5)),
+                          title: Row(children: [
+                            Text(w.word, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: c.text)),
+                            if (ph.isNotEmpty) ...[
+                              const SizedBox(width: 8),
+                              Flexible(
+                                child: Text('/$ph/', style: TextStyle(fontSize: 12, color: c.textTertiary), overflow: TextOverflow.ellipsis),
+                              ),
+                            ],
+                          ]),
+                          subtitle: Text(w.translation, style: TextStyle(fontSize: 12.5, color: c.textSecondary)),
                           trailing: Row(mainAxisSize: MainAxisSize.min, children: [
-                            Text('复习 ${w.reviewCount} 次', style: TextStyle(fontSize: 11.5, color: Colors.grey)),
-                            IconButton(icon: const Icon(Icons.close, size: 16), onPressed: () { s.removeFromWordBook(w.word); }),
+                            Text('复习 ${w.reviewCount} 次', style: TextStyle(fontSize: 11.5, color: c.textTertiary)),
+                            if (TtsService.instance.available)
+                              IconButton(
+                                icon: Icon(Icons.volume_up, size: 16, color: c.primaryText),
+                                tooltip: '发音',
+                                onPressed: () => TtsService.instance.speakWord(w.word),
+                              ),
+                            IconButton(icon: Icon(Icons.close, size: 16, color: c.textTertiary), onPressed: () { s.removeFromWordBook(w.word); }),
                           ]),
                         ),
                       );
@@ -393,16 +499,18 @@ class _WordBookPageState extends State<WordBookPage> {
   }
 
   Widget _buildFlashcard(AppState s) {
+    final c = AppColors.of(context);
     if (_flashIdx >= s.wordbook.length) {
       return Center(
         child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-          const Text('复习完成！', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+          Text('复习完成！', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: c.text)),
           const SizedBox(height: 10),
           FilledButton(onPressed: () => setState(() => _reviewing = false), child: const Text('返回列表')),
         ]),
       );
     }
     final w = s.wordbook[_flashIdx];
+    final ph = DictService.lookup(w.word)?.phonetic ?? '';
     return Center(
       child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
         Card(
@@ -410,16 +518,29 @@ class _WordBookPageState extends State<WordBookPage> {
           child: Padding(
             padding: const EdgeInsets.all(40),
             child: Column(children: [
-              Text('${_flashIdx + 1}/${s.wordbook.length}', style: TextStyle(fontSize: 12, color: Colors.grey)),
+              Text('${_flashIdx + 1}/${s.wordbook.length}', style: TextStyle(fontSize: 12, color: c.textTertiary)),
               const SizedBox(height: 16),
-              Text(w.word, style: const TextStyle(fontSize: 26, fontWeight: FontWeight.bold)),
+              Text(w.word, style: TextStyle(fontSize: 26, fontWeight: FontWeight.bold, color: c.text)),
+              if (ph.isNotEmpty) ...[
+                const SizedBox(height: 6),
+                Text('/$ph/', style: TextStyle(fontSize: 14, color: c.textTertiary)),
+              ],
               const SizedBox(height: 12),
-              Text(w.translation, style: const TextStyle(fontSize: 15)),
+              Text(w.translation, style: TextStyle(fontSize: 15, color: c.textSecondary)),
             ]),
           ),
         ),
         const SizedBox(height: 20),
         Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+          if (TtsService.instance.available)
+            Padding(
+              padding: const EdgeInsets.only(right: 12),
+              child: IconButton(
+                onPressed: () => TtsService.instance.speakWord(w.word),
+                icon: Icon(Icons.volume_up, color: c.primaryText),
+                tooltip: '发音',
+              ),
+            ),
           OutlinedButton(
             onPressed: () {
               s.wordbook[_flashIdx] = WordBookItem(
@@ -455,6 +576,7 @@ class _RecordsPageState extends State<RecordsPage> {
   @override
   Widget build(BuildContext context) {
     final s = AppScope.of(context);
+    final c = AppColors.of(context);
     final entries = s.recordedWords.entries.toList();
     final fromCount = <String>{};
     for (final e in entries) {
@@ -468,7 +590,7 @@ class _RecordsPageState extends State<RecordsPage> {
       Padding(
         padding: const EdgeInsets.all(20),
         child: Row(children: [
-          const Expanded(child: Text('答题记录', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold))),
+          Expanded(child: Text('答题记录', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: c.text))),
           FilledButton(
             style: FilledButton.styleFrom(backgroundColor: _primary),
             onPressed: _generating ? null : () => _generateFromWords(s),
@@ -483,11 +605,11 @@ class _RecordsPageState extends State<RecordsPage> {
       Padding(
         padding: const EdgeInsets.symmetric(horizontal: 20),
         child: Row(children: [
-          Text('总单词 ${entries.length}', style: const TextStyle(fontSize: 13)),
+          Text('总单词 ${entries.length}', style: TextStyle(fontSize: 13, color: c.textSecondary)),
           const SizedBox(width: 20),
-          Text('已选 ${s.recordsSelected.length}', style: const TextStyle(fontSize: 13)),
+          Text('已选 ${s.recordsSelected.length}', style: TextStyle(fontSize: 13, color: c.textSecondary)),
           const SizedBox(width: 20),
-          Text('来自 $fromCount 道题', style: const TextStyle(fontSize: 13)),
+          Text('来自 $fromCount 道题', style: TextStyle(fontSize: 13, color: c.textSecondary)),
         ]),
       ),
       Padding(
@@ -495,7 +617,7 @@ class _RecordsPageState extends State<RecordsPage> {
         child: Row(children: [
           Expanded(
             child: TextField(
-              decoration: const InputDecoration(hintText: '搜索单词...', isDense: true, border: OutlineInputBorder()),
+              decoration: InputDecoration(hintText: '搜索单词...', isDense: true, border: OutlineInputBorder(), hintStyle: TextStyle(color: c.inputHint)),
               onChanged: (v) => setState(() => _search = v),
             ),
           ),
@@ -539,7 +661,7 @@ class _RecordsPageState extends State<RecordsPage> {
                     margin: const EdgeInsets.only(bottom: 6),
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(12),
-                      side: BorderSide(color: checked ? _primary.withValues(alpha: 0.6) : Colors.transparent),
+                      side: BorderSide(color: checked ? c.primaryBorder : Colors.transparent),
                     ),
                     child: ListTile(
                       dense: true,
@@ -555,8 +677,8 @@ class _RecordsPageState extends State<RecordsPage> {
                           setState(() {});
                         },
                       ),
-                      title: Text(e.key, style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600)),
-                      subtitle: Text('出现 ${e.value.count} 次 · 来自 ${e.value.sources.length} 道题', style: const TextStyle(fontSize: 11.5)),
+                      title: Text(e.key, style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600, color: c.text)),
+                      subtitle: Text('出现 ${e.value.count} 次 · 来自 ${e.value.sources.length} 道题', style: TextStyle(fontSize: 11.5, color: c.textTertiary)),
                     ),
                   );
                 },
@@ -601,6 +723,7 @@ class _RecordsPageState extends State<RecordsPage> {
       systemPrompt,
       config: s.apiConfig,
       maxTokens: 8192,
+      extraParams: api.ApiService.noThinkingParams(s.apiConfig.model),
     );
     setState(() => _generating = false);
     if (reply != null) {
@@ -630,34 +753,82 @@ class DictionaryPage extends StatefulWidget {
 class _DictionaryPageState extends State<DictionaryPage> {
   final TextEditingController _ctrl = TextEditingController();
   String? _result;
+  String? _foundWord; // 本地词库命中的单词（结构化展示）
+  DictEntry? _foundEntry;
   bool _searching = false;
+  List<String> _collocations = [];
+  List<String> _synonyms = [];
+  List<Map<String, String>> _examples = []; // [{en, zh}]
+  bool _loadingExtras = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // 提前初始化 TTS，就绪后刷新以显示发音按钮
+    TtsService.instance.init().then((_) {
+      if (mounted) setState(() {});
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
     final s = AppScope.of(context);
+    final c = AppColors.of(context);
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Padding(
-        padding: const EdgeInsets.all(20),
+        padding: const EdgeInsets.fromLTRB(20, 20, 20, 0),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          const Text('单词查询', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+          Text('单词查询', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: c.text)),
           const SizedBox(height: 4),
-          const Text('输入英文或中文查翻译。英文优先本地词库（10000+ 词），中文走 AI 实时翻译', style: TextStyle(fontSize: 12, color: Colors.grey)),
+          Text('英文优先本地词库（10000+ 词），中文走 AI 实时翻译', style: TextStyle(fontSize: 12, color: c.textTertiary)),
           const SizedBox(height: 14),
-          Row(children: [
-            Expanded(
-              child: TextField(
-                controller: _ctrl,
-                decoration: const InputDecoration(hintText: '输入英文单词或中文词语...', isDense: true, border: OutlineInputBorder()),
-                onSubmitted: (_) => _search(s),
+          Container(
+            decoration: BoxDecoration(
+              color: c.cardAlt,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: c.border),
+            ),
+            child: Row(children: [
+              const SizedBox(width: 14),
+              Icon(Icons.search_rounded, size: 20, color: c.textTertiary),
+              const SizedBox(width: 8),
+              Expanded(
+                child: TextField(
+                  controller: _ctrl,
+                  style: TextStyle(color: c.text),
+                  decoration: InputDecoration(
+                    hintText: '输入英文单词或中文词语...',
+                    isDense: true,
+                    filled: true,
+                    fillColor: c.cardAlt,
+                    border: InputBorder.none,
+                    enabledBorder: InputBorder.none,
+                    focusedBorder: InputBorder.none,
+                    hintStyle: TextStyle(color: c.inputHint),
+                    suffixIcon: _ctrl.text.isNotEmpty
+                        ? IconButton(
+                            icon: Icon(Icons.cancel_rounded, size: 18, color: c.textTertiary),
+                            onPressed: () {
+                              _ctrl.clear();
+                              setState(() { _foundEntry = null; _foundWord = null; _result = null; });
+                            },
+                          )
+                        : null,
+                  ),
+                  onSubmitted: (_) => _search(s),
+                  onChanged: (_) => setState(() {}),
+                ),
               ),
-            ),
-            const SizedBox(width: 10),
-            FilledButton(
-              style: FilledButton.styleFrom(backgroundColor: _primary),
-              onPressed: _searching ? null : () => _search(s),
-              child: const Text('查询'),
-            ),
-          ]),
+              Padding(
+                padding: const EdgeInsets.only(right: 6),
+                child: FilledButton(
+                  style: FilledButton.styleFrom(backgroundColor: _primary, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
+                  onPressed: _searching ? null : () => _search(s),
+                  child: const Text('查询'),
+                ),
+              ),
+            ]),
+          ),
         ]),
       ),
       Expanded(child: _buildResult(s)),
@@ -665,73 +836,353 @@ class _DictionaryPageState extends State<DictionaryPage> {
   }
 
   Widget _buildResult(AppState s) {
+    final c = AppColors.of(context);
     if (_searching) {
       return Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
         const SizedBox(width: 28, height: 28, child: CircularProgressIndicator(strokeWidth: 3, color: _primary)),
         const SizedBox(height: 12),
-        Text('查询中...', style: TextStyle(fontSize: 13, color: Colors.grey.shade500)),
+        Text('查询中...', style: TextStyle(fontSize: 13, color: c.textTertiary)),
       ]));
     }
-    if (_result == null) {
+    if (_result == null && _foundEntry == null) {
       return const _EmptyState(icon: Icons.search_rounded, title: '输入单词开始查询', subtitle: '英文优先匹配本地词库，中文走 AI 翻译');
     }
+    final entry = _foundEntry;
+    final word = _foundWord;
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 20),
+      padding: const EdgeInsets.only(bottom: 20, left: 20, right: 20),
       child: Card(
+        color: c.cardAlt,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        elevation: 0,
         child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(_result!, style: const TextStyle(fontSize: 14, height: 1.7)),
-            const SizedBox(height: 10),
-            Row(children: [
-              TextButton.icon(
-                onPressed: () {
-                  final word = _ctrl.text.trim().toLowerCase();
-                  if (word.isNotEmpty) {
-                    final entry = DictService.lookup(word);
-                    s.addToWordBook(word, entry?.translation ?? '');
-                    setState(() {});
-                  }
-                },
-                icon: const Icon(Icons.star_outline, size: 16),
-                label: const Text('加入生词本', style: TextStyle(fontSize: 12.5)),
-              ),
-            ]),
-          ]),
+          padding: const EdgeInsets.all(20),
+          child: entry != null && word != null
+              ? Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  // 左侧：单词信息
+                  Expanded(
+                    flex: 5,
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Row(children: [
+                        Flexible(
+                          child: Text(word, style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: c.text), overflow: TextOverflow.ellipsis),
+                        ),
+                        if (TtsService.instance.available)
+                          Padding(
+                            padding: const EdgeInsets.only(left: 8),
+                            child: IconButton(
+                              icon: Icon(Icons.volume_up_rounded, size: 22, color: _primary),
+                              tooltip: '发音',
+                              onPressed: () => TtsService.instance.speakWord(word),
+                            ),
+                          ),
+                      ]),
+                      if (entry.phonetic.isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 4),
+                          child: Text('/${entry.phonetic}/', style: TextStyle(fontSize: 15, color: c.textTertiary)),
+                        ),
+                      const SizedBox(height: 16),
+                      if (entry.pos.isNotEmpty) _InfoRow(label: '词性', value: entry.pos, c: c),
+                      if (entry.translation.isNotEmpty) _InfoRow(label: '释义', value: entry.translation, c: c),
+                      if (entry.other.isNotEmpty) _InfoRow(label: '补充', value: entry.other, c: c),
+                      const SizedBox(height: 16),
+                      Divider(height: 1, color: c.divider),
+                      const SizedBox(height: 12),
+                      Text('例句', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: c.text)),
+                      const SizedBox(height: 8),
+                      if (_loadingExtras)
+                        const Padding(
+                          padding: EdgeInsets.symmetric(vertical: 8),
+                          child: SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
+                        )
+                      else if (_examples.isEmpty)
+                        Text('暂无例句', style: TextStyle(fontSize: 13, color: c.textTertiary))
+                      else
+                        ..._examples.map((ex) => Column(
+                              children: [
+                                _ExampleItem(en: ex['en'] ?? '', zh: ex['zh'] ?? '', c: c),
+                                const SizedBox(height: 8),
+                              ],
+                            )),
+                      const SizedBox(height: 16),
+                      SizedBox(
+                        width: double.infinity,
+                        child: OutlinedButton.icon(
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: _primary,
+                            side: BorderSide(color: _primary.withValues(alpha: 0.3)),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                          ),
+                          onPressed: () {
+                            final w = word.toLowerCase();
+                            s.addToWordBook(w, entry.translation);
+                            setState(() {});
+                          },
+                          icon: const Icon(Icons.star_outline_rounded, size: 18),
+                          label: const Text('加入生词本'),
+                        ),
+                      ),
+                    ]),
+                  ),
+                  // 右侧分隔线
+                  Container(width: 1, margin: const EdgeInsets.symmetric(horizontal: 20), color: c.divider),
+                  // 右侧：搭配与同义词
+                  Expanded(
+                    flex: 5,
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Text('常见搭配', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: c.text)),
+                      const SizedBox(height: 10),
+                      if (_loadingExtras)
+                        const Padding(
+                          padding: EdgeInsets.symmetric(vertical: 8),
+                          child: SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
+                        )
+                      else
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: _collocations.isEmpty
+                              ? [_Chip(text: '暂无', c: null)]
+                              : _collocations.map((col) => _Chip(text: col, c: c)).toList(),
+                        ),
+                      const SizedBox(height: 20),
+                      Text('同义词', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: c.text)),
+                      const SizedBox(height: 10),
+                      if (_loadingExtras)
+                        const Padding(
+                          padding: EdgeInsets.symmetric(vertical: 8),
+                          child: SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
+                        )
+                      else
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: _synonyms.isEmpty
+                              ? [_Chip(text: '暂无', c: null)]
+                              : _synonyms.map((syn) => _Chip(text: syn, c: c)).toList(),
+                        ),
+                    ]),
+                  ),
+                ])
+              : Text(_result ?? '', style: TextStyle(fontSize: 14, height: 1.7, color: c.text)),
         ),
       ),
+    );
+  }
+
+  List<String> _buildCollocations(String word) {
+    final map = <String, List<String>>{
+      'with': ['with you', 'with him', 'with her', 'with it', 'with them'],
+      'go': ['go home', 'go to school', 'go shopping', 'go out'],
+      'make': ['make a decision', 'make progress', 'make friends', 'make sense'],
+      'take': ['take action', 'take care', 'take place', 'take time'],
+      'get': ['get up', 'get along', 'get ready', 'get used to'],
+      'have': ['have a look', 'have fun', 'have trouble', 'have to'],
+      'do': ['do homework', 'do exercise', 'do well', 'do one\'s best'],
+      'come': ['come true', 'come up', 'come back', 'come from'],
+      'look': ['look at', 'look for', 'look after', 'look forward to'],
+      'put': ['put on', 'put off', 'put up', 'put down'],
+    };
+    return map[word.toLowerCase()] ?? ['搭配 1', '搭配 2', '搭配 3'];
+  }
+
+  List<String> _buildSynonyms(String word) {
+    final map = <String, List<String>>{
+      'with': ['along with', 'together with', 'accompanied by'],
+      'go': ['proceed', 'move', 'travel', 'depart'],
+      'make': ['create', 'produce', 'build', 'construct'],
+      'take': ['grab', 'seize', 'acquire', 'obtain'],
+      'get': ['obtain', 'receive', 'acquire', 'gain'],
+      'have': ['possess', 'own', 'hold', 'contain'],
+      'do': ['perform', 'execute', 'accomplish', 'achieve'],
+      'come': ['arrive', 'approach', 'appear', 'emerge'],
+      'look': ['gaze', 'stare', 'glance', 'observe'],
+      'put': ['place', 'set', 'lay', 'position'],
+    };
+    return map[word.toLowerCase()] ?? ['同义词 1', '同义词 2', '同义词 3'];
+  }
+
+  Widget _InfoRow({required String label, required String value, required AppColors c}) {
+    // 将字面量 \n 替换为实际换行
+    final displayValue = value.replaceAll(r'\n', '\n');
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        SizedBox(width: 50, child: Text('$label：', style: TextStyle(fontSize: 14, color: c.textSecondary))),
+        Expanded(child: Text(displayValue, style: TextStyle(fontSize: 14, color: c.text))),
+      ]),
+    );
+  }
+
+  Widget _ExampleItem({required String en, required String zh, required AppColors c}) {
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text(en, style: TextStyle(fontSize: 13.5, color: c.text, height: 1.5)),
+      Text(zh, style: TextStyle(fontSize: 12.5, color: c.textTertiary, height: 1.4)),
+    ]);
+  }
+
+  Widget _Chip({required String text, required AppColors? c}) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: c?.primaryBg ?? const Color(0xFFF0F0F0),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Text(text, style: TextStyle(fontSize: 12, color: c?.textSecondary ?? const Color(0xFF888888))),
     );
   }
 
   Future<void> _search(AppState s) async {
     final query = _ctrl.text.trim();
     if (query.isEmpty) return;
-    setState(() => _searching = true);
+    setState(() {
+      _searching = true;
+      _foundEntry = null;
+      _foundWord = null;
+      _result = null;
+      _collocations = [];
+      _synonyms = [];
+      _loadingExtras = false;
+    });
     // 英文 → 本地词库
     if (RegExp(r'^[a-zA-Z\s\-]+$').hasMatch(query)) {
       final words = query.toLowerCase().split(RegExp(r'\s+')).where((w) => w.isNotEmpty).toList();
       if (words.length == 1) {
         final entry = DictService.lookup(words.first);
         if (entry != null) {
-          _result = '${words.first}\n\n词性：${entry.pos}\n释义：${entry.translation}${entry.other.isNotEmpty ? '\n补充：${entry.other}' : ''}';
+          _foundWord = words.first;
+          _foundEntry = entry;
           setState(() => _searching = false);
+          // AI 获取搭配和同义词
+          if (s.apiConfig.ready) {
+            _fetchWordExtras(s, words.first);
+          }
           return;
         }
       }
     }
-    // 中文 → AI 翻译
-    final prompt = '你是英语词典。请将下面的中文词语翻译为英文，并给出词性和释义。\n' +
-        '内容：$query\n' +
-        '请返回格式：\n英文：\n词性：\n释义：\n只返回以上内容，不要其他。';
+    // 英文不在本地词库 或 中文 → AI 查词（结构化）
+    final isChinese = !RegExp(r'^[a-zA-Z\s\-]+$').hasMatch(query);
+    final aiPrompt = isChinese
+        ? '将中文"$query"翻译为英文单词。必须返回 JSON：{"word":"英文单词","phonetic":"音标","pos":"词性(如 noun/verb)","translation":"中文释义","other":"补充"}。只返回 JSON，不要其他内容。'
+        : '给出英文单词 "$query" 的音标、词性、中文释义。必须返回 JSON：{"word":"$query","phonetic":"音标","pos":"词性","translation":"中文释义","other":"补充"}。只返回 JSON，不要其他内容。';
     final reply = await api.ApiService.callAI(
       [
-        {'role': 'user', 'content': '请翻译并解释'}
+        {'role': 'user', 'content': aiPrompt}
       ],
-      prompt,
+      '你是英语词典。只返回 JSON，不要其他内容。',
       config: s.apiConfig,
+      maxTokens: 256,
+      extraParams: api.ApiService.noThinkingParams(s.apiConfig.model),
     );
-    _result = reply ?? '本地词库未命中，且 AI 查询失败，请检查 API 配置';
+    if (reply != null) {
+      final obj = api.ApiService.extractJsonObject(reply);
+      if (obj != null) {
+        final w = (obj['word'] ?? '').toString().trim();
+        if (w.isNotEmpty) {
+          _foundWord = w.toLowerCase();
+          _foundEntry = DictEntry(
+            phonetic: (obj['phonetic'] ?? '').toString(),
+            pos: (obj['pos'] ?? '').toString(),
+            translation: (obj['translation'] ?? '').toString(),
+            other: (obj['other'] ?? '').toString(),
+          );
+          setState(() => _searching = false);
+          if (s.apiConfig.ready) {
+            _fetchWordExtras(s, _foundWord!);
+          }
+          return;
+        }
+      }
+      // Fallback: 解析纯文本格式 "英文：xxx\n词性：xxx\n释义：xxx"
+      final parsed = _parsePlainDictReply(reply);
+      if (parsed != null) {
+        _foundWord = parsed['word']?.toLowerCase();
+        _foundEntry = DictEntry(
+          phonetic: parsed['phonetic'] ?? '',
+          pos: parsed['pos'] ?? '',
+          translation: parsed['translation'] ?? '',
+          other: parsed['other'] ?? '',
+        );
+        setState(() => _searching = false);
+        if (s.apiConfig.ready && _foundWord != null) {
+          _fetchWordExtras(s, _foundWord!);
+        }
+        return;
+      }
+    }
+    _result = '查询失败，请检查 API 配置';
     setState(() => _searching = false);
+  }
+
+  /// 解析 AI 返回的纯文本格式（非 JSON）
+  /// 支持格式：英文：xxx / 词性：xxx / 释义：xxx / 音标：xxx / 补充：xxx
+  Map<String, String>? _parsePlainDictReply(String text) {
+    final lines = text.split(RegExp(r'\n+'));
+    String? word, phonetic, pos, translation, other;
+    for (final line in lines) {
+      final trimmed = line.trim();
+      if (trimmed.isEmpty) continue;
+      // 匹配 "key：value" 或 "key:value"
+      final m = RegExp(r'^(英文|word|音标|phonetic|词性|pos|释义|translation|补充|other)\s*[:：]\s*(.+)$', caseSensitive: false).firstMatch(trimmed);
+      if (m != null) {
+        final key = m.group(1)!.toLowerCase();
+        final val = m.group(2)!.trim();
+        if (key == '英文' || key == 'word') word = val;
+        else if (key == '音标' || key == 'phonetic') phonetic = val;
+        else if (key == '词性' || key == 'pos') pos = val;
+        else if (key == '释义' || key == 'translation') translation = val;
+        else if (key == '补充' || key == 'other') other = val;
+      }
+    }
+    if (word == null && translation == null) return null;
+    return {
+      'word': word ?? '',
+      'phonetic': phonetic ?? '',
+      'pos': pos ?? '',
+      'translation': translation ?? '',
+      'other': other ?? '',
+    };
+  }
+
+  /// AI 获取单词的搭配、同义词和例句（关闭思考模式）
+  Future<void> _fetchWordExtras(AppState s, String word) async {
+    if (!mounted) return;
+    setState(() => _loadingExtras = true);
+    final prompt = '给出单词 "$word" 的 5 个常见搭配、3 个同义词和 2 个例句。返回 JSON：{"collocations":["..."],"synonyms":["..."],"examples":[{"en":"...","zh":"..."}]}';
+    final reply = await api.ApiService.callAI(
+      [
+        {'role': 'user', 'content': prompt}
+      ],
+      '你是英语词典助手。只返回 JSON，不要其他内容。',
+      config: s.apiConfig,
+      maxTokens: 512,
+      extraParams: api.ApiService.noThinkingParams(s.apiConfig.model),
+    );
+    if (!mounted) return;
+    if (reply != null) {
+      final obj = api.ApiService.extractJsonObject(reply);
+      if (obj != null) {
+        final cols = (obj['collocations'] as List?)?.whereType<String>().toList() ?? [];
+        final syns = (obj['synonyms'] as List?)?.whereType<String>().toList() ?? [];
+        final examples = (obj['examples'] as List?)
+            ?.whereType<Map>()
+            .map((e) => {
+                  'en': (e['en'] ?? '').toString(),
+                  'zh': (e['zh'] ?? '').toString(),
+                })
+            .toList() ?? [];
+        setState(() {
+          _collocations = cols;
+          _synonyms = syns;
+          _examples = examples;
+          _loadingExtras = false;
+        });
+        return;
+      }
+    }
+    setState(() => _loadingExtras = false);
   }
 }
 
@@ -750,20 +1201,15 @@ class QuestionListPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final s = AppScope.of(context);
+    final c = AppColors.of(context);
     return Padding(
       padding: const EdgeInsets.all(24),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
-            '题库',
-            style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
-          ),
+          Text('题库', style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: c.text)),
           const SizedBox(height: 16),
-          Text(
-            '已生成 ${s.questions.length} 道题目',
-            style: TextStyle(fontSize: 14, color: Colors.grey.shade600),
-          ),
+          Text('已生成 ${s.questions.length} 道题目', style: TextStyle(fontSize: 14, color: c.textSecondary)),
           const SizedBox(height: 24),
           Expanded(
             child: s.questions.isEmpty
@@ -771,17 +1217,11 @@ class QuestionListPanel extends StatelessWidget {
                     child: Column(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        Icon(Icons.library_books_outlined, size: 64, color: Colors.grey.shade300),
+                        Icon(Icons.library_books_outlined, size: 64, color: c.textTertiary),
                         const SizedBox(height: 16),
-                        Text(
-                          '暂无题目',
-                          style: TextStyle(fontSize: 16, color: Colors.grey.shade500),
-                        ),
+                        Text('暂无题目', style: TextStyle(fontSize: 16, color: c.textSecondary)),
                         const SizedBox(height: 8),
-                        Text(
-                          '请前往"学习"页面生成题目',
-                          style: TextStyle(fontSize: 13, color: Colors.grey.shade400),
-                        ),
+                        Text('请前往"学习"页面生成题目', style: TextStyle(fontSize: 13, color: c.textTertiary)),
                       ],
                     ),
                   )
@@ -793,26 +1233,19 @@ class QuestionListPanel extends StatelessWidget {
                         margin: const EdgeInsets.only(bottom: 12),
                         child: ListTile(
                           leading: CircleAvatar(
-                            backgroundColor: kPrimary.withValues(alpha: 0.1),
-                            child: Text(
-                              '${index + 1}',
-                              style: TextStyle(color: kPrimary, fontWeight: FontWeight.bold),
-                            ),
+                            backgroundColor: c.primaryBg,
+                            child: Text('${index + 1}', style: TextStyle(color: c.primaryText, fontWeight: FontWeight.bold)),
                           ),
-                          title: Text(
-                            q.text,
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                          subtitle: Text(
-                            '${qTypeName(q.type)} · ${q.level}',
-                            style: TextStyle(fontSize: 12, color: Colors.grey.shade500),
-                          ),
-                          trailing: Icon(Icons.chevron_right, color: Colors.grey.shade400),
+                          title: Text(q.type == QType.translation ? q.english : q.text, maxLines: 2, overflow: TextOverflow.ellipsis, style: TextStyle(color: c.text)),
+                          subtitle: Text('${qTypeName(q.type)} · ${q.level}', style: TextStyle(fontSize: 12, color: c.textTertiary)),
+                          trailing: Icon(Icons.chevron_right, color: c.textTertiary),
                           onTap: () {
-                            s.generatedQuestionIdx = index;
-                            // 切换到答题页面
-                            Navigator.of(context).pop();
+                            // 先切换页面，再加载题目
+                            s.setPage(1);
+                            // 延迟加载确保 AnswerPage 已初始化并捕获当前 questionSeq
+                            Future.delayed(const Duration(milliseconds: 50), () {
+                              s.loadQuestionFromBank(index);
+                            });
                           },
                         ),
                       );
@@ -876,6 +1309,7 @@ class _DictationPageState extends State<DictationPage> {
 
   // ===== 开始页面 =====
   Widget _buildStartPage(AppState s) {
+    final c = AppColors.of(context);
     return Center(
       child: SingleChildScrollView(
         padding: const EdgeInsets.all(30),
@@ -887,20 +1321,20 @@ class _DictationPageState extends State<DictationPage> {
               Container(
                 width: 44, height: 44,
                 decoration: BoxDecoration(
-                  gradient: const LinearGradient(colors: [kPrimary, Color(0xFF9F7AEA)]),
+                  gradient: c.primaryGradient,
                   borderRadius: BorderRadius.circular(12),
                 ),
                 child: const Icon(Icons.edit_note_rounded, color: Colors.white, size: 24),
               ),
               const SizedBox(width: 14),
-              const Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text('单词默写', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
-                Text('从专升本词库随机抽词，系统自动批改', style: TextStyle(fontSize: 12, color: Colors.grey)),
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text('单词默写', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: c.text)),
+                Text('从专升本词库随机抽词，系统自动批改', style: TextStyle(fontSize: 12, color: c.textTertiary)),
               ]),
             ]),
             const SizedBox(height: 28),
             // 模式选择
-            const Text('默写模式', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+            Text('默写模式', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: c.text)),
             const SizedBox(height: 10),
             SegmentedButton<String>(
               segments: const [
@@ -912,7 +1346,7 @@ class _DictationPageState extends State<DictationPage> {
             ),
             const SizedBox(height: 20),
             // 题量
-            const Text('题量', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+            Text('题量', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: c.text)),
             const SizedBox(height: 10),
             Row(children: [
               for (final n in const [5, 10, 20, 30])
@@ -922,8 +1356,9 @@ class _DictationPageState extends State<DictationPage> {
                     label: Text('$n 题'),
                     selected: _count == n,
                     onSelected: (_) => setState(() => _count = n),
-                    selectedColor: kPrimary.withValues(alpha: 0.15),
-                    checkmarkColor: kPrimary,
+                    selectedColor: c.primaryBg,
+                    checkmarkColor: c.primaryText,
+                    backgroundColor: c.chipUnselected,
                   ),
                 ),
             ]),
@@ -932,8 +1367,8 @@ class _DictationPageState extends State<DictationPage> {
             CheckboxListTile(
               value: _autoAdvance,
               onChanged: (v) => setState(() => _autoAdvance = v ?? true),
-              title: const Text('答完自动跳转下一题', style: TextStyle(fontSize: 13)),
-              subtitle: const Text('答对后 1 秒自动进入下一题', style: TextStyle(fontSize: 11)),
+              title: Text('答完自动跳转下一题', style: TextStyle(fontSize: 13, color: c.text)),
+              subtitle: Text('答对后 1 秒自动进入下一题', style: TextStyle(fontSize: 11, color: c.textTertiary)),
               contentPadding: EdgeInsets.zero,
               controlAffinity: ListTileControlAffinity.leading,
             ),
@@ -961,6 +1396,7 @@ class _DictationPageState extends State<DictationPage> {
 
   // ===== 答题页面 =====
   Widget _buildAnsweringPage(AppState s, WordToken w) {
+    final c = AppColors.of(context);
     final progress = s.dictationQueue.isEmpty ? 0.0 : (s.dictationIdx / s.dictationQueue.length);
     final isZh2En = _mode == 'zh2en';
     final promptText = isZh2En ? '请翻译成英文' : '请写出中文释义';
@@ -971,7 +1407,7 @@ class _DictationPageState extends State<DictationPage> {
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         // 进度条
         Row(children: [
-          Text('${s.dictationIdx + 1} / ${s.dictationQueue.length}', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: kPrimary)),
+          Text('${s.dictationIdx + 1} / ${s.dictationQueue.length}', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: c.primaryText)),
           const SizedBox(width: 12),
           Expanded(
             child: ClipRRect(
@@ -979,17 +1415,17 @@ class _DictationPageState extends State<DictationPage> {
               child: LinearProgressIndicator(
                 value: progress,
                 minHeight: 6,
-                backgroundColor: kPrimary.withValues(alpha: 0.1),
-                valueColor: AlwaysStoppedAnimation(kPrimary),
+                backgroundColor: c.progressBg,
+                valueColor: AlwaysStoppedAnimation(c.primaryText),
               ),
             ),
           ),
           const SizedBox(width: 12),
-          Text('答对 ${s.dictationCorrect}', style: TextStyle(fontSize: 13, color: _success, fontWeight: FontWeight.w600)),
+          Text('答对 ${s.dictationCorrect}', style: TextStyle(fontSize: 13, color: c.scoreHigh, fontWeight: FontWeight.w600)),
         ]),
         const SizedBox(height: 24),
         // 提示
-        Text(promptText, style: TextStyle(fontSize: 13, color: Colors.grey.shade500)),
+        Text(promptText, style: TextStyle(fontSize: 13, color: c.textTertiary)),
         const SizedBox(height: 8),
         // 题目卡片
         Container(
@@ -999,14 +1435,16 @@ class _DictationPageState extends State<DictationPage> {
             gradient: LinearGradient(
               begin: Alignment.topLeft,
               end: Alignment.bottomRight,
-              colors: [kPrimary.withValues(alpha: 0.08), Colors.white],
+              colors: c.isLight
+                  ? [kPrimary.withValues(alpha: 0.08), Colors.white]
+                  : [kPrimary.withValues(alpha: 0.2), kDarkCard],
             ),
             borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: kPrimary.withValues(alpha: 0.15)),
+            border: Border.all(color: c.primaryBorder),
           ),
           child: Text(
             isZh2En ? w.translation : w.word,
-            style: TextStyle(fontSize: 26, fontWeight: FontWeight.bold, color: const Color(0xFF1A1A2E)),
+            style: TextStyle(fontSize: 26, fontWeight: FontWeight.bold, color: c.text),
           ),
         ),
         const SizedBox(height: 20),
@@ -1015,14 +1453,14 @@ class _DictationPageState extends State<DictationPage> {
           controller: _ansCtrl,
           focusNode: _focusNode,
           autofocus: true,
-          style: const TextStyle(fontSize: 16),
+          style: TextStyle(fontSize: 16, color: c.text),
           decoration: InputDecoration(
             hintText: hintText,
-            hintStyle: TextStyle(fontSize: 14, color: Colors.grey.shade400),
+            hintStyle: TextStyle(fontSize: 14, color: c.inputHint),
             border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
             focusedBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(12),
-              borderSide: BorderSide(color: _feedback != null ? (_isCorrect ? _success : _danger) : kPrimary, width: 2),
+              borderSide: BorderSide(color: _feedback != null ? (_isCorrect ? c.scoreHigh : c.scoreLow) : kPrimary, width: 2),
             ),
             suffixIcon: _feedback == null
                 ? IconButton(onPressed: () => _submit(s), icon: const Icon(Icons.check_circle_outline, size: 22))
@@ -1044,27 +1482,27 @@ class _DictationPageState extends State<DictationPage> {
             width: double.infinity,
             padding: const EdgeInsets.all(14),
             decoration: BoxDecoration(
-              color: _isCorrect ? _success.withValues(alpha: 0.08) : _danger.withValues(alpha: 0.08),
+              color: _isCorrect ? c.successBg : c.dangerBg,
               borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: _isCorrect ? _success.withValues(alpha: 0.3) : _danger.withValues(alpha: 0.3)),
+              border: Border.all(color: _isCorrect ? c.successBorder : c.dangerBorder),
             ),
             child: Row(children: [
-              Icon(_isCorrect ? Icons.check_circle_rounded : Icons.cancel_rounded, color: _isCorrect ? _success : _danger, size: 22),
+              Icon(_isCorrect ? Icons.check_circle_rounded : Icons.cancel_rounded, color: _isCorrect ? c.scoreHigh : c.scoreLow, size: 22),
               const SizedBox(width: 10),
               Expanded(
                 child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                   Text(
                     _isCorrect ? '回答正确！' : '回答错误',
-                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: _isCorrect ? _success : _danger),
+                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: _isCorrect ? c.scoreHigh : c.scoreLow),
                   ),
                   if (!_isCorrect || _showAnswer) ...[
                     const SizedBox(height: 4),
-                    Text('正确答案：${w.word}  ${w.translation}', style: TextStyle(fontSize: 13, color: Colors.grey.shade600)),
+                    Text('正确答案：${w.word}  ${w.translation}', style: TextStyle(fontSize: 13, color: c.textSecondary)),
                   ],
                 ]),
               ),
               if (_autoAdvance && _isCorrect)
-                Text('自动跳转...', style: TextStyle(fontSize: 11, color: Colors.grey.shade400)),
+                Text('自动跳转...', style: TextStyle(fontSize: 11, color: c.textTertiary)),
             ]),
           ),
         ],
@@ -1093,7 +1531,7 @@ class _DictationPageState extends State<DictationPage> {
             onPressed: () {
               setState(() => _showAnswer = !_showAnswer);
             },
-            child: Text(_showAnswer ? '隐藏答案' : '显示答案', style: TextStyle(color: Colors.grey.shade500)),
+            child: Text(_showAnswer ? '隐藏答案' : '显示答案', style: TextStyle(color: c.textTertiary)),
           ),
         ]),
       ]),
@@ -1102,14 +1540,14 @@ class _DictationPageState extends State<DictationPage> {
 
   // ===== 完成页面 =====
   Widget _buildFinishPage(AppState s) {
+    final c = AppColors.of(context);
     final correct = s.dictationCorrect;
     final total = s.dictationTotal;
     final rate = total == 0 ? 0.0 : correct / total;
     final good = rate >= 0.8;
-    final wrongWords = s.dictationQueue.where((w) {
-      // 找到答错的词
-      return true; // 简化：显示所有词
-    }).toList();
+
+    final goodColor = c.scoreHigh;
+    final midColor = c.scoreMid;
 
     return Center(
       child: SingleChildScrollView(
@@ -1120,26 +1558,26 @@ class _DictationPageState extends State<DictationPage> {
             Container(
               width: 90, height: 90,
               decoration: BoxDecoration(
-                gradient: LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight, colors: good ? [_success, kPrimary] : [kPrimary, Colors.orange]),
+                gradient: LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight, colors: good ? [goodColor, kPrimary] : [kPrimary, midColor]),
                 shape: BoxShape.circle,
-                boxShadow: [BoxShadow(color: (good ? _success : kPrimary).withValues(alpha: 0.35), blurRadius: 24, offset: const Offset(0, 8))],
+                boxShadow: [BoxShadow(color: (good ? goodColor : kPrimary).withValues(alpha: 0.35), blurRadius: 24, offset: const Offset(0, 8))],
               ),
               child: Icon(good ? Icons.emoji_events_rounded : Icons.school_rounded, color: Colors.white, size: 44),
             ),
             const SizedBox(height: 20),
-            const Text('本轮默写完成', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+            Text('本轮默写完成', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: c.text)),
             const SizedBox(height: 12),
             Row(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.baseline, children: [
-              Text('$correct', style: const TextStyle(fontSize: 36, fontWeight: FontWeight.w800, color: kPrimary)),
-              Text(' / $total', style: const TextStyle(fontSize: 18, color: Colors.grey)),
+              Text('$correct', style: TextStyle(fontSize: 36, fontWeight: FontWeight.w800, color: c.primaryText)),
+              Text(' / $total', style: TextStyle(fontSize: 18, color: c.textTertiary)),
               const SizedBox(width: 12),
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                 decoration: BoxDecoration(
-                  color: (good ? _success : Colors.orange).withValues(alpha: 0.12),
+                  color: good ? c.successBg : c.warningBg,
                   borderRadius: BorderRadius.circular(8),
                 ),
-                child: Text('正确率 ${(rate * 100).round()}%', style: TextStyle(fontSize: 14, color: good ? _success : Colors.orange, fontWeight: FontWeight.w700)),
+                child: Text('正确率 ${(rate * 100).round()}%', style: TextStyle(fontSize: 14, color: good ? c.scoreHigh : c.warning, fontWeight: FontWeight.w700)),
               ),
             ]),
             const SizedBox(height: 28),

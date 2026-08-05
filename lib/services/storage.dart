@@ -51,6 +51,7 @@ class Storage {
         key: _get('apiKey', ''),
         model: _get('apiModel', 'gpt-5.1'),
         temperature: _get('apiTemp', 'default'),
+        fullUrl: _getBool('apiFullUrl', false),
       );
 
   static void saveApiConfig(ApiConfig c) {
@@ -58,6 +59,7 @@ class Storage {
     _set('apiKey', c.key);
     _set('apiModel', c.model);
     _set('apiTemp', c.temperature);
+    _setBool('apiFullUrl', c.fullUrl);
   }
 
   static bool loadChatIndependent() => _getBool('chatApiIndependent', false);
@@ -68,6 +70,7 @@ class Storage {
         key: _get('chatApiKey', ''),
         model: _get('chatApiModel', 'gpt-5.1'),
         temperature: _get('chatApiTemp', 'default'),
+        fullUrl: _getBool('chatApiFullUrl', false),
       );
 
   static void saveChatConfig(ApiConfig c) {
@@ -75,6 +78,7 @@ class Storage {
     _set('chatApiKey', c.key);
     _set('chatApiModel', c.model);
     _set('chatApiTemp', c.temperature);
+    _setBool('chatApiFullUrl', c.fullUrl);
   }
 
   static bool loadChatShowReasoning() => _getBool('chatShowReasoning', false);
@@ -83,8 +87,60 @@ class Storage {
   static bool loadChatStream() => _getBool('chatStream', true);
   static void saveChatStream(bool v) => _setBool('chatStream', v);
 
+  // ===== 多配置记忆（配置库） =====
+  static List<ApiProfile> loadApiProfiles() {
+    final s = _get('apiProfiles', '');
+    if (s.isEmpty) return [];
+    try {
+      final list = jsonDecode(s) as List;
+      return list.map((e) => ApiProfile.fromJson(e as Map<String, dynamic>)).toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
+  static void saveApiProfiles(List<ApiProfile> list) {
+    _set('apiProfiles', jsonEncode(list.map((e) => e.toJson()).toList()));
+  }
+
+  static List<ApiProfile> loadChatProfiles() {
+    final s = _get('chatProfiles', '');
+    if (s.isEmpty) return [];
+    try {
+      final list = jsonDecode(s) as List;
+      return list.map((e) => ApiProfile.fromJson(e as Map<String, dynamic>)).toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
+  static void saveChatProfiles(List<ApiProfile> list) {
+    _set('chatProfiles', jsonEncode(list.map((e) => e.toJson()).toList()));
+  }
+
+  static int loadChatProfileIdx() {
+    try {
+      return _p?.getInt('chatProfileIdx') ?? -1;
+    } catch (_) {
+      return -1;
+    }
+  }
+
+  static void saveChatProfileIdx(int v) {
+    try {
+      _p?.setInt('chatProfileIdx', v);
+    } catch (_) {}
+  }
+
   static bool loadDarkMode() => _getBool('theme_dark', false);
   static void saveDarkMode(bool v) => _setBool('theme_dark', v);
+
+  // ===== 首次启动引导 =====
+  static bool loadOnboardingDone() => _getBool('onboardingDone', false);
+  static void saveOnboardingDone(bool v) => _setBool('onboardingDone', v);
+
+  static String loadAnalysisMode() => _get('analysisMode', 'normal');
+  static void saveAnalysisMode(String v) => _set('analysisMode', v);
 
   static bool loadFullscreen() => _getBool('fullscreen', false);
   static void saveFullscreen(bool v) => _setBool('fullscreen', v);
@@ -195,6 +251,53 @@ class Storage {
     _set('recordsSelected', jsonEncode(sel.toList()));
   }
 
+  // ===== 全卷模拟考试（最近一次试卷 + 成绩 + 历史摘要） =====
+  /// 最近一次交卷的试卷（供成绩页/复盘回看）
+  static FullExamPaper? loadLastExamPaper() {
+    final s = _get('examLastPaper', '');
+    if (s.isEmpty) return null;
+    try {
+      return FullExamPaper.fromJson(jsonDecode(s) as Map<String, dynamic>);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static void saveLastExamPaper(FullExamPaper p) {
+    _set('examLastPaper', jsonEncode(p.toJson()));
+  }
+
+  /// 最近一次交卷成绩（含试卷与答题卡快照）
+  static ExamResult? loadLastExamResult() {
+    final s = _get('examLastResult', '');
+    if (s.isEmpty) return null;
+    try {
+      return ExamResult.fromJson(jsonDecode(s) as Map<String, dynamic>);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static void saveLastExamResult(ExamResult r) {
+    _set('examLastResult', jsonEncode(r.toJson()));
+  }
+
+  /// 考试成绩历史摘要（最多 10 条，新→旧）
+  static List<ExamHistoryEntry> loadExamHistory() {
+    final s = _get('examHistory', '');
+    if (s.isEmpty) return [];
+    try {
+      final list = jsonDecode(s) as List;
+      return list.map((e) => ExamHistoryEntry.fromJson(e as Map<String, dynamic>)).toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
+  static void saveExamHistory(List<ExamHistoryEntry> list) {
+    _set('examHistory', jsonEncode(list.map((e) => e.toJson()).toList()));
+  }
+
   // ===== 词汇分析缓存 =====
   static List<WordToken>? readAnalysisCache(String key) {
     final s = _get('wa_$key', '');
@@ -211,6 +314,26 @@ class Storage {
     _set('wa_$key', jsonEncode(tokens.map((e) => e.toJson()).toList()));
   }
 
+  // ===== 语法学习进度 =====
+  static Map<String, GrammarProgress> loadGrammarProgress() {
+    final s = _get('grammarProgress', '');
+    if (s.isEmpty) return {};
+    try {
+      final obj = jsonDecode(s) as Map<String, dynamic>;
+      final out = <String, GrammarProgress>{};
+      obj.forEach((k, v) => out[k] = GrammarProgress.fromJson(v as Map<String, dynamic>));
+      return out;
+    } catch (_) {
+      return {};
+    }
+  }
+
+  static void saveGrammarProgress(Map<String, GrammarProgress> obj) {
+    final out = <String, dynamic>{};
+    obj.forEach((k, v) => out[k] = v.toJson());
+    _set('grammarProgress', jsonEncode(out));
+  }
+
   // ===== 备份 / 导入 =====
   static String buildBackupJson() {
     final data = {
@@ -218,13 +341,21 @@ class Storage {
       'apiKey': _get('apiKey', ''),
       'apiModel': _get('apiModel', ''),
       'apiTemp': _get('apiTemp', ''),
+      'apiFullUrl': _getBool('apiFullUrl', false),
       'uiMode': _get('uiMode', ''),
+      'themeId': _get('themeId', ''),
+      'lastLightTheme': _get('lastLightTheme', ''),
+      'onboardingDone': _getBool('onboardingDone', false) ? 'true' : 'false',
       'favorites': _get('favorites', ''),
       'wrongQuestions': _get('wrongQuestions', ''),
       'studyRecords': _get('studyRecords', ''),
       'wordbook': _get('wordbook', ''),
       'recordedWords': _get('recordedWords', ''),
       'recordsSelected': _get('recordsSelected', ''),
+      'examLastPaper': _get('examLastPaper', ''),
+      'examLastResult': _get('examLastResult', ''),
+      'examHistory': _get('examHistory', ''),
+      'grammarProgress': _get('grammarProgress', ''),
     };
     return jsonEncode(data);
   }
@@ -237,13 +368,21 @@ class Storage {
       if (data.containsKey('apiKey')) _set('apiKey', data['apiKey'] as String);
       if (data.containsKey('apiModel')) _set('apiModel', data['apiModel'] as String);
       if (data.containsKey('apiTemp')) _set('apiTemp', data['apiTemp'] as String);
+      if (data.containsKey('apiFullUrl')) _setBool('apiFullUrl', data['apiFullUrl'] as bool);
       if (data.containsKey('uiMode')) _set('uiMode', data['uiMode'] as String);
+      if (data.containsKey('themeId')) _set('themeId', data['themeId'] as String);
+      if (data.containsKey('lastLightTheme')) _set('lastLightTheme', data['lastLightTheme'] as String);
+      if (data.containsKey('onboardingDone')) _setBool('onboardingDone', data['onboardingDone'] == 'true');
       if (data.containsKey('favorites')) _set('favorites', data['favorites'] as String);
       if (data.containsKey('wrongQuestions')) _set('wrongQuestions', data['wrongQuestions'] as String);
       if (data.containsKey('studyRecords')) _set('studyRecords', data['studyRecords'] as String);
       if (data.containsKey('wordbook')) _set('wordbook', data['wordbook'] as String);
       if (data.containsKey('recordedWords')) _set('recordedWords', data['recordedWords'] as String);
       if (data.containsKey('recordsSelected')) _set('recordsSelected', data['recordsSelected'] as String);
+      if (data.containsKey('examLastPaper')) _set('examLastPaper', data['examLastPaper'] as String);
+      if (data.containsKey('examLastResult')) _set('examLastResult', data['examLastResult'] as String);
+      if (data.containsKey('examHistory')) _set('examHistory', data['examHistory'] as String);
+      if (data.containsKey('grammarProgress')) _set('grammarProgress', data['grammarProgress'] as String);
       return true;
     } catch (_) {
       return false;
@@ -258,5 +397,9 @@ class Storage {
     _set('wordbook', '');
     _set('recordedWords', '');
     _set('recordsSelected', '');
+    _set('examLastPaper', '');
+    _set('examLastResult', '');
+    _set('examHistory', '');
+    _set('grammarProgress', '');
   }
 }
