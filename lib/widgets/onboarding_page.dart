@@ -241,20 +241,22 @@ class _OnboardingPageState extends State<OnboardingPage> {
     );
   }
 
-  /// 页标题（26px w600）+ 副标题（14px），间距 12；副标题→内容区 32
-  Widget _pageHead(_Pal pal, String title, String subtitle) {
+  /// 页标题（26px w600），可选副标题（14px）；间距 12；底部→内容区 32
+  Widget _pageHead(_Pal pal, String title, [String? subtitle]) {
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Text(title, style: TextStyle(fontSize: 26, fontWeight: FontWeight.w600, color: pal.h1)),
-      const SizedBox(height: 12),
-      Text(subtitle, style: TextStyle(fontSize: 14, color: pal.sub)),
+      if (subtitle != null) ...[
+        const SizedBox(height: 12),
+        Text(subtitle, style: TextStyle(fontSize: 14, color: pal.sub)),
+      ],
       const SizedBox(height: 32),
     ]);
   }
 
   // ===== 第 1 页：选择外观模式（参考 Trae 引导页风格：带 UI 预览缩略图） =====
   Widget _buildStepTheme(_Pal pal) {
-    return _pageShell(Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      _pageHead(pal, '选择外观模式', '白色清爽，深色护眼，之后可随时在设置中切换。'),
+    return _pageShell(_StaggeredFadeIn(children: [
+      _pageHead(pal, '选择外观模式'),
       Row(children: [
         Expanded(child: SizedBox(
           height: 220,
@@ -285,7 +287,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
 
   // ===== 第 2 页：设置 API（可跳过） =====
   Widget _buildStepApi(_Pal pal) {
-    return _pageShell(Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+    return _pageShell(_StaggeredFadeIn(children: [
       _pageHead(pal, '设置 API', '连接 AI 服务，获取更智能的学习体验。此步骤可跳过。'),
       // API Key
       _fieldLabel(pal, 'API Key'),
@@ -384,7 +386,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
 
   // ===== 第 3 页：选择词汇剖析强度（三张结构相同的选项卡） =====
   Widget _buildStepMode(_Pal pal) {
-    return _pageShell(Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+    return _pageShell(_StaggeredFadeIn(children: [
       _pageHead(pal, '选择词汇剖析强度', 'AI 将根据你的选择提供不同深度的解析，之后可随时更换。'),
       _OptionCard(
         title: '快速模式',
@@ -414,26 +416,20 @@ class _OnboardingPageState extends State<OnboardingPage> {
     ]));
   }
 
-  // ===== 第 4 页：欢迎语（300ms 一次性渐入） =====
+  // ===== 第 4 页：欢迎语 =====
   Widget _buildStepWelcome(_Pal pal) {
-    return _pageShell(TweenAnimationBuilder<double>(
-      tween: Tween(begin: 0, end: 1),
-      duration: const Duration(milliseconds: 300),
-      curve: Curves.easeOutCubic,
-      builder: (context, v, child) => Opacity(opacity: v, child: child),
-      child: Column(children: [
-        const SizedBox(height: 56),
-        Text('欢迎使用', style: TextStyle(fontSize: 34, fontWeight: FontWeight.w600, color: pal.h1, letterSpacing: 2)),
-        const SizedBox(height: 16),
-        Text(
-          s.apiConfig.ready ? '一切就绪，开始你的词汇学习之旅。' : '初始配置已完成，AI 接口可稍后在设置中补充。',
-          style: TextStyle(fontSize: 14, color: pal.sub),
-        ),
-      ]),
-    ));
+    return _pageShell(_StaggeredFadeIn(children: [
+      const SizedBox(height: 56),
+      Text('欢迎使用', style: TextStyle(fontSize: 34, fontWeight: FontWeight.w600, color: pal.h1, letterSpacing: 2)),
+      const SizedBox(height: 16),
+      Text(
+        s.apiConfig.ready ? '一切就绪，开始你的词汇学习之旅。' : '初始配置已完成，AI 接口可稍后在设置中补充。',
+        style: TextStyle(fontSize: 14, color: pal.sub),
+      ),
+    ]));
   }
 
-  // ===== 底部：单主按钮（第 2/3 页附“上一步”文字链接） =====
+  // ===== 底部：单主按钮（第 2/3 页附"上一步"文字链接） =====
   Widget _buildBottomBar(_Pal pal) {
     final isLast = _step == _totalSteps - 1;
     return Padding(
@@ -684,6 +680,79 @@ class _OptionCard extends StatelessWidget {
             ),
         ]),
       ),
+    );
+  }
+}
+
+/// 交错渐显动画：子元素依次从下方滑入并淡出
+/// - 节奏：基础 350ms + 每子元素 60ms（比 150+80n 更慢更柔和）
+/// - 曲线：easeOut（减速更平缓，避免 easeOutCubic 的急停感）
+/// - 位移：10px（比 20px 更细腻，避免大跨度生硬感）
+/// - 隔离：每个子元素包 RepaintBoundary，防止动画期间重绘扩散到兄弟节点
+class _StaggeredFadeIn extends StatefulWidget {
+  final List<Widget> children;
+  const _StaggeredFadeIn({required this.children});
+
+  @override
+  State<_StaggeredFadeIn> createState() => _StaggeredFadeInState();
+}
+
+class _StaggeredFadeInState extends State<_StaggeredFadeIn> with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+  late final List<Animation<double>> _animations;
+
+  @override
+  void initState() {
+    super.initState();
+    final count = widget.children.length;
+    _controller = AnimationController(
+      vsync: this,
+      duration: Duration(milliseconds: 350 + count * 60),
+    );
+
+    // 交错步长 5%、单元素跨度 45%：相邻元素衔接更连续，避免“一个一个蹦”的割裂感
+    const staggerStep = 0.05;
+    const animSpan = 0.45;
+    _animations = List.generate(count, (i) {
+      final start = (i * staggerStep).clamp(0.0, 0.9);
+      final end = (start + animSpan).clamp(start + 0.1, 1.0);
+      return CurvedAnimation(
+        parent: _controller,
+        curve: Interval(start, end, curve: Curves.easeOut),
+      );
+    });
+
+    _controller.forward();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: List.generate(widget.children.length, (i) {
+        return AnimatedBuilder(
+          animation: _animations[i],
+          builder: (context, child) {
+            final t = _animations[i].value;
+            return Opacity(
+              opacity: t.clamp(0.0, 1.0),
+              child: Transform.translate(
+                offset: Offset(0, (1 - t) * 10),
+                child: child,
+              ),
+            );
+          },
+          // RepaintBoundary：动画期间每帧重绘只局限在当前子元素，
+          // 不扩散到兄弟节点（如其他选项卡），显著降低第3页（多卡片）重绘开销
+          child: RepaintBoundary(child: widget.children[i]),
+        );
+      }),
     );
   }
 }

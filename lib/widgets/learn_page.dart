@@ -156,85 +156,71 @@ class _AnswerPageState extends State<AnswerPage> {
         border: Border.all(color: c.border),
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Row(children: [
-          Text(s.directionLabel, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: c.primaryText)),
-          const Spacer(),
-          // 剖析模式三选一分段控件（快速/正常/深度）
-          _buildAnalysisModeSwitcher(q, c),
-          const SizedBox(width: 8),
-          // 词汇剖析按钮
-          InkWell(
-            onTap: () {
-              // 检查API配置（正常/深度模式需要API）
-              if ((s.analysisMode == 'normal' || s.analysisMode == 'deep') && !s.apiConfig.ready) {
-                showDialog(
-                  context: context,
-                  builder: (ctx) => AlertDialog(
-                    title: const Text('API 未配置'),
-                    content: const Text('API 尚未配置，请前往设置页面中配置。'),
-                    actions: [
-                      TextButton(
-                        onPressed: () => Navigator.of(ctx).pop(),
-                        child: const Text('取消'),
+        LayoutBuilder(builder: (ctx, constraints) {
+          // 窄屏（手机）：方向标签独占一行，剖析模式+词汇剖析按钮在第二行
+          final narrow = constraints.maxWidth < 420;
+          if (narrow) {
+            return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(s.directionLabel, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: c.primaryText)),
+              const SizedBox(height: 8),
+              Row(children: [
+                _buildAnalysisModeSwitcher(q, c),
+                const SizedBox(width: 8),
+                _buildAnalysisButton(q, c),
+                const Spacer(),
+                if (TtsService.instance.available)
+                  InkWell(
+                    onTap: () {
+                      final textToSpeak = q.type == QType.reading && q.passage.isNotEmpty ? q.passage : q.text;
+                      TtsService.instance.speakText(textToSpeak);
+                    },
+                    borderRadius: BorderRadius.circular(6),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: c.textTertiary.withValues(alpha: 0.1),
+                        borderRadius: BorderRadius.circular(6),
                       ),
-                      TextButton(
-                        onPressed: () {
-                          Navigator.of(ctx).pop();
-                          showDialog(context: context, builder: (_) => const ChatSettingsDialog());
-                        },
-                        child: const Text('去设置'),
-                      ),
-                    ],
+                      child: Row(mainAxisSize: MainAxisSize.min, children: [
+                        Icon(Icons.volume_up_rounded, size: 14, color: c.textSecondary),
+                        const SizedBox(width: 4),
+                        Text('朗读', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: c.textSecondary)),
+                      ]),
+                    ),
                   ),
-                );
-                return;
-              }
-              
-              setState(() => _showAnalysis = !_showAnalysis);
-              if (_showAnalysis) {
-                s.analyzeWords(q.text);
-              }
-            },
-            borderRadius: BorderRadius.circular(6),
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              decoration: BoxDecoration(
-                color: _showAnalysis ? c.primaryBgStrong : c.textTertiary.withValues(alpha: 0.1),
-                borderRadius: BorderRadius.circular(6),
-              ),
-              child: Row(mainAxisSize: MainAxisSize.min, children: [
-                Icon(Icons.search_rounded, size: 14, color: _showAnalysis ? c.primaryText : c.textTertiary),
-                const SizedBox(width: 4),
-                Text(
-                  _showAnalysis ? '收起剖析' : '词汇剖析',
-                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: _showAnalysis ? c.primaryText : c.textSecondary),
-                ),
               ]),
-            ),
-          ),
-          const SizedBox(width: 8),
-          // 朗读按钮
-          if (TtsService.instance.available)
-            InkWell(
-              onTap: () {
-                final textToSpeak = q.type == QType.reading && q.passage.isNotEmpty ? q.passage : q.text;
-                TtsService.instance.speakText(textToSpeak);
-              },
-              borderRadius: BorderRadius.circular(6),
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                decoration: BoxDecoration(
-                  color: c.textTertiary.withValues(alpha: 0.1),
-                  borderRadius: BorderRadius.circular(6),
+            ]);
+          }
+          // 宽屏：保持原样
+          return Row(children: [
+            Text(s.directionLabel, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: c.primaryText)),
+            const Spacer(),
+            _buildAnalysisModeSwitcher(q, c),
+            const SizedBox(width: 8),
+            _buildAnalysisButton(q, c),
+            const SizedBox(width: 8),
+            if (TtsService.instance.available)
+              InkWell(
+                onTap: () {
+                  final textToSpeak = q.type == QType.reading && q.passage.isNotEmpty ? q.passage : q.text;
+                  TtsService.instance.speakText(textToSpeak);
+                },
+                borderRadius: BorderRadius.circular(6),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: c.textTertiary.withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Row(mainAxisSize: MainAxisSize.min, children: [
+                    Icon(Icons.volume_up_rounded, size: 14, color: c.textSecondary),
+                    const SizedBox(width: 4),
+                    Text('朗读', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: c.textSecondary)),
+                  ]),
                 ),
-                child: Row(mainAxisSize: MainAxisSize.min, children: [
-                  Icon(Icons.volume_up_rounded, size: 14, color: c.textSecondary),
-                  const SizedBox(width: 4),
-                  Text('朗读', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: c.textSecondary)),
-                ]),
               ),
-            ),
-        ]),
+          ]);
+        }),
         const SizedBox(height: 12),
         // 阅读理解：展示短文
         if (q.type == QType.reading && q.passage.isNotEmpty) ...[
@@ -273,6 +259,43 @@ class _AnswerPageState extends State<AnswerPage> {
           ]),
         ],
       ]),
+    );
+  }
+
+  // ===== 词汇剖析按钮（提取为独立方法，供 LayoutBuilder 窄屏/宽屏共用） =====
+  Widget _buildAnalysisButton(Question q, AppColors c) {
+    return InkWell(
+      onTap: () {
+        if ((s.analysisMode == 'normal' || s.analysisMode == 'deep') && !s.apiConfig.ready) {
+          showDialog(
+            context: context,
+            builder: (ctx) => AlertDialog(
+              title: const Text('API 未配置'),
+              content: const Text('API 尚未配置，请前往设置页面中配置。'),
+              actions: [
+                TextButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('取消')),
+                TextButton(onPressed: () { Navigator.of(ctx).pop(); showDialog(context: context, builder: (_) => const ChatSettingsDialog()); }, child: const Text('去设置')),
+              ],
+            ),
+          );
+          return;
+        }
+        setState(() => _showAnalysis = !_showAnalysis);
+        if (_showAnalysis) s.analyzeWords(q.text);
+      },
+      borderRadius: BorderRadius.circular(6),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        decoration: BoxDecoration(
+          color: _showAnalysis ? c.primaryBgStrong : c.textTertiary.withValues(alpha: 0.1),
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          Icon(Icons.search_rounded, size: 14, color: _showAnalysis ? c.primaryText : c.textTertiary),
+          const SizedBox(width: 4),
+          Text(_showAnalysis ? '收起剖析' : '词汇剖析', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: _showAnalysis ? c.primaryText : c.textSecondary)),
+        ]),
+      ),
     );
   }
 

@@ -779,8 +779,6 @@ class _DictionaryPageState extends State<DictionaryPage> {
         padding: const EdgeInsets.fromLTRB(20, 20, 20, 0),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Text('单词查询', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: c.text)),
-          const SizedBox(height: 4),
-          Text('英文优先本地词库（10000+ 词），中文走 AI 实时翻译', style: TextStyle(fontSize: 12, color: c.textTertiary)),
           const SizedBox(height: 14),
           Container(
             decoration: BoxDecoration(
@@ -1619,7 +1617,6 @@ class _DictationPageState extends State<DictationPage> {
       _autoAdvanceTimer = DateTime.now().millisecondsSinceEpoch;
       Future.delayed(const Duration(milliseconds: 1000), () {
         if (mounted && _feedback != null && _isCorrect) {
-          s.nextDictationQuestion();
           _nextQuestion(s);
         }
       });
@@ -1627,6 +1624,7 @@ class _DictationPageState extends State<DictationPage> {
   }
 
   void _nextQuestion(AppState s) {
+    s.nextDictationQuestion();
     _resetDictationState();
     setState(() {});
     WidgetsBinding.instance.addPostFrameCallback((_) => _focusNode.requestFocus());
@@ -1636,17 +1634,8 @@ class _DictationPageState extends State<DictationPage> {
     final w = s.currentDictationWord;
     if (w == null) return;
     s.skipDictation();
-    setState(() {
-      _feedback = '已跳过';
-      _isCorrect = false;
-      _showAnswer = true;
-    });
-    if (_autoAdvance) {
-      Future.delayed(const Duration(milliseconds: 800), () {
-        if (mounted && _feedback != null) {
-          _nextQuestion(s);
-        }
-      });
-    }
+    _resetDictationState();
+    setState(() {});
+    WidgetsBinding.instance.addPostFrameCallback((_) => _focusNode.requestFocus());
   }
 }

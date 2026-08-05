@@ -1120,62 +1120,49 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
     );
   }
 
-  /// API 未配置时的引导气泡
+  /// API 未配置时的引导气泡（整个气泡可点击，直接打开设置）
   Widget _buildApiConfigPrompt(bool isLight) {
     final c = AppColors(isLight);
     return ListView(
       padding: const EdgeInsets.symmetric(horizontal: 16),
       children: [
-        Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Container(
-            width: 32,
-            height: 32,
-            decoration: BoxDecoration(
-              gradient: c.primaryGradient,
-              shape: BoxShape.circle,
-              boxShadow: c.isLight
-                  ? null
-                  : [
-                      BoxShadow(color: const Color(0xFF8B5CF6).withValues(alpha: 0.5), blurRadius: 12, spreadRadius: 1.5),
-                      BoxShadow(color: const Color(0xFFA78BFA).withValues(alpha: 0.25), blurRadius: 18, spreadRadius: 3),
-                    ],
-            ),
-            child: const Center(child: Text('AI', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 12))),
-          ),
-          const SizedBox(width: 10),
-          Expanded(child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-            decoration: BoxDecoration(
-              color: c.chatBubbleAi,
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: c.divider),
-            ),
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text('配置 API', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: c.text)),
-              const SizedBox(height: 6),
-              Text('AI 助手需要配置 API 才能使用。', style: TextStyle(fontSize: 13, color: c.text, height: 1.5)),
-              const SizedBox(height: 8),
-              GestureDetector(
-                onTap: () {
-                  Navigator.of(context).pop();
-                  showDialog(context: context, builder: (_) => const ChatSettingsDialog());
-                },
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: c.primary.withValues(alpha: 0.1),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Row(mainAxisSize: MainAxisSize.min, children: [
-                    Icon(Icons.settings_outlined, size: 14, color: c.primary),
-                    const SizedBox(width: 4),
-                    Text('是否前往配置', style: TextStyle(fontSize: 12, color: c.primary, fontWeight: FontWeight.w500)),
-                  ]),
-                ),
+        GestureDetector(
+          onTap: () {
+            Navigator.of(context).pop();
+            showDialog(context: context, builder: (_) => const ChatSettingsDialog());
+          },
+          child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Container(
+              width: 32,
+              height: 32,
+              decoration: BoxDecoration(
+                gradient: c.primaryGradient,
+                shape: BoxShape.circle,
+                boxShadow: c.isLight
+                    ? null
+                    : [
+                        BoxShadow(color: const Color(0xFF8B5CF6).withValues(alpha: 0.5), blurRadius: 12, spreadRadius: 1.5),
+                        BoxShadow(color: const Color(0xFFA78BFA).withValues(alpha: 0.25), blurRadius: 18, spreadRadius: 3),
+                      ],
               ),
-            ]),
-          )),
-        ]),
+              child: const Center(child: Text('AI', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 12))),
+            ),
+            const SizedBox(width: 10),
+            Expanded(child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+              decoration: BoxDecoration(
+                color: c.chatBubbleAi,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: c.primary.withValues(alpha: 0.3)),
+              ),
+              child: Row(children: [
+                Icon(Icons.settings_outlined, size: 16, color: c.primary),
+                const SizedBox(width: 8),
+                Text('请在设置内配置 API', style: TextStyle(fontSize: 13, color: c.primary, fontWeight: FontWeight.w600)),
+              ]),
+            )),
+          ]),
+        ),
         const SizedBox(height: 16),
       ],
     );
@@ -1540,7 +1527,14 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
     if (msg.isEmpty && img == null) return;
     if (text == null) _chatCtrl.clear();
     setState(() => _chatImageData = null);
+    final prevPage = s.page;
     await s.sendChat(msg, imageData: img);
+    // 手机端：出题后页面跳到了答题页/考场，自动关闭聊天浮层让用户看到新页面
+    if (mounted && _state.uiMode == 'mobile' && _state.page != prevPage &&
+        (_state.page == 1 || _state.page == 10 || _state.page == 11)) {
+      Navigator.of(context).pop();
+      return;
+    }
     // 发送完成后检查是否需要弹出考试确认对话框（全卷生成成功后）
     if (mounted && s.examPendingConfirm && s.currentExamPaper != null && !_examDialogShowing) {
       _examDialogShowing = true;
