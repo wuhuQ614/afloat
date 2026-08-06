@@ -14,6 +14,9 @@ class AIResult {
 }
 
 class ApiService {
+  /// 最近一次 AI 请求的失败原因（供调用方透传给用户排查；非请求异常时为 null）
+  static String? lastError;
+
   /// 模型名映射（UI 显示名 → 真实 API 模型名）
   static String _realModel(String model) {
     const map = {
@@ -80,7 +83,11 @@ class ApiService {
     Map<String, dynamic>? extraParams,
   }) async {
     final cfg = config;
-    if (cfg == null || !cfg.ready) return const AIResult(null, null);
+    if (cfg == null || !cfg.ready) {
+      lastError = '未配置 API 地址或密钥';
+      return const AIResult(null, null);
+    }
+    lastError = null;
     try {
       final body = <String, dynamic>{
         'model': _realModel(cfg.model),
@@ -104,14 +111,25 @@ class ApiService {
             body: jsonEncode(body),
           )
           .timeout(const Duration(seconds: 120));
-      if (resp.statusCode != 200) return const AIResult(null, null);
+      if (resp.statusCode != 200) {
+        final errBody = utf8.decode(resp.bodyBytes, allowMalformed: true).trim();
+        lastError = 'HTTP ${resp.statusCode}${errBody.length <= 200 ? '：$errBody' : ''}';
+        return const AIResult(null, null);
+      }
       final data = jsonDecode(utf8.decode(resp.bodyBytes)) as Map<String, dynamic>;
       final choices = data['choices'] as List?;
-      if (choices == null || choices.isEmpty) return const AIResult(null, null);
+      if (choices == null || choices.isEmpty) {
+        lastError = '响应缺少 choices 字段';
+        return const AIResult(null, null);
+      }
       final choice = choices.first as Map<String, dynamic>;
       final msg = choice['message'] as Map<String, dynamic>?;
       return AIResult((msg?['content'] as String?) ?? '', choice['finish_reason']?.toString());
-    } catch (_) {
+    } on TimeoutException catch (_) {
+      lastError = '请求超时（120 秒）';
+      return const AIResult(null, null);
+    } catch (e) {
+      lastError = e.toString();
       return const AIResult(null, null);
     }
   }
@@ -138,7 +156,7 @@ class ApiService {
           ...messages,
         ],
       };
-      final req = http.Request('POST', Uri.parse(cfg.url));
+      final req = http.Request('POST', Uri.parse(cfg.effectiveUrl));
       req.headers.addAll({
         'Content-Type': 'application/json',
         'Authorization': 'Bearer ${cfg.key}',
@@ -308,17 +326,40 @@ class ApiService {
     return h;
   }
 
-  /// 关闭模型深度思考的请求参数：按实际模型名添加，未知模型不添加以避免 400。
-  /// DeepSeek / 通义千问 / 智谱系关闭思考；OpenAI o 系降低推理强度快速直出。
+  /// 关闭模型深度思考的请求参数：按实际模型名添加，覆盖所有已知支持思考的模型。
   /// 仅用于 AI 出题、词汇剖析、查词等非对话链路；对话助手由"显示思考过程"开关单独控制。
   static Map<String, dynamic> noThinkingParams(String modelName) {
     final m = _realModel(modelName).toLowerCase();
     final p = <String, dynamic>{};
-    if (m.contains('deepseek') || m.contains('qwen') || m.contains('glm')) {
+    // enable_thinking: false 适用于多数国产模型
+    if (m.contains('deepseek') ||
+        m.contains('qwen') ||
+        m.contains('glm') ||
+        m.contains('kimi') ||
+        m.contains('moonshot') ||
+        m.contains('doubao') ||
+        m.contains('hunyuan') ||
+        m.contains('baichuan') ||
+        m.contains('spark') ||
+        m.contains('ernie') ||
+        m.contains('wenxin') ||
+        m.contains('step') ||
+        m.contains('yi-') ||
+        m.contains('minimax') ||
+        m.contains('grok')) {
       p['enable_thinking'] = false;
     }
+    // OpenAI o 系列使用 minimal 完全关闭推理
     if (m.startsWith('o1') || m.startsWith('o3') || m.startsWith('o4')) {
-      p['reasoning_effort'] = 'low';
+      p['reasoning_effort'] = 'minimal';
+    }
+    // Claude 系列禁用 extended thinking
+    if (m.contains('claude')) {
+      p['thinking'] = {'type': 'disabled'};
+    }
+    // Gemini 系列将 thinking budget 设为 0
+    if (m.contains('gemini')) {
+      p['thinking_config'] = {'thinking_budget': 0};
     }
     return p;
   }

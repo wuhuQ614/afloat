@@ -344,6 +344,35 @@ class GradingResult {
       );
 }
 
+/// 词组信息（用于深度模式下展示词组翻译）
+class PhraseInfo {
+  final String text; // 词组原文，如 "points out"
+  final String translation; // 词组翻译
+  /// 词组中每个单词的独立翻译（按顺序对应 text 中的单词）
+  final List<String> wordTranslations;
+
+  const PhraseInfo({
+    required this.text,
+    required this.translation,
+    this.wordTranslations = const [],
+  });
+
+  Map<String, dynamic> toJson() => {
+        'text': text,
+        'translation': translation,
+        'wordTranslations': wordTranslations,
+      };
+
+  factory PhraseInfo.fromJson(Map<String, dynamic> j) => PhraseInfo(
+        text: (j['text'] ?? '') as String,
+        translation: (j['translation'] ?? '') as String,
+        wordTranslations: (j['wordTranslations'] as List?)
+                ?.map((e) => e.toString())
+                .toList() ??
+            const [],
+      );
+}
+
 /// 词汇剖析 token
 class WordToken {
   final String text;
@@ -353,6 +382,10 @@ class WordToken {
   final String translation;
   final String other;
   final String contextTranslation; // 深度模式：AI 给出的当前语境释义
+  /// 深度模式下，该单词所属的词组列表（含词组翻译和独立单词翻译）
+  final List<PhraseInfo> phrases;
+  /// 该 token 所属的词组原文（如 "points out"），用于 UI 渲染红色下划线和优先展示词组翻译
+  final String phraseGroup;
 
   const WordToken({
     required this.text,
@@ -362,6 +395,8 @@ class WordToken {
     this.translation = '',
     this.other = '',
     this.contextTranslation = '',
+    this.phrases = const [],
+    this.phraseGroup = '',
   });
 
   Map<String, dynamic> toJson() => {
@@ -372,6 +407,8 @@ class WordToken {
         'translation': translation,
         'other': other,
         'contextTranslation': contextTranslation,
+        'phrases': phrases.map((p) => p.toJson()).toList(),
+        'phraseGroup': phraseGroup,
       };
 
   factory WordToken.fromJson(Map<String, dynamic> j) => WordToken(
@@ -382,9 +419,43 @@ class WordToken {
         translation: (j['translation'] ?? '') as String,
         other: (j['other'] ?? '') as String,
         contextTranslation: (j['contextTranslation'] ?? '') as String,
+        phrases: (j['phrases'] as List?)
+                ?.map((e) => PhraseInfo.fromJson(e as Map<String, dynamic>))
+                .toList() ??
+            const [],
+        phraseGroup: (j['phraseGroup'] ?? '') as String,
       );
 
   bool get isMissing => type != 'other' && (translation.isEmpty || translation == '暂无释义');
+
+  /// 该 token 是否属于某个词组
+  bool get isPartOfPhrase => phraseGroup.isNotEmpty;
+
+  /// 复制并替换 phrases
+  WordToken copyWithPhrases(List<PhraseInfo> phrases) => WordToken(
+        text: text,
+        type: type,
+        word: word,
+        pos: pos,
+        translation: translation,
+        other: other,
+        contextTranslation: contextTranslation,
+        phrases: phrases,
+        phraseGroup: phraseGroup,
+      );
+
+  /// 复制并设置 phraseGroup
+  WordToken copyWithPhraseGroup(String phraseGroup) => WordToken(
+        text: text,
+        type: type,
+        word: word,
+        pos: pos,
+        translation: translation,
+        other: other,
+        contextTranslation: contextTranslation,
+        phrases: phrases,
+        phraseGroup: phraseGroup,
+      );
 }
 
 /// API 配置

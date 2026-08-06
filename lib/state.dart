@@ -5,11 +5,19 @@ import 'dart:convert';
 import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart' show rootBundle;
+import 'package:flutter/services.dart' show rootBundle, SystemChrome, SystemUiMode, SystemUiOverlayStyle;
 import 'models.dart';
 import 'services/api_service.dart';
 import 'services/storage.dart';
 import 'services/dict_service.dart';
+
+/// 单词跨度信息（用于词组匹配）
+class _WordSpan {
+  final String text;
+  final int start;
+  final int end;
+  const _WordSpan({required this.text, required this.start, required this.end});
+}
 
 class ChatMessage {
   String role; // user / ai
@@ -170,6 +178,8 @@ class AppState extends ChangeNotifier {
     powerSavingMode = Storage.loadPowerSavingMode();
     onboardingDone = Storage.loadOnboardingDone();
     uiMode = Storage.loadUiMode();
+    // 手机端启动即进入沉浸式全屏（隐藏系统状态栏/导航栏），电脑端不受影响
+    _applySystemUiMode();
     // 全卷模拟考试：恢复最近一次成绩与历史摘要（供学习报告展示）；
     // 不恢复考试进行中的现场（重启后不自动回考场，避免计时混乱），直接丢弃未交卷状态
     currentExamResult = Storage.loadLastExamResult();
@@ -1097,17 +1107,40 @@ class AppState extends ChangeNotifier {
   // ===== 词汇剖析 =====
   bool analyzing = false;
 
-  /// 关闭模型深度思考的请求参数：按实际模型名添加，未知模型不添加以避免 400。
-  /// DeepSeek / 通义千问 / 智谱系关闭思考；OpenAI o 系降低推理强度快速直出。
+  /// 关闭模型深度思考的请求参数：覆盖所有已知支持思考的模型。
   /// 仅用于 AI 出题与词汇剖析链路；对话助手由"显示思考过程"开关单独控制。
   Map<String, dynamic> _noThinkingParams() {
     final m = ApiService.realModelName(apiConfig.model).toLowerCase();
     final p = <String, dynamic>{};
-    if (m.contains('deepseek') || m.contains('qwen') || m.contains('glm')) {
+    // enable_thinking: false 适用于多数国产模型
+    if (m.contains('deepseek') ||
+        m.contains('qwen') ||
+        m.contains('glm') ||
+        m.contains('kimi') ||
+        m.contains('moonshot') ||
+        m.contains('doubao') ||
+        m.contains('hunyuan') ||
+        m.contains('baichuan') ||
+        m.contains('spark') ||
+        m.contains('ernie') ||
+        m.contains('wenxin') ||
+        m.contains('step') ||
+        m.contains('yi-') ||
+        m.contains('minimax') ||
+        m.contains('grok')) {
       p['enable_thinking'] = false;
     }
+    // OpenAI o 系列使用 minimal 完全关闭推理
     if (m.startsWith('o1') || m.startsWith('o3') || m.startsWith('o4')) {
-      p['reasoning_effort'] = 'low';
+      p['reasoning_effort'] = 'minimal';
+    }
+    // Claude 系列禁用 extended thinking
+    if (m.contains('claude')) {
+      p['thinking'] = {'type': 'disabled'};
+    }
+    // Gemini 系列将 thinking budget 设为 0
+    if (m.contains('gemini')) {
+      p['thinking_config'] = {'thinking_budget': 0};
     }
     return p;
   }
@@ -1226,6 +1259,7 @@ class AppState extends ChangeNotifier {
     String buildPrompt(List<String> batch) {
       if (analysisMode == 'deep') {
         // 深度模式：注入题目语境，要求 AI 给出语境义 + 词典标准释义/其他含义
+        // 同时识别词组并返回词组翻译
         final ctx = deepContext();
         final ctxBlock = ctx.isEmpty ? '' : '【当前题目原文语境】\n$ctx\n\n';
         return isZh
@@ -1236,8 +1270,12 @@ class AppState extends ChangeNotifier {
                 '词组列表：${batch.join('、')}\n只返回JSON数组，不要其他内容。'
             : '你是英语词汇剖析工具。请结合下方题目语境，分析以下单词/词组在该特定语境中的含义，并给出 JSON 数组：\n' +
                 ctxBlock +
-                '[{"word":"单词","pos":"词性(如n./v./adj./adv./prep.)","translation":"当前语境中的含义（本句中最贴切的中文释义）","contextTranslation":"词典标准释义/其他含义","other":"用法剖析:包含常见搭配、例句、近义词或易混淆点(30字内)"}]\n' +
-                '要求：translation 必须结合语境给出该词在当前句子中的实际含义；contextTranslation 给出词典中的标准释义及其他常见含义；other 给出用法信息。\n' +
+                '[{"word":"单词/词组","pos":"词性(如n./v./adj./adv./prep.)","translation":"当前语境中的含义（本句中最贴切的中文释义）","contextTranslation":"词典标准释义/其他含义","other":"用法剖析:包含常见搭配、例句、近义词或易混淆点(30字内)","phrases":[{"text":"词组原文(如 points out)","translation":"词组整体翻译","wordTranslations":["指出","表明"]}]}]\n' +
+                '要求：\n' +
+                '1. translation 必须结合语境给出该词在当前句子中的实际含义；\n' +
+                '2. contextTranslation 给出词典中的标准释义及其他常见含义；\n' +
+                '3. other 给出用法信息；\n' +
+                '4. phrases 字段：如果该单词是某个固定词组/短语的一部分（如 "points out"、"negative effects"），请在 phrases 数组中列出该词组及其翻译，并在 wordTranslations 中按顺序给出词组中每个单词的独立中文释义；如果不是词组的一部分，phrases 留空数组 []。\n' +
                 '单词列表：${batch.join('、')}\n只返回JSON数组，不要其他内容。';
       } else {
         // 正常模式：标准剖析
@@ -1282,6 +1320,24 @@ class AppState extends ChangeNotifier {
         for (final e in list) {
           final w = ((e['word'] ?? '') as String).toLowerCase().trim();
           if (w.isEmpty) continue;
+          // 解析 phrases 字段
+          final phrasesList = <PhraseInfo>[];
+          final phrasesJson = e['phrases'];
+          if (phrasesJson is List) {
+            for (final p in phrasesJson) {
+              if (p is Map<String, dynamic>) {
+                final pt = (p['text'] ?? '').toString().trim();
+                final ptrans = (p['translation'] ?? '').toString().trim();
+                final wordTrans = (p['wordTranslations'] as List?)
+                    ?.map((w) => w.toString().trim())
+                    .where((w) => w.isNotEmpty)
+                    .toList() ?? const [];
+                if (pt.isNotEmpty && ptrans.isNotEmpty) {
+                  phrasesList.add(PhraseInfo(text: pt, translation: ptrans, wordTranslations: wordTrans));
+                }
+              }
+            }
+          }
           result.add(WordToken(
             text: (e['word'] ?? '') as String,
             type: 'word',
@@ -1290,6 +1346,7 @@ class AppState extends ChangeNotifier {
             translation: (e['translation'] ?? '') as String,
             other: (e['other'] ?? '') as String,
             contextTranslation: (e['contextTranslation'] ?? '') as String,
+            phrases: phrasesList,
           ));
         }
       }
@@ -1306,7 +1363,7 @@ class AppState extends ChangeNotifier {
         final key = tokens[i].text.toLowerCase().trim();
         final hit = wordMap[key];
         if (hit != null) {
-          tokens[i] = WordToken(text: tokens[i].text, type: tokens[i].type, word: tokens[i].text, pos: hit.pos, translation: hit.translation, other: hit.other, contextTranslation: hit.contextTranslation);
+          tokens[i] = WordToken(text: tokens[i].text, type: tokens[i].type, word: tokens[i].text, pos: hit.pos, translation: hit.translation, other: hit.other, contextTranslation: hit.contextTranslation, phrases: hit.phrases);
         } else {
           tokens[i] = WordToken(text: tokens[i].text, type: tokens[i].type, word: tokens[i].text, pos: tokens[i].pos, translation: '暂无释义');
         }
@@ -1334,10 +1391,74 @@ class AppState extends ChangeNotifier {
     // 收尾：本地词库兜底仍为空释义的 token，再写缓存（缓存必须完整）
     // 深度模式完全不用词典，跳过兜底
     if (!isDeep) _backfillFromDict(tokens);
+
+    // 深度模式：标记词组 token（将 AI 返回的 phrases 信息映射回原文 token）
+    if (isDeep) _markPhraseTokens(tokens, text);
+
     analysisTokens = tokens;
     Storage.writeAnalysisCache(cacheKey, tokens);
     analyzing = false;
     notifyListeners();
+  }
+
+  /// 深度模式下，将 AI 返回的 phrases 信息映射回原文 token，
+  /// 标记每个 token 所属的词组（phraseGroup），以便 UI 渲染红色下划线和优先展示词组翻译。
+  void _markPhraseTokens(List<WordToken> tokens, String originalText) {
+    // 收集所有 token 中携带的 phrases 信息，构建 phraseText -> phraseInfo 映射
+    final phraseMap = <String, PhraseInfo>{};
+    for (final t in tokens) {
+      for (final p in t.phrases) {
+        phraseMap[p.text.toLowerCase()] = p;
+      }
+    }
+    if (phraseMap.isEmpty) return;
+
+    // 将原文按单词拆分，记录每个单词 token 的索引范围
+    final wordTokens = <_WordSpan>[];
+    final re = RegExp(r"[A-Za-z']+");
+    for (final m in re.allMatches(originalText)) {
+      wordTokens.add(_WordSpan(text: m.group(0)!, start: m.start, end: m.end));
+    }
+
+    // 对每个 phrase，尝试在原文中匹配连续单词
+    for (final entry in phraseMap.entries) {
+      final phraseText = entry.key;
+      final phraseInfo = entry.value;
+      final phraseWords = phraseText.toLowerCase().split(RegExp(r'\s+'));
+      if (phraseWords.length < 2) continue; // 至少两个单词才算词组
+
+      // 在 wordTokens 中滑动窗口匹配
+      for (var i = 0; i <= wordTokens.length - phraseWords.length; i++) {
+        var match = true;
+        for (var j = 0; j < phraseWords.length; j++) {
+          if (wordTokens[i + j].text.toLowerCase() != phraseWords[j]) {
+            match = false;
+            break;
+          }
+        }
+        if (match) {
+          // 找到匹配，标记这些 token 的 phraseGroup
+          for (var j = 0; j < phraseWords.length; j++) {
+            final idx = _findTokenIndex(tokens, wordTokens[i + j].text);
+            if (idx >= 0 && tokens[idx].phraseGroup.isEmpty) {
+              tokens[idx] = tokens[idx].copyWithPhraseGroup(phraseInfo.text);
+            }
+          }
+          break; // 每个词组只标记第一次出现
+        }
+      }
+    }
+  }
+
+  /// 在 tokens 中找到匹配指定单词文本的索引
+  int _findTokenIndex(List<WordToken> tokens, String word) {
+    final lower = word.toLowerCase();
+    for (var i = 0; i < tokens.length; i++) {
+      if (tokens[i].text.toLowerCase() == lower && tokens[i].type != 'other') {
+        return i;
+      }
+    }
+    return -1;
   }
 
   /// 校验 AI 返回的 tokens 是否覆盖原文（去空白标点后比对，覆盖率 >= 80% 视为有效）
@@ -1999,7 +2120,22 @@ class AppState extends ChangeNotifier {
   void setUiMode(String mode) {
     uiMode = mode;
     Storage.saveUiMode(mode);
+    _applySystemUiMode();
     notifyListeners();
+  }
+
+  /// 根据当前 uiMode 切换系统 UI 模式：手机端沉浸式全屏（隐藏状态栏与导航栏），
+  /// 电脑端恢复常规显示。SystemChrome 在桌面平台为 no-op，不会影响 Windows 端。
+  void _applySystemUiMode() {
+    if (uiMode == 'mobile') {
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky, overlays: []);
+      SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
+        statusBarColor: Color(0x00000000),
+        systemNavigationBarColor: Color(0x00000000),
+      ));
+    } else {
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    }
   }
 
   void setAnalysisMode(String mode) {
@@ -2347,7 +2483,11 @@ class AppState extends ChangeNotifier {
       final reply = res?.content;
       String? failReason;
       if (res == null || reply == null || reply.isEmpty) {
-        failReason = maxTokens > 8192 ? '请求失败（降低max_tokens重试）' : 'AI无响应或超时';
+        // 透传请求层失败原因（如超时、连接被拦截、HTTP 错误码），便于移动端排查
+        final detail = ApiService.lastError;
+        failReason = maxTokens > 8192
+            ? '请求失败（降低max_tokens重试）${detail != null ? '：$detail' : ''}'
+            : (detail ?? 'AI无响应或超时');
       } else {
         final truncated = res.finishReason == 'length';
         try {

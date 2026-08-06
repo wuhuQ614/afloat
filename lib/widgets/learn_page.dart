@@ -16,6 +16,23 @@ const _primaryLight = kPrimaryLight;
 const _success = kSuccess;
 const _danger = kDanger;
 
+/// 文本渲染单元：要么是单个普通 token，要么是一个词组（多个连续 token）
+class _TextUnit {
+  final WordToken? token;       // 单个 token 模式
+  final List<WordToken>? groupTokens; // 词组模式：组内所有 token（含标点夹在中间的情况一般不会有）
+  final PhraseInfo? phraseInfo; // 词组模式：词组信息
+
+  const _TextUnit.single(this.token)
+      : groupTokens = null,
+        phraseInfo = null;
+
+  const _TextUnit.phrase(this.groupTokens, this.phraseInfo)
+      : token = null;
+
+  bool get isSingle => token != null;
+  bool get isPhrase => groupTokens != null;
+}
+
 class LearnPage extends StatefulWidget {
   final AppState state;
   const LearnPage({super.key, required this.state});
@@ -281,7 +298,11 @@ class _AnswerPageState extends State<AnswerPage> {
           return;
         }
         setState(() => _showAnalysis = !_showAnalysis);
-        if (_showAnalysis) s.analyzeWords(q.text);
+        if (_showAnalysis) {
+          // 阅读理解：剖析短文而非题干
+          final textToAnalyze = (q.type == QType.reading && q.passage.isNotEmpty) ? q.passage : q.text;
+          s.analyzeWords(textToAnalyze);
+        }
       },
       borderRadius: BorderRadius.circular(6),
       child: Container(
@@ -371,35 +392,127 @@ class _AnswerPageState extends State<AnswerPage> {
   Widget _buildAnalyzedText(String text, bool isLight) {
     final c = AppColors(isLight);
     final tokens = s.analysisTokens;
-    if (tokens.isEmpty) return Text(text, style: TextStyle(fontSize: 15, height: 1.7, color: c.text));
+    final isMobile = AppScope.of(context).uiMode == 'mobile';
+    final fontSize = isMobile ? 13.0 : 15.0;
+    if (tokens.isEmpty) return Text(text, style: TextStyle(fontSize: fontSize, height: 1.7, color: c.text));
+
+    // 按 phraseGroup 合并相邻同组词组 token，构建渲染单元
+    // 注意：词组单词之间的空格/标点 token 没有 phraseGroup，需要手动纳入
+    final units = <_TextUnit>[];
+    var i = 0;
+    while (i < tokens.length) {
+      final t = tokens[i];
+      if (t.phraseGroup.isNotEmpty) {
+        final group = t.phraseGroup;
+        final groupTokens = <WordToken>[];
+        PhraseInfo? pi;
+        // 收集该词组的所有 token：包括单词和单词之间的空格/标点
+        while (i < tokens.length) {
+          final gt = tokens[i];
+          // 如果下一个 token 是 other（空格/标点），且后面还有同组单词，则一并纳入
+          if (gt.phraseGroup == group) {
+            groupTokens.add(gt);
+            if (pi == null) {
+              for (final p in gt.phrases) {
+                if (p.text == group) { pi = p; break; }
+              }
+            }
+            i++;
+          } else if (gt.type == 'other' && i + 1 < tokens.length && tokens[i + 1].phraseGroup == group) {
+            // 空格/标点夹在同组单词之间，纳入词组
+            groupTokens.add(gt);
+            i++;
+          } else {
+            break;
+          }
+        }
+        units.add(_TextUnit.phrase(
+          groupTokens,
+          pi ?? PhraseInfo(text: group, translation: ''),
+        ));
+      } else {
+        units.add(_TextUnit.single(t));
+        i++;
+      }
+    }
 
     return Wrap(
       spacing: 0,
       runSpacing: 4,
-      children: tokens.map((token) {
-        final isWord = token.type == 'word' || token.type == 'phrase';
-        if (!isWord) {
-          return Text(token.text, style: TextStyle(fontSize: 15, height: 1.7, color: c.text));
-        }
-
-        final isPhrase = token.type == 'phrase';
-        return Builder(
-          builder: (ctx) => InkWell(
-            onTap: () => _showWordPopupAbove(ctx, token),
-            child: Text(
-              token.text,
-              style: TextStyle(
-                fontSize: 15,
-                height: 1.7,
-                color: c.text,
-                decoration: TextDecoration.underline,
-                decorationStyle: isPhrase ? TextDecorationStyle.double : TextDecorationStyle.solid,
-                decorationColor: isPhrase ? c.primaryText : c.textTertiary,
-                decorationThickness: 1.2,
+      crossAxisAlignment: WrapCrossAlignment.end,
+      children: units.map((u) {
+        if (u.isSingle) {
+          final token = u.token!;
+          final isWord = token.type == 'word' || token.type == 'phrase';
+          if (!isWord) {
+            return Text(token.text, style: TextStyle(fontSize: fontSize, height: 1.7, color: c.text));
+          }
+          return Builder(
+            builder: (ctx) => InkWell(
+              onTap: () => _showWordPopupAbove(ctx, token),
+              child: Text(
+                token.text,
+                style: TextStyle(
+                  fontSize: fontSize,
+                  height: 1.7,
+                  color: c.text,
+                  decoration: TextDecoration.underline,
+                  decorationColor: c.textTertiary,
+                  decorationThickness: 1.2,
+                ),
               ),
             ),
-          ),
-        );
+          );
+        } else {
+          // 词组：每个单词各自一条灰细下划线（紧贴文字），词组下方一条贯穿的红色长下划线
+          // 用 Stack 让红线紧贴文字底部，而不是垂直堆叠
+          final groupTokens = u.groupTokens!;
+          
+          return IntrinsicWidth(
+            child: Stack(
+              clipBehavior: Clip.none,
+              children: [
+                // 单词行：每个单词独立可点击
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: groupTokens.map((t) {
+                    final isWord = t.type == 'word' || t.type == 'phrase';
+                    if (!isWord) {
+                      return Text(t.text, style: TextStyle(fontSize: fontSize, height: 1.7, color: c.text));
+                    }
+                    return Builder(
+                      builder: (ctx) => InkWell(
+                        onTap: () => _showWordPopupAbove(ctx, t),
+                        child: Text(
+                          t.text,
+                          style: TextStyle(
+                            fontSize: fontSize,
+                            height: 1.7,
+                            color: c.text,
+                            decoration: TextDecoration.underline,
+                            decorationColor: c.textTertiary,
+                            decorationThickness: 1,
+                          ),
+                        ),
+                      ),
+                    );
+                  }).toList(),
+                ),
+                // 红色长下划线：紧贴文字底部（bottom: -2 让线与文字下划线重叠一点）
+                Positioned(
+                  left: 0,
+                  right: 0,
+                  bottom: -2,
+                  child: Container(
+                    height: 1.5,
+                    color: const Color(0xFFEF4444),
+                  ),
+                ),
+              ],
+            ),
+          );
+        }
       }).toList(),
     );
   }
@@ -519,25 +632,24 @@ class _AnswerPageState extends State<AnswerPage> {
   }
 
   // ===== 在单词上方显示气泡 =====
-  void _showWordPopupAbove(BuildContext context, WordToken token) {
+  void _showWordPopupAbove(BuildContext context, WordToken token, {List<WordToken>? phraseTokens}) {
     _dismissWordPopup();
 
     final renderBox = context.findRenderObject() as RenderBox?;
     if (renderBox == null) return;
 
-    // 单词自身的位置和尺寸
+    // 词组整体的位置和尺寸
     final wordSize = renderBox.size;
     final wordOffset = renderBox.localToGlobal(Offset.zero);
 
-    // 屏幕尺寸（用于边界判断）
     final mediaQuery = MediaQuery.of(context);
     final screenWidth = mediaQuery.size.width;
     final screenHeight = mediaQuery.size.height;
+    final isMobile = AppScope.of(context).uiMode == 'mobile';
 
-    // 气泡尺寸（紧凑型）
-    const bubbleWidth = 220.0;
+    const bubbleWidth = 260.0; // 更宽一些，便于容纳词组标题和单词明细
+    final effectiveBubbleWidth = isMobile ? (screenWidth - 32).clamp(200.0, 260.0) : bubbleWidth;
 
-    // 先用 TextPainter 测量释义高度，动态估算气泡高度
     final translation = token.translation;
     final other = token.other;
     final wordText = token.word.isNotEmpty ? token.word : token.text;
@@ -547,170 +659,419 @@ class _AnswerPageState extends State<AnswerPage> {
     final isLight = Theme.of(context).brightness == Brightness.light;
     final c = AppColors(isLight);
 
-    final tp = TextPainter(
-      text: TextSpan(
-        text: translation,
-        style: TextStyle(fontSize: 13, color: c.text, height: 1.4),
-      ),
-      textDirection: TextDirection.ltr,
-    )..layout(maxWidth: bubbleWidth - 24);
-    final translationLines = (tp.height / (13 * 1.4)).ceil();
+    // 判断是否为词组入口（phraseTokens 非空 或 token.phraseGroup 非空）
+    final hasPhrase = phraseTokens != null || token.phraseGroup.isNotEmpty;
+    final phraseInfo = token.phraseGroup.isNotEmpty
+        ? token.phrases.where((p) => p.text == token.phraseGroup).firstOrNull
+        : null;
+    // 词组内的有效单词 token（过滤标点/空格）
+    final phraseWordTokens = phraseTokens
+            ?.where((t) => t.type == 'word' || t.type == 'phrase')
+            .toList() ??
+        <WordToken>[];
 
-    final tpOther = TextPainter(
-      text: TextSpan(
-        text: other,
-        style: TextStyle(fontSize: 11, color: c.textTertiary, height: 1.3),
-      ),
-      textDirection: TextDirection.ltr,
-    )..layout(maxWidth: bubbleWidth - 24);
-    final otherLines = (tpOther.height / (11 * 1.3)).ceil();
+    // 默认显示词组视图（如果是词组入口）
+    bool showPhrase = hasPhrase;
 
-    // 气泡高度：单词行 + 音标行 + 释义 + 词典释义 + 用法 + 收藏按钮 + padding
-    double bubbleHeight = 30 + // 单词行
-        ((phonetic.isNotEmpty || ttsReady) ? 22 : 0) + // 音标行（含发音按钮）
-        (translation.isNotEmpty ? 4 + translationLines * 18.2 : 0) +
-        (token.contextTranslation.isNotEmpty ? 3 + 14.3 : 0) +
-        (other.isNotEmpty ? 3 + otherLines * 14.3 : 0) +
+    // 粗略估算气泡高度（词组模式按最大内容估，单词模式按 3 个单词明细估）
+    final estPhraseTransLines = ((phraseInfo?.translation.length ?? 0) / 22).ceil().clamp(1, 6);
+    final estWordCards = phraseWordTokens.isEmpty ? 1 : phraseWordTokens.length.clamp(1, 5);
+    double bubbleHeight = 30 + // 标题行
+        22 + // 音标/发音行
+        (showPhrase
+            ? (8 + estPhraseTransLines * 18.2 + (other.isNotEmpty ? 3 + 16 : 0))
+            : (8 + estWordCards * 42.0)) +
         8 + // 分隔
         28 + // 收藏按钮
-        16; // padding
+        20; // padding + 余量
 
-    // 气泡居中到单词正上方，紧贴单词（仅2px间隙）
-    double left = wordOffset.dx + (wordSize.width - bubbleWidth) / 2;
+    double left = wordOffset.dx + (wordSize.width - effectiveBubbleWidth) / 2;
     double top = wordOffset.dy - bubbleHeight - 2;
 
-    // 如果上方空间不够，显示在单词下方（紧贴单词下方）
     if (top < 10) {
       top = wordOffset.dy + wordSize.height + 2;
     }
-
-    // 如果下方也超出屏幕，就贴顶
     if (top + bubbleHeight > screenHeight - 10) {
       top = screenHeight - bubbleHeight - 10;
     }
-
-    // 确保不超出左右边界
     if (left < 8) left = 8;
-    if (left + bubbleWidth > screenWidth - 8) {
-      left = screenWidth - bubbleWidth - 8;
+    if (left + effectiveBubbleWidth > screenWidth - 8) {
+      left = screenWidth - effectiveBubbleWidth - 8;
     }
 
     final isInWordBook = s.wordbook.any((e) => e.word.toLowerCase() == wordText.toLowerCase());
 
     _wordPopup = OverlayEntry(
-      builder: (context) => Stack(
-        children: [
-          // 背景遮罩（点击关闭）
-          Positioned.fill(
-            child: GestureDetector(
-              onTap: _dismissWordPopup,
-              behavior: HitTestBehavior.translucent,
-            ),
-          ),
-          // 气泡
-          Positioned(
-            left: left,
-            top: top,
-            child: Material(
-              color: Colors.transparent,
-              child: Container(
-                width: bubbleWidth,
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                decoration: BoxDecoration(
-                  // overlay 保持不透明：气泡浮在题目文字上，不能用半透明玻璃值（会透字）
-                  color: c.overlay,
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: c.border),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: 0.3),
-                      blurRadius: 10,
-                      offset: const Offset(0, 2),
-                    ),
-                  ],
-                ),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    // 单词 + 词性
-                    Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Flexible(
-                          child: Text(
-                            wordText,
-                            style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: c.text),
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                        if (token.pos.isNotEmpty) ...[
-                          const SizedBox(width: 6),
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-                            decoration: BoxDecoration(
-                              color: c.primaryBgStrong,
-                              borderRadius: BorderRadius.circular(3),
-                            ),
-                            child: Text(token.pos, style: TextStyle(fontSize: 10, color: c.primaryText, fontWeight: FontWeight.w500)),
-                          ),
-                        ],
-                      ],
-                    ),
-                    if (phonetic.isNotEmpty || ttsReady) ...[
-                      const SizedBox(height: 2),
-                      Row(children: [
-                        if (ttsReady)
-                          InkWell(
-                            onTap: () => TtsService.instance.speakWord(wordText),
-                            borderRadius: BorderRadius.circular(4),
-                            child: Padding(
-                              padding: const EdgeInsets.all(2),
-                              child: Icon(Icons.volume_up, size: 14, color: c.primaryText),
-                            ),
-                          ),
-                        if (ttsReady && phonetic.isNotEmpty) const SizedBox(width: 4),
-                        if (phonetic.isNotEmpty)
-                          Flexible(
-                            child: Text('/$phonetic/', style: TextStyle(fontSize: 12, color: c.textTertiary), overflow: TextOverflow.ellipsis),
-                          ),
-                      ]),
-                    ],
-                    if (translation.isNotEmpty) ...[
-                      const SizedBox(height: 4),
-                      Text(translation, style: TextStyle(fontSize: 13, color: c.text, height: 1.4)),
-                    ],
-                    if (token.contextTranslation.isNotEmpty) ...[
-                      const SizedBox(height: 3),
-                      Row(children: [
-                        Text('词典：', style: TextStyle(fontSize: 11, color: c.textTertiary, fontWeight: FontWeight.w600)),
-                        Expanded(child: Text(token.contextTranslation, style: TextStyle(fontSize: 11, color: c.textTertiary, height: 1.3))),
-                      ]),
-                    ],
-                    if (other.isNotEmpty) ...[
-                      const SizedBox(height: 3),
-                      Text(other, style: TextStyle(fontSize: 11, color: c.textTertiary, height: 1.3)),
-                    ],
-                    const SizedBox(height: 8),
-                    // 收藏按钮
-                    Divider(height: 1, color: c.border),
-                    const SizedBox(height: 4),
-                    _WordBookButton(
-                      word: wordText,
-                      translation: translation,
-                      added: isInWordBook,
-                      state: s,
-                      onChanged: () {
-                        // 收藏状态变化后关闭气泡
-                        if (mounted) _dismissWordPopup();
-                      },
-                    ),
-                  ],
+      builder: (context) => StatefulBuilder(
+        builder: (context, setState) {
+          final displayTitle = (showPhrase && phraseInfo != null)
+              ? phraseInfo.text
+              : wordText;
+          final displayTranslation = (showPhrase && phraseInfo != null)
+              ? phraseInfo.translation
+              : translation;
+          final displayPhonetic = showPhrase ? '' : phonetic;
+          final displayPos = showPhrase ? '' : token.pos;
+
+          return Stack(
+            children: [
+              Positioned.fill(
+                child: GestureDetector(
+                  onTap: _dismissWordPopup,
+                  behavior: HitTestBehavior.translucent,
                 ),
               ),
-            ),
-          ),
-        ],
+              Positioned(
+                left: left,
+                top: top,
+                child: Material(
+                  color: Colors.transparent,
+                  child: Container(
+                    width: effectiveBubbleWidth,
+                    constraints: BoxConstraints(
+                      maxHeight: screenHeight - 40,
+                    ),
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: c.overlay,
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: c.border),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withValues(alpha: 0.3),
+                          blurRadius: 10,
+                          offset: const Offset(0, 2),
+                        ),
+                      ],
+                    ),
+                    child: SingleChildScrollView(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          // 标题行：词组/单词标题 + 词性胶囊 + 切换按钮
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Flexible(
+                                child: Text(
+                                  displayTitle,
+                                  style: TextStyle(
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.w700,
+                                    color: c.text,
+                                  ),
+                                ),
+                              ),
+                              if (displayPos.isNotEmpty) ...[
+                                const SizedBox(width: 6),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                                  decoration: BoxDecoration(
+                                    color: c.primaryBgStrong,
+                                    borderRadius: BorderRadius.circular(3),
+                                  ),
+                                  child: Text(
+                                    displayPos,
+                                    style: TextStyle(
+                                      fontSize: 10,
+                                      color: c.primaryText,
+                                      fontWeight: FontWeight.w500,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                              // 词组/单词切换按钮
+                              if (hasPhrase) ...[
+                                const Spacer(),
+                                InkWell(
+                                  onTap: () {
+                                    setState(() {
+                                      showPhrase = !showPhrase;
+                                    });
+                                  },
+                                  borderRadius: BorderRadius.circular(4),
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                    decoration: BoxDecoration(
+                                      color: showPhrase
+                                          ? const Color(0xFFEF4444).withValues(alpha: 0.1)
+                                          : c.inputFill,
+                                      borderRadius: BorderRadius.circular(4),
+                                      border: Border.all(
+                                        color: showPhrase
+                                            ? const Color(0xFFEF4444)
+                                            : c.border,
+                                        width: 0.5,
+                                      ),
+                                    ),
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(
+                                          showPhrase ? Icons.group : Icons.text_fields,
+                                          size: 12,
+                                          color: showPhrase
+                                              ? const Color(0xFFEF4444)
+                                              : c.textSecondary,
+                                        ),
+                                        const SizedBox(width: 3),
+                                        Text(
+                                          showPhrase ? '词组' : '单词',
+                                          style: TextStyle(
+                                            fontSize: 10,
+                                            color: showPhrase
+                                                ? const Color(0xFFEF4444)
+                                                : c.textSecondary,
+                                            fontWeight: FontWeight.w500,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ],
+                          ),
+                          // 音标 + 发音按钮（仅单词模式或非词组入口时显示）
+                          if (displayPhonetic.isNotEmpty || (ttsReady && !showPhrase)) ...[
+                            const SizedBox(height: 2),
+                            Row(children: [
+                              if (ttsReady && !showPhrase)
+                                InkWell(
+                                  onTap: () => TtsService.instance.speakWord(wordText),
+                                  borderRadius: BorderRadius.circular(4),
+                                  child: Padding(
+                                    padding: const EdgeInsets.all(2),
+                                    child: Icon(Icons.volume_up, size: 14, color: c.primaryText),
+                                  ),
+                                ),
+                              if (ttsReady && !showPhrase && displayPhonetic.isNotEmpty)
+                                const SizedBox(width: 4),
+                              if (displayPhonetic.isNotEmpty)
+                                Flexible(
+                                  child: Text(
+                                    '/$displayPhonetic/',
+                                    style: TextStyle(fontSize: 12, color: c.textTertiary),
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                            ]),
+                          ],
+                          // —— 词组模式：词组整体释义 ——
+                          if (showPhrase) ...[
+                            if (displayTranslation.isNotEmpty) ...[
+                              const SizedBox(height: 6),
+                              Container(
+                                width: double.infinity,
+                                padding: const EdgeInsets.all(8),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFFEF4444).withValues(alpha: 0.08),
+                                  borderRadius: BorderRadius.circular(6),
+                                  border: Border.all(
+                                    color: const Color(0xFFEF4444).withValues(alpha: 0.2),
+                                  ),
+                                ),
+                                child: Text(
+                                  displayTranslation,
+                                  style: TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                    color: c.text,
+                                    height: 1.45,
+                                  ),
+                                ),
+                              ),
+                            ],
+                            if (token.contextTranslation.isNotEmpty) ...[
+                              const SizedBox(height: 4),
+                              Row(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text('词典：',
+                                      style: TextStyle(
+                                          fontSize: 11,
+                                          color: c.textTertiary,
+                                          fontWeight: FontWeight.w600)),
+                                  Expanded(
+                                    child: Text(token.contextTranslation,
+                                        style: TextStyle(
+                                            fontSize: 11, color: c.textTertiary, height: 1.3)),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ]
+                          // —— 单词模式：词组内每个单词的完整释义 ——
+                          else if (phraseWordTokens.isNotEmpty) ...[
+                            const SizedBox(height: 6),
+                            Text(
+                              '词组内单词：',
+                              style: TextStyle(
+                                fontSize: 10,
+                                color: c.textTertiary,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            ...phraseWordTokens.map((wt) {
+                              // 优先用 token 上的 AI 释义，为空则用词典兜底
+                              final wEntry = DictService.lookup(wt.text.toLowerCase());
+                              final wPhon = wEntry?.phonetic ?? '';
+                              final wPos = wt.pos.isNotEmpty ? wt.pos : (wEntry?.pos ?? '');
+                              final wTrans = wt.translation.isNotEmpty
+                                  ? wt.translation
+                                  : (wEntry?.translation ?? '');
+                              final wOther = wt.other.isNotEmpty
+                                  ? wt.other
+                                  : (wEntry?.other ?? '');
+                              return Padding(
+                                padding: const EdgeInsets.only(bottom: 6),
+                                child: Container(
+                                  width: double.infinity,
+                                  padding: const EdgeInsets.all(6),
+                                  decoration: BoxDecoration(
+                                    color: c.inputFill,
+                                    borderRadius: BorderRadius.circular(6),
+                                    border: Border.all(color: c.border, width: 0.3),
+                                  ),
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Row(children: [
+                                        Text(
+                                          wt.text,
+                                          style: TextStyle(
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.w700,
+                                            color: c.text,
+                                          ),
+                                        ),
+                                        if (wPos.isNotEmpty) ...[
+                                          const SizedBox(width: 4),
+                                          Container(
+                                            padding: const EdgeInsets.symmetric(
+                                                horizontal: 4, vertical: 0.5),
+                                            decoration: BoxDecoration(
+                                              color: c.primaryBgStrong,
+                                              borderRadius: BorderRadius.circular(2),
+                                            ),
+                                            child: Text(
+                                              wPos,
+                                              style: TextStyle(
+                                                fontSize: 9,
+                                                color: c.primaryText,
+                                                fontWeight: FontWeight.w500,
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                        const Spacer(),
+                                        if (ttsReady)
+                                          InkWell(
+                                            onTap: () =>
+                                                TtsService.instance.speakWord(wt.text),
+                                            borderRadius: BorderRadius.circular(3),
+                                            child: Padding(
+                                              padding: const EdgeInsets.all(1.5),
+                                              child: Icon(
+                                                Icons.volume_up,
+                                                size: 12,
+                                                color: c.primaryText,
+                                              ),
+                                            ),
+                                          ),
+                                        if (wPhon.isNotEmpty) ...[
+                                          const SizedBox(width: 3),
+                                          Text('/$wPhon/',
+                                              style: TextStyle(
+                                                  fontSize: 10, color: c.textTertiary)),
+                                        ],
+                                      ]),
+                                      if (wTrans.isNotEmpty) ...[
+                                        const SizedBox(height: 2),
+                                        Text(
+                                          wTrans,
+                                          style: TextStyle(
+                                              fontSize: 11.5,
+                                              color: c.text,
+                                              height: 1.35,
+                                              fontWeight: FontWeight.w500),
+                                        ),
+                                      ],
+                                      if (wOther.isNotEmpty) ...[
+                                        const SizedBox(height: 2),
+                                        Text(
+                                          wOther,
+                                          style: TextStyle(
+                                              fontSize: 10,
+                                              color: c.textTertiary,
+                                              height: 1.3),
+                                          maxLines: 3,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      ],
+                                    ],
+                                  ),
+                                ),
+                              );
+                            }),
+                          ]
+                          // —— 普通单个单词模式（非词组入口） ——
+                          else ...[
+                            if (displayTranslation.isNotEmpty) ...[
+                              const SizedBox(height: 4),
+                              Text(displayTranslation,
+                                  style: TextStyle(
+                                      fontSize: 13, color: c.text, height: 1.4)),
+                            ],
+                            if (token.contextTranslation.isNotEmpty) ...[
+                              const SizedBox(height: 3),
+                              Row(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text('词典：',
+                                      style: TextStyle(
+                                          fontSize: 11,
+                                          color: c.textTertiary,
+                                          fontWeight: FontWeight.w600)),
+                                  Expanded(
+                                    child: Text(token.contextTranslation,
+                                        style: TextStyle(
+                                            fontSize: 11, color: c.textTertiary, height: 1.3)),
+                                  ),
+                                ],
+                              ),
+                            ],
+                            if (other.isNotEmpty) ...[
+                              const SizedBox(height: 3),
+                              Text(other,
+                                  style: TextStyle(
+                                      fontSize: 11, color: c.textTertiary, height: 1.3)),
+                            ],
+                          ],
+                          const SizedBox(height: 8),
+                          // 收藏按钮（仅收藏当前主词，非词组）
+                          Divider(height: 1, color: c.border),
+                          const SizedBox(height: 4),
+                          _WordBookButton(
+                            word: wordText,
+                            translation: translation,
+                            added: isInWordBook,
+                            state: s,
+                            onChanged: () {
+                              if (mounted) _dismissWordPopup();
+                            },
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          );
+        },
       ),
     );
 
@@ -1095,9 +1456,24 @@ class _LearnPageState extends State<LearnPage> {
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
+    final isMobile = AppScope.of(context).uiMode == 'mobile';
     final isMixed = _selectedType == 'mixed';
+    final card02 = _buildCard(
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        _buildSectionHeader('02. 目标难度等级'),
+        const SizedBox(height: 12),
+        _buildDifficultyChips(),
+      ]),
+    );
+    final card03 = _buildCard(
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        _buildSectionHeader('03. 强化侧重点'),
+        const SizedBox(height: 12),
+        _buildFocusChips(),
+      ]),
+    );
     return SingleChildScrollView(
-      padding: const EdgeInsets.all(24),
+      padding: EdgeInsets.all(isMobile ? 14 : 24),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         // 01. 题型选择
         _buildSectionHeader('01. 题型选择'),
@@ -1105,27 +1481,14 @@ class _LearnPageState extends State<LearnPage> {
         _buildTypeGrid(),
         const SizedBox(height: 24),
         // 02. 目标难度等级 + 03. 强化侧重点（并排）
-        Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Expanded(
-            child: _buildCard(
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                _buildSectionHeader('02. 目标难度等级'),
-                const SizedBox(height: 12),
-                _buildDifficultyChips(),
-              ]),
-            ),
-          ),
-          const SizedBox(width: 16),
-          Expanded(
-            child: _buildCard(
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                _buildSectionHeader('03. 强化侧重点'),
-                const SizedBox(height: 12),
-                _buildFocusChips(),
-              ]),
-            ),
-          ),
-        ]),
+        if (isMobile)
+          Column(children: [card02, const SizedBox(height: 16), card03])
+        else
+          Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Expanded(child: card02),
+            const SizedBox(width: 16),
+            Expanded(child: card03),
+          ]),
         const SizedBox(height: 24),
         // 04. 题目规模与时间估算（综合模拟套卷为固定76题，隐藏滑块）
         if (!isMixed)
@@ -1325,6 +1688,9 @@ class _LearnPageState extends State<LearnPage> {
 
   // ===== 01. 题型 3x2 网格 =====
   Widget _buildTypeGrid() {
+    final isMobile = AppScope.of(context).uiMode == 'mobile';
+    final cols = isMobile ? 2 : 3;
+    final rows = isMobile ? 3 : 2;
     final types = [
       ('translation', '翻译题', '中英互译·长难句', Icons.translate_rounded, const Color(0xFF7C3AED)),
       ('reading', '阅读理解', '细节理解·推断题', Icons.menu_book_rounded, const Color(0xFF3B82F6)),
@@ -1334,23 +1700,23 @@ class _LearnPageState extends State<LearnPage> {
       ('mixed', '综合模拟套卷', 'AI混合全题型考卷', Icons.layers_rounded, const Color(0xFF8B5CF6)),
     ];
     return Column(children: [
-      for (var row = 0; row < 2; row++)
+      for (var row = 0; row < rows; row++)
         Padding(
-          padding: EdgeInsets.only(bottom: row == 0 ? 12 : 0),
+          padding: EdgeInsets.only(bottom: row < rows - 1 ? 12 : 0),
           child: Row(children: [
-            for (var col = 0; col < 3; col++)
+            for (var col = 0; col < cols; col++)
               Expanded(
                 child: Padding(
-                  padding: EdgeInsets.only(right: col < 2 ? 12 : 0),
+                  padding: EdgeInsets.only(right: col < cols - 1 ? 12 : 0),
                   child: _TypeCardV2(
-                    type: types[row * 3 + col].$1,
-                    title: types[row * 3 + col].$2,
-                    subtitle: types[row * 3 + col].$3,
-                    icon: types[row * 3 + col].$4,
-                    iconColor: types[row * 3 + col].$5,
-                    selected: _selectedType == types[row * 3 + col].$1,
-                    isMixed: types[row * 3 + col].$1 == 'mixed',
-                    onTap: () => setState(() => _selectedType = types[row * 3 + col].$1),
+                    type: types[row * cols + col].$1,
+                    title: types[row * cols + col].$2,
+                    subtitle: types[row * cols + col].$3,
+                    icon: types[row * cols + col].$4,
+                    iconColor: types[row * cols + col].$5,
+                    selected: _selectedType == types[row * cols + col].$1,
+                    isMixed: types[row * cols + col].$1 == 'mixed',
+                    onTap: () => setState(() => _selectedType = types[row * cols + col].$1),
                   ),
                 ),
               ),
@@ -1420,24 +1786,25 @@ class _LearnPageState extends State<LearnPage> {
   // ===== 04. 题目规模滑块 =====
   Widget _buildScaleSliders() {
     final c = AppColors.of(context);
+    final isMobile = AppScope.of(context).uiMode == 'mobile';
     final count = _countSlider.round();
     final wordCount = _wordCountSlider.round();
     return Row(children: [
       // 题量显示
       Container(
-        width: 80,
+        width: isMobile ? 64 : 80,
         padding: const EdgeInsets.symmetric(vertical: 12),
         decoration: BoxDecoration(
           color: c.chipUnselected,
           borderRadius: BorderRadius.circular(12),
         ),
         child: Column(children: [
-          Text('$count', style: TextStyle(fontSize: 28, fontWeight: FontWeight.w800, color: c.primaryText)),
+          Text('$count', style: TextStyle(fontSize: isMobile ? 24 : 28, fontWeight: FontWeight.w800, color: c.primaryText)),
           const SizedBox(height: 2),
           Text('题量', style: TextStyle(fontSize: 12, color: c.textTertiary)),
         ]),
       ),
-      const SizedBox(width: 20),
+      SizedBox(width: isMobile ? 12 : 20),
       // 两个滑块
       Expanded(
         child: Column(children: [
@@ -1477,6 +1844,7 @@ class _LearnPageState extends State<LearnPage> {
     required Map<double, String> marks,
   }) {
     final c = AppColors.of(context);
+    final isMobile = AppScope.of(context).uiMode == 'mobile';
     return Column(children: [
       SliderTheme(
         data: SliderThemeData(
@@ -1502,7 +1870,7 @@ class _LearnPageState extends State<LearnPage> {
         padding: const EdgeInsets.symmetric(horizontal: 4),
         child: Row(children: [
           for (final entry in marks.entries) ...[
-            Expanded(child: Text(entry.value, textAlign: TextAlign.center, style: TextStyle(fontSize: 10.5, color: c.textTertiary))),
+            Expanded(child: Text(entry.value, textAlign: TextAlign.center, style: TextStyle(fontSize: isMobile ? 9 : 10.5, color: c.textTertiary), maxLines: 1, overflow: TextOverflow.ellipsis)),
           ],
         ]),
       ),

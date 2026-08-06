@@ -232,7 +232,11 @@ class GrammarStore extends ChangeNotifier {
       );
       final content = r.content;
       if (content == null) {
-        aiMessage = 'AI 请求失败，请稍后重试，当前可继续练习内置题';
+        // 透传请求层失败原因（如超时、连接被拦截、HTTP 错误码），便于移动端排查
+        final detail = ApiService.lastError;
+        aiMessage = detail != null
+            ? 'AI 请求失败（$detail），可稍后重试，当前可继续练习内置题'
+            : 'AI 请求失败，请稍后重试，当前可继续练习内置题';
         return false;
       }
       final arr = ApiService.extractJsonArray(content);

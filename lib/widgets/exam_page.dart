@@ -146,6 +146,13 @@ class ExamRoomPage extends StatelessWidget {
 
     final current = state.examCurrentQuestion.clamp(1, total);
     final resolved = state.resolveExamQuestion(current);
+    final danger = remaining <= 600;
+
+    // 手机端走全新布局（电脑端完全不变）
+    final isMobile = state.uiMode == 'mobile';
+    if (isMobile) {
+      return _buildMobileExam(context, paper, resolved, current, answered, total, remaining, danger);
+    }
 
     return Scaffold(
       backgroundColor: const Color(0xFFF6F7FB),
@@ -165,7 +172,7 @@ class ExamRoomPage extends StatelessWidget {
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  // 左侧题号导航
+                  // 左侧题号导航（手机端隐藏）
                   _buildLeftNav(paper),
                   // 中间答题区
                   Expanded(
@@ -175,7 +182,10 @@ class ExamRoomPage extends StatelessWidget {
                     ),
                   ),
                   // 右侧答题卡
-                  SizedBox(width: 220, child: _buildAnswerCard(context, paper, current, answered, total)),
+                  SizedBox(
+                    width: 220,
+                    child: _buildAnswerCard(context, paper, current, answered, total, compact: false),
+                  ),
                 ],
               ),
             ),
@@ -188,6 +198,469 @@ class ExamRoomPage extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  // ========= 手机端考场布局 =========
+
+  Widget _buildMobileExam(BuildContext context, FullExamPaper paper, dynamic resolved, int current, int answered, int total, int remaining, bool danger) {
+    return Scaffold(
+      backgroundColor: const Color(0xFFF6F7FB),
+      body: SafeArea(
+        top: false,
+        child: Container(
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [Color(0xFFEFF4FB), Color(0xFFF7F5FB), Color(0xFFF9F7F2)],
+            ),
+          ),
+          child: Column(
+            children: [
+              // 顶部状态栏：倒计时 + 题号进度 + 答题卡入口
+              _buildMobileTopBar(context, current, answered, total, remaining, danger),
+              // 生成状态横幅（内联，不再 Positioned 覆盖）
+              _ExamGenBanner(state: state),
+              // 答题区（全宽可滚动）
+              Expanded(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
+                  child: _buildQuestionContent(paper, resolved, current),
+                ),
+              ),
+              // 底部工具栏：上一题 / 题号 / 下一题
+              _buildMobileBottomBar(context, current, total),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 手机端顶部状态栏：紧凑显示倒计时、题号进度，并提供答题卡入口
+  Widget _buildMobileTopBar(BuildContext context, int current, int answered, int total, int remaining, bool danger) {
+    final pct = total == 0 ? 0.0 : answered / total;
+    return Container(
+      padding: const EdgeInsets.fromLTRB(14, 10, 10, 10),
+      decoration: const BoxDecoration(
+        color: Color(0xFF1E293B),
+        boxShadow: [BoxShadow(color: Color(0x1F000000), blurRadius: 8)],
+      ),
+      child: Row(
+        children: [
+          // 倒计时
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              color: danger ? const Color(0xFF7F1D1D) : const Color(0xFF334155),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: danger ? const Color(0xFFDC2626) : Colors.white.withOpacity(0.08)),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(danger ? Icons.timer_outlined : Icons.schedule_rounded,
+                    color: danger ? const Color(0xFFFCA5A5) : const Color(0xFF93C5FD), size: 15),
+                const SizedBox(width: 6),
+                Text(
+                  formatDuration(remaining),
+                  style: TextStyle(
+                    color: danger ? const Color(0xFFFFE4E4) : Colors.white,
+                    fontSize: 15,
+                    fontWeight: FontWeight.w700,
+                    fontFamily: 'monospace',
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 10),
+          // 题号 + 进度条
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Row(
+                  children: [
+                    Text('第 $current / $total 题',
+                        style: const TextStyle(color: Colors.white, fontSize: 12.5, fontWeight: FontWeight.w600)),
+                    const SizedBox(width: 6),
+                    Text('已答 $answered',
+                        style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 11)),
+                  ],
+                ),
+                const SizedBox(height: 5),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(4),
+                  child: LinearProgressIndicator(
+                    value: pct,
+                    minHeight: 4,
+                    backgroundColor: const Color(0xFF334155),
+                    valueColor: AlwaysStoppedAnimation(Color.lerp(const Color(0xFF3B82F6), const Color(0xFF8B5CF6), pct)!),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 6),
+          // 答题卡入口
+          IconButton(
+            onPressed: () => _showMobileAnswerSheet(context, current, answered, total),
+            icon: const Icon(Icons.grid_view_rounded, color: Color(0xFF93C5FD), size: 20),
+            style: IconButton.styleFrom(
+              backgroundColor: Colors.white.withOpacity(0.08),
+              minimumSize: const Size(38, 38),
+              padding: EdgeInsets.zero,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(9)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 手机端底部工具栏：上一题 / 当前题号 / 下一题
+  Widget _buildMobileBottomBar(BuildContext context, int current, int total) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        boxShadow: [BoxShadow(color: const Color(0xFF0F172A).withOpacity(0.08), blurRadius: 12, offset: const Offset(0, -3))],
+      ),
+      child: Row(
+        children: [
+          // 上一题
+          Expanded(
+            flex: 2,
+            child: OutlinedButton.icon(
+              onPressed: state.examCurrentQuestion > 1
+                  ? () {
+                      state.examCurrentQuestion--;
+                      state.touch();
+                    }
+                  : null,
+              icon: const Icon(Icons.chevron_left, size: 18),
+              label: const Text('上一题', style: TextStyle(fontSize: 12.5)),
+              style: OutlinedButton.styleFrom(
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                padding: const EdgeInsets.symmetric(vertical: 10),
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
+          // 中间题号（点击弹出答题卡）
+          GestureDetector(
+            onTap: () => _showMobileAnswerSheet(context, current, state.examCurrentQuestion > 0 ? _countAnswered(state) : 0, total),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+              decoration: BoxDecoration(
+                color: const Color(0xFFEFF6FF),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: const Color(0xFFBFDBFE)),
+              ),
+              child: Text('$current / $total',
+                  style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: Color(0xFF1E40AF))),
+            ),
+          ),
+          const SizedBox(width: 10),
+          // 下一题
+          Expanded(
+            flex: 2,
+            child: OutlinedButton.icon(
+              onPressed: state.examCurrentQuestion < total
+                  ? () {
+                      state.examCurrentQuestion++;
+                      state.touch();
+                    }
+                  : null,
+              icon: const Icon(Icons.chevron_right, size: 18),
+              label: const Text('下一题', style: TextStyle(fontSize: 12.5)),
+              style: OutlinedButton.styleFrom(
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                padding: const EdgeInsets.symmetric(vertical: 10),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 手机端答题卡弹窗：环形统计 + 各题型进度 + 题号网格 + 交卷
+  void _showMobileAnswerSheet(BuildContext context, int current, int answered, int total) {
+    final paper = state.currentExamPaper!;
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) {
+        return Container(
+          constraints: BoxConstraints(maxHeight: MediaQuery.of(ctx).size.height * 0.82),
+          decoration: const BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // 拖拽指示器 + 标题
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.fromLTRB(20, 10, 20, 8),
+                child: Column(
+                  children: [
+                    Container(width: 38, height: 4, decoration: BoxDecoration(color: const Color(0xFFCBD5E1), borderRadius: BorderRadius.circular(2))),
+                    const SizedBox(height: 10),
+                    Row(
+                      children: [
+                        const Text('答题卡', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: Color(0xFF0F172A))),
+                        const Spacer(),
+                        Text('第 $current / $total 题', style: TextStyle(fontSize: 12, color: Colors.grey[500])),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              const Divider(height: 1, color: Color(0xFFF1F5F9)),
+              Flexible(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      // 环形统计 + 已答概览
+                      Row(
+                        children: [
+                          _RingStat(answered: answered, total: total, compact: true),
+                          const SizedBox(width: 16),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text('进度分布', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Color(0xFF334155))),
+                                const SizedBox(height: 8),
+                                ...ExamSection.values.map((s) {
+                                  final n = _sectionAnswered(s);
+                                  return Padding(
+                                    padding: const EdgeInsets.only(bottom: 4),
+                                    child: Row(
+                                      children: [
+                                        SizedBox(
+                                          width: 46,
+                                          child: Text(s.shortLabel,
+                                              style: TextStyle(fontSize: 9.5, color: Colors.grey[600], overflow: TextOverflow.ellipsis)),
+                                        ),
+                                        const SizedBox(width: 4),
+                                        Expanded(
+                                          child: ClipRRect(
+                                            borderRadius: BorderRadius.circular(4),
+                                            child: LinearProgressIndicator(
+                                              value: s.questionCount == 0 ? 0 : n / s.questionCount,
+                                              backgroundColor: const Color(0xFFF1F5F9),
+                                              valueColor: AlwaysStoppedAnimation(Color(n == s.questionCount ? 0xFF10B981 : 0xFF3B82F6)),
+                                              minHeight: 4,
+                                            ),
+                                          ),
+                                        ),
+                                        const SizedBox(width: 4),
+                                        SizedBox(
+                                          width: 32,
+                                          child: Text('$n/${s.questionCount}',
+                                              textAlign: TextAlign.right,
+                                              style: TextStyle(fontSize: 9, color: n == s.questionCount ? const Color(0xFF059669) : Colors.grey[600])),
+                                        ),
+                                      ],
+                                    ),
+                                  );
+                                }),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 14),
+                      const Divider(height: 1, color: Color(0xFFF1F5F9)),
+                      const SizedBox(height: 12),
+                      // 各题型题号网格
+                      ...ExamSection.values.map((sec) => _buildMobileSectionGrid(ctx, paper, sec, current)),
+                      const SizedBox(height: 10),
+                      // 图例
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: const [
+                          _Legend(color: Color(0xFF3B82F6), label: '当前'),
+                          SizedBox(width: 12),
+                          _Legend(color: Color(0xFF10B981), label: '已答'),
+                          SizedBox(width: 12),
+                          _Legend(color: Color(0xFFE5E7EB), label: '未答', dark: true),
+                        ],
+                      ),
+                      const SizedBox(height: 14),
+                    ],
+                  ),
+                ),
+              ),
+              // 底部交卷按钮
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  border: Border(top: BorderSide(color: const Color(0xFFF1F5F9), width: 1)),
+                ),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
+                    onPressed: () {
+                      Navigator.pop(ctx);
+                      showDialog(
+                        context: context,
+                        builder: (dctx) => AlertDialog(
+                          title: const Text('确定交卷？'),
+                          content: Text('你当前已答 $answered / $total 题。\n交卷后无法修改，确定提交并查看成绩分析吗？'),
+                          actions: [
+                            TextButton(onPressed: () => Navigator.pop(dctx), child: const Text('再检查一下')),
+                            ElevatedButton(
+                              onPressed: () {
+                                Navigator.pop(dctx);
+                                state.submitFullExam();
+                              },
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: const Color(0xFFEF4444),
+                                foregroundColor: Colors.white,
+                              ),
+                              child: const Text('确定交卷'),
+                            ),
+                          ],
+                        ),
+                      );
+                    },
+                    icon: const Icon(Icons.flag_rounded, size: 16),
+                    label: const Text('交卷评分', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFFEF4444),
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  /// 手机端答题卡中的分题型题号网格
+  Widget _buildMobileSectionGrid(BuildContext context, FullExamPaper paper, ExamSection sec, int current) {
+    final sheet = state.currentExamAnswerSheet!;
+    final start = sec.startIndex;
+    final count = sec.questionCount;
+    List<int?>? Function(int) answeredOf;
+    if (sec == ExamSection.vocab) {
+      answeredOf = (i) => [sheet.vocab[i]];
+    } else if (sec == ExamSection.reading) {
+      answeredOf = (i) {
+        final pi = i ~/ 5;
+        final qi = i % 5;
+        if (pi < sheet.reading.length && qi < sheet.reading[pi].length) {
+          return [sheet.reading[pi][qi]];
+        }
+        return [null];
+      };
+    } else if (sec == ExamSection.cloze) {
+      answeredOf = (i) => [sheet.cloze[i]];
+    } else if (sec == ExamSection.dialogue) {
+      answeredOf = (i) => [sheet.dialogue[i]];
+    } else if (sec == ExamSection.bankedCloze) {
+      answeredOf = (i) => [sheet.bankedCloze[i]];
+    } else if (sec == ExamSection.en2zh5) {
+      answeredOf = (i) => [sheet.en2zh5[i].isNotEmpty ? 1 : null];
+    } else {
+      answeredOf = (i) => [sheet.writing.isNotEmpty ? 1 : null];
+    }
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(sec.shortLabel,
+                      style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: Color(0xFF334155))),
+                ),
+                Text('${sec.totalScore}分 · ${sec.questionCount}题',
+                    style: TextStyle(fontSize: 10.5, color: Colors.grey[500])),
+              ],
+            ),
+          ),
+          Wrap(
+            spacing: 7,
+            runSpacing: 7,
+            children: List.generate(count, (i) {
+              final idx1 = start + i;
+              final a = answeredOf(i);
+              final answered = a != null && a.isNotEmpty && a.first != null;
+              final isCurrent = idx1 == current;
+              final generated = idx1 <= state.examGeneratedCount;
+              return GestureDetector(
+                onTap: generated
+                    ? () {
+                        state.examCurrentQuestion = idx1;
+                        state.touch();
+                        Navigator.of(context).pop();
+                      }
+                    : null,
+                child: Container(
+                  width: 34,
+                  height: 34,
+                  decoration: BoxDecoration(
+                    color: !generated
+                        ? const Color(0xFFF1F5F9)
+                        : isCurrent
+                            ? const Color(0xFF3B82F6)
+                            : answered
+                                ? const Color(0xFF10B981)
+                                : Colors.white,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(
+                      color: !generated
+                          ? const Color(0xFFE2E8F0)
+                          : isCurrent
+                              ? const Color(0xFF2563EB)
+                              : answered
+                                  ? const Color(0xFF059669)
+                                  : const Color(0xFFE2E8F0),
+                    ),
+                    boxShadow: isCurrent && generated
+                        ? [BoxShadow(color: const Color(0xFF3B82F6).withOpacity(0.25), blurRadius: 6, offset: const Offset(0, 2))]
+                        : null,
+                  ),
+                  alignment: Alignment.center,
+                  child: Text(
+                    '$idx1',
+                    style: TextStyle(
+                      fontSize: 12.5,
+                      fontWeight: isCurrent ? FontWeight.w700 : FontWeight.w500,
+                      color: !generated
+                          ? const Color(0xFFCBD5E1)
+                          : (isCurrent || answered) ? Colors.white : const Color(0xFF334155),
+                    ),
+                  ),
+                ),
+              );
+            }),
+          ),
+        ],
       ),
     );
   }
@@ -488,12 +961,12 @@ class ExamRoomPage extends StatelessWidget {
     }
   }
 
-  Widget _buildAnswerCard(BuildContext context, FullExamPaper paper, int current, int answered, int total) {
+  Widget _buildAnswerCard(BuildContext context, FullExamPaper paper, int current, int answered, int total, {bool compact = false}) {
     final remaining = state.examRemainingSec;
     final danger = remaining <= 600;
     return Container(
-      margin: const EdgeInsets.fromLTRB(0, 12, 16, 12),
-      padding: const EdgeInsets.fromLTRB(14, 14, 14, 14),
+      margin: EdgeInsets.fromLTRB(0, 12, compact ? 8 : 16, 12),
+      padding: EdgeInsets.all(compact ? 10 : 14),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(14),
@@ -507,7 +980,7 @@ class ExamRoomPage extends StatelessWidget {
             // 倒计时（移到答题卡顶部）
             Container(
               width: double.infinity,
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              padding: EdgeInsets.symmetric(horizontal: compact ? 8 : 12, vertical: compact ? 8 : 10),
               decoration: BoxDecoration(
                 color: danger ? const Color(0xFFFEF2F2) : const Color(0xFFEFF6FF),
                 borderRadius: BorderRadius.circular(10),
@@ -516,48 +989,48 @@ class ExamRoomPage extends StatelessWidget {
               child: Row(
                 children: [
                   Icon(danger ? Icons.timer_outlined : Icons.schedule_rounded,
-                      color: danger ? const Color(0xFFDC2626) : const Color(0xFF3B82F6), size: 18),
-                  const SizedBox(width: 8),
+                      color: danger ? const Color(0xFFDC2626) : const Color(0xFF3B82F6), size: compact ? 16 : 18),
+                  const SizedBox(width: 6),
                   Text(
                     formatDuration(remaining),
                     style: TextStyle(
                       color: danger ? const Color(0xFFDC2626) : const Color(0xFF1E40AF),
-                      fontSize: 20,
+                      fontSize: compact ? 16 : 20,
                       fontWeight: FontWeight.w700,
                       fontFamily: 'monospace',
                     ),
                   ),
                   const Spacer(),
                   Text(
-                    '剩余时间',
+                    '剩余',
                     style: TextStyle(
-                      fontSize: 11,
+                      fontSize: compact ? 10 : 11,
                       color: danger ? const Color(0xFFDC2626) : const Color(0xFF64748B),
                     ),
                   ),
                 ],
               ),
             ),
-            const SizedBox(height: 14),
-            const Text('答题卡', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: Color(0xFF0F172A))),
-            const SizedBox(height: 4),
-            Text('第 ${current.clamp(1, total)} / $total 题', style: TextStyle(fontSize: 11.5, color: Colors.grey[500])),
-            const SizedBox(height: 14),
-            _RingStat(answered: answered, total: total),
-            const SizedBox(height: 16),
-            const Text('进度分布', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Color(0xFF334155))),
-            const SizedBox(height: 10),
+            SizedBox(height: compact ? 10 : 14),
+            Text('答题卡', style: TextStyle(fontSize: compact ? 12 : 14, fontWeight: FontWeight.w700, color: const Color(0xFF0F172A))),
+            const SizedBox(height: 2),
+            Text('第 ${current.clamp(1, total)} / $total 题', style: TextStyle(fontSize: compact ? 10 : 11.5, color: Colors.grey[500])),
+            SizedBox(height: compact ? 10 : 14),
+            _RingStat(answered: answered, total: total, compact: compact),
+            SizedBox(height: compact ? 10 : 16),
+            Text('进度分布', style: TextStyle(fontSize: compact ? 10 : 12, fontWeight: FontWeight.w600, color: const Color(0xFF334155))),
+            SizedBox(height: compact ? 6 : 10),
             ...ExamSection.values.map((s) {
               final n = _sectionAnswered(s);
               return Padding(
-                padding: const EdgeInsets.only(bottom: 8),
+                padding: EdgeInsets.only(bottom: compact ? 5 : 8),
                 child: Row(
                   children: [
                     SizedBox(
-                      width: 58,
-                      child: Text(s.label, style: TextStyle(fontSize: 10.5, color: Colors.grey[600], overflow: TextOverflow.ellipsis)),
+                      width: compact ? 42 : 58,
+                      child: Text(s.label, style: TextStyle(fontSize: compact ? 9 : 10.5, color: Colors.grey[600], overflow: TextOverflow.ellipsis)),
                     ),
-                    const SizedBox(width: 6),
+                    const SizedBox(width: 4),
                     Expanded(
                       child: ClipRRect(
                         borderRadius: BorderRadius.circular(4),
@@ -565,20 +1038,20 @@ class ExamRoomPage extends StatelessWidget {
                           value: s.questionCount == 0 ? 0 : n / s.questionCount,
                           backgroundColor: const Color(0xFFF1F5F9),
                           valueColor: AlwaysStoppedAnimation(Color(n == s.questionCount ? 0xFF10B981 : 0xFF3B82F6)),
-                          minHeight: 6,
+                          minHeight: compact ? 4 : 6,
                         ),
                       ),
                     ),
-                    const SizedBox(width: 6),
+                    const SizedBox(width: 4),
                     Text('$n/${s.questionCount}',
-                        style: TextStyle(fontSize: 10, color: n == s.questionCount ? const Color(0xFF059669) : Colors.grey[600])),
+                        style: TextStyle(fontSize: compact ? 8 : 10, color: n == s.questionCount ? const Color(0xFF059669) : Colors.grey[600])),
                   ],
                 ),
               );
             }),
-            const SizedBox(height: 12),
+            SizedBox(height: compact ? 8 : 12),
             const Divider(height: 1, color: Color(0xFFF1F5F9)),
-            const SizedBox(height: 10),
+            SizedBox(height: compact ? 8 : 10),
             // 上一题 / 下一题（原底部操作栏并入）
             Row(
               children: [
@@ -590,15 +1063,15 @@ class ExamRoomPage extends StatelessWidget {
                             state.touch();
                           }
                         : null,
-                    icon: const Icon(Icons.chevron_left, size: 16),
-                    label: const Text('上一题', style: TextStyle(fontSize: 12)),
+                    icon: Icon(Icons.chevron_left, size: compact ? 14 : 16),
+                    label: Text('上一题', style: TextStyle(fontSize: compact ? 10 : 12)),
                     style: OutlinedButton.styleFrom(
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 9),
+                      padding: EdgeInsets.symmetric(horizontal: 4, vertical: compact ? 7 : 9),
                     ),
                   ),
                 ),
-                const SizedBox(width: 8),
+                SizedBox(width: compact ? 4 : 8),
                 Expanded(
                   child: OutlinedButton.icon(
                     onPressed: state.examCurrentQuestion < total
@@ -607,17 +1080,17 @@ class ExamRoomPage extends StatelessWidget {
                             state.touch();
                           }
                         : null,
-                    icon: const Icon(Icons.chevron_right, size: 16),
-                    label: const Text('下一题', style: TextStyle(fontSize: 12)),
+                    icon: Icon(Icons.chevron_right, size: compact ? 14 : 16),
+                    label: Text('下一题', style: TextStyle(fontSize: compact ? 10 : 12)),
                     style: OutlinedButton.styleFrom(
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 9),
+                      padding: EdgeInsets.symmetric(horizontal: 4, vertical: compact ? 7 : 9),
                     ),
                   ),
                 ),
               ],
             ),
-            const SizedBox(height: 8),
+            SizedBox(height: compact ? 6 : 8),
             // 交卷评分（保留二次确认弹窗）
             SizedBox(
               width: double.infinity,
@@ -645,13 +1118,13 @@ class ExamRoomPage extends StatelessWidget {
                     ),
                   );
                 },
-                icon: const Icon(Icons.flag_rounded, size: 16),
-                label: const Text('交卷评分', style: TextStyle(fontSize: 13)),
+                icon: Icon(Icons.flag_rounded, size: compact ? 14 : 16),
+                label: Text('交卷评分', style: TextStyle(fontSize: compact ? 11 : 13)),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFFEF4444),
                   foregroundColor: Colors.white,
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                  padding: const EdgeInsets.symmetric(vertical: 11),
+                  padding: EdgeInsets.symmetric(vertical: compact ? 9 : 11),
                 ),
               ),
             ),
@@ -1265,8 +1738,9 @@ class _QuestionCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isMobile = AppScope.of(context).uiMode == 'mobile';
     return Container(
-      padding: const EdgeInsets.all(18),
+      padding: EdgeInsets.all(isMobile ? 14 : 18),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(16),
@@ -1277,16 +1751,20 @@ class _QuestionCard extends StatelessWidget {
         children: [
           Row(
             children: [
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                decoration: BoxDecoration(
-                  color: tagColor.withOpacity(0.12),
-                  borderRadius: BorderRadius.circular(999),
+              Flexible(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: tagColor.withOpacity(0.12),
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: Text(tag, style: TextStyle(fontSize: isMobile ? 10.5 : 11, fontWeight: FontWeight.w700, color: tagColor, letterSpacing: 0.2)),
                 ),
-                child: Text(tag, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: tagColor, letterSpacing: 0.2)),
               ),
-              const Spacer(),
-              Text(scoreText, style: TextStyle(fontSize: 12, color: Colors.grey[600], fontWeight: FontWeight.w600)),
+              const SizedBox(width: 8),
+              Flexible(
+                child: Text(scoreText, style: TextStyle(fontSize: isMobile ? 11 : 12, color: Colors.grey[600], fontWeight: FontWeight.w600), textAlign: TextAlign.right),
+              ),
             ],
           ),
           if (title != null)
@@ -1294,10 +1772,10 @@ class _QuestionCard extends StatelessWidget {
               padding: const EdgeInsets.only(top: 10),
               child: SelectableText(
                 title!,
-                style: const TextStyle(fontSize: 15.5, fontWeight: FontWeight.w600, color: Color(0xFF0F172A), height: 1.65),
+                style: TextStyle(fontSize: isMobile ? 14.5 : 15.5, fontWeight: FontWeight.w600, color: const Color(0xFF0F172A), height: 1.65),
               ),
             ),
-          const SizedBox(height: 12),
+          SizedBox(height: isMobile ? 10 : 12),
           child,
         ],
       ),
@@ -1319,8 +1797,9 @@ class _OptionTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isMobile = AppScope.of(context).uiMode == 'mobile';
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 5),
+      padding: EdgeInsets.symmetric(vertical: isMobile ? 4 : 5),
       child: Material(
         color: Colors.transparent,
         child: InkWell(
@@ -1329,7 +1808,7 @@ class _OptionTile extends StatelessWidget {
           child: AnimatedContainer(
             duration: const Duration(milliseconds: 140),
             curve: Curves.easeOut,
-            padding: const EdgeInsets.all(12),
+            padding: EdgeInsets.all(isMobile ? 10 : 12),
             decoration: BoxDecoration(
               color: checked ? const Color(0xFFEFF6FF) : Colors.white,
               borderRadius: BorderRadius.circular(12),
@@ -1345,8 +1824,8 @@ class _OptionTile extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Container(
-                  width: 28,
-                  height: 28,
+                  width: isMobile ? 25 : 28,
+                  height: isMobile ? 25 : 28,
                   alignment: Alignment.center,
                   decoration: BoxDecoration(
                     color: checked ? const Color(0xFF3B82F6) : Colors.white,
@@ -1355,17 +1834,17 @@ class _OptionTile extends StatelessWidget {
                   ),
                   child: Text(
                     letter,
-                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: checked ? Colors.white : const Color(0xFF475569)),
+                    style: TextStyle(fontSize: isMobile ? 12 : 13, fontWeight: FontWeight.w700, color: checked ? Colors.white : const Color(0xFF475569)),
                   ),
                 ),
-                const SizedBox(width: 12),
+                SizedBox(width: isMobile ? 10 : 12),
                 Expanded(
                   child: Padding(
-                    padding: const EdgeInsets.only(top: 4),
+                    padding: const EdgeInsets.only(top: 3),
                     child: Text(
                       text,
                       style: TextStyle(
-                        fontSize: 14,
+                        fontSize: isMobile ? 13.5 : 14,
                         color: checked ? const Color(0xFF1E3A8A) : const Color(0xFF1E293B),
                         height: 1.55,
                       ),
@@ -1402,22 +1881,25 @@ class _Legend extends StatelessWidget {
 class _RingStat extends StatelessWidget {
   final int answered;
   final int total;
-  const _RingStat({required this.answered, required this.total});
+  final bool compact;
+  const _RingStat({required this.answered, required this.total, this.compact = false});
 
   @override
   Widget build(BuildContext context) {
     final pct = total == 0 ? 0.0 : answered / total;
+    final size = compact ? 80.0 : 120.0;
+    final strokeW = compact ? 7.0 : 10.0;
     return SizedBox(
-      height: 120,
+      height: size,
       child: Stack(
         alignment: Alignment.center,
         children: [
           SizedBox(
-            width: 120,
-            height: 120,
+            width: size,
+            height: size,
             child: CircularProgressIndicator(
               value: pct,
-              strokeWidth: 10,
+              strokeWidth: strokeW,
               backgroundColor: const Color(0xFFF1F5F9),
               valueColor: AlwaysStoppedAnimation<Color>(
                 Color.lerp(const Color(0xFF3B82F6), const Color(0xFF8B5CF6), 0.5)!,
@@ -1429,8 +1911,8 @@ class _RingStat extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             children: [
               Text('${(pct * 100).toStringAsFixed(0)}%',
-                  style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800, color: Color(0xFF0F172A))),
-              Text('$answered / $total', style: TextStyle(fontSize: 11.5, color: Colors.grey[500])),
+                  style: TextStyle(fontSize: compact ? 16 : 22, fontWeight: FontWeight.w800, color: const Color(0xFF0F172A))),
+              Text('$answered / $total', style: TextStyle(fontSize: compact ? 9 : 11.5, color: Colors.grey[500])),
             ],
           ),
         ],
@@ -1454,6 +1936,7 @@ class ExamResultPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final r = state.currentExamResult!;
+    final isMobile = state.uiMode == 'mobile';
     return Scaffold(
       backgroundColor: const Color(0xFFF6F7FB),
       body: Container(
@@ -1465,50 +1948,67 @@ class ExamResultPage extends StatelessWidget {
           ),
         ),
         child: SingleChildScrollView(
-          padding: const EdgeInsets.all(20),
+          padding: EdgeInsets.all(isMobile ? 14 : 20),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              // 顶部按钮行（手机端两个按钮等宽撑满）
               Row(
                 children: [
-                  OutlinedButton.icon(
-                    onPressed: state.exitFullExam,
-                    icon: const Icon(Icons.arrow_back_rounded, size: 16),
-                    label: const Text('返回首页'),
-                    style: OutlinedButton.styleFrom(shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
+                  Expanded(
+                    flex: isMobile ? 1 : 0,
+                    child: OutlinedButton.icon(
+                      onPressed: state.exitFullExam,
+                      icon: const Icon(Icons.arrow_back_rounded, size: 16),
+                      label: const Text('返回首页', style: TextStyle(fontSize: 12.5)),
+                      style: OutlinedButton.styleFrom(shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)), padding: const EdgeInsets.symmetric(vertical: 9)),
+                    ),
                   ),
-                  const Spacer(),
-                  ElevatedButton.icon(
-                    onPressed: () {
-                      // 回看错题：返回考场，但其实直接重进首页
-                      state.page = 9;
-                      state.touch();
-                    },
-                    icon: const Icon(Icons.analytics_rounded),
-                    label: const Text('去错题本复盘'),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF3B82F6),
-                      foregroundColor: Colors.white,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  if (isMobile) const SizedBox(width: 10) else const Spacer(),
+                  Expanded(
+                    flex: isMobile ? 1 : 0,
+                    child: ElevatedButton.icon(
+                      onPressed: () {
+                        // 回看错题：返回考场，但其实直接重进首页
+                        state.page = 9;
+                        state.touch();
+                      },
+                      icon: const Icon(Icons.analytics_rounded, size: 16),
+                      label: const Text('去错题本复盘', style: TextStyle(fontSize: 12.5)),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF3B82F6),
+                        foregroundColor: Colors.white,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                        padding: const EdgeInsets.symmetric(vertical: 9),
+                      ),
                     ),
                   ),
                 ],
               ),
               const SizedBox(height: 16),
-              _ResultHero(r: r),
+              _ResultHero(r: r, isMobile: isMobile),
               const SizedBox(height: 18),
               // AI 批改状态轻提示（进行中 / 已完成）
               if (r.aiGrading) const _AiGradingBanner(text: 'AI 正在批改英译汉与写作，稍后自动更新评语与得分…', done: false)
               else if (r.aiGraded) const _AiGradingBanner(text: '主观题已由 AI 智能批改，评语与得分已更新。', done: true),
               if (r.aiGrading || r.aiGraded) const SizedBox(height: 18),
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Expanded(flex: 3, child: _SectionBreakdown(r: r)),
-                  const SizedBox(width: 18),
-                  Expanded(flex: 2, child: _OverallStats(r: r, dur: fmtDur(r.durationSec))),
-                ],
-              ),
+              if (isMobile)
+                Column(
+                  children: [
+                    _SectionBreakdown(r: r, isMobile: true),
+                    const SizedBox(height: 16),
+                    _OverallStats(r: r, dur: fmtDur(r.durationSec), isMobile: true),
+                  ],
+                )
+              else
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(flex: 3, child: _SectionBreakdown(r: r, isMobile: false)),
+                    const SizedBox(width: 18),
+                    Expanded(flex: 2, child: _OverallStats(r: r, dur: fmtDur(r.durationSec), isMobile: false)),
+                  ],
+                ),
               const SizedBox(height: 18),
               // 英译汉逐句反馈（AI 批改后展示逐句评语；批改中显示轻提示）
               if (r.paper.en2zh5 != null)
@@ -1528,15 +2028,17 @@ class ExamResultPage extends StatelessWidget {
 
 class _ResultHero extends StatelessWidget {
   final ExamResult r;
-  const _ResultHero({required this.r});
+  final bool isMobile;
+  const _ResultHero({required this.r, required this.isMobile});
 
   @override
   Widget build(BuildContext context) {
     final pct = r.maxScore == 0 ? 0.0 : r.totalScore / r.maxScore;
+    final totalCorrect = r.sectionCorrect.values.fold<int>(0, (a, b) => a + b);
     return Container(
-      padding: const EdgeInsets.all(26),
+      padding: EdgeInsets.all(isMobile ? 18 : 26),
       decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(20),
+        borderRadius: BorderRadius.circular(isMobile ? 16 : 20),
         gradient: LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
@@ -1548,50 +2050,97 @@ class _ResultHero extends StatelessWidget {
         ),
         boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.15), blurRadius: 22, offset: const Offset(0, 10))],
       ),
-      child: Row(
-        children: [
-          Container(
-            width: 120,
-            height: 120,
-            alignment: Alignment.center,
-            decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.12),
-              shape: BoxShape.circle,
-              border: Border.all(color: Colors.white.withOpacity(0.4), width: 3),
-            ),
-            child: Text(
-              r.rank,
-              style: const TextStyle(color: Colors.white, fontSize: 52, fontWeight: FontWeight.w900, letterSpacing: 2),
-            ),
-          ),
-          const SizedBox(width: 22),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+      child: isMobile
+          ? Column(
               children: [
-                const Text('考试已结束 · 成绩分析报告', style: TextStyle(color: Colors.white70, fontSize: 13, letterSpacing: 0.6)),
-                const SizedBox(height: 6),
+                // 评级圆环居中
+                Container(
+                  width: 92,
+                  height: 92,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(0.12),
+                    shape: BoxShape.circle,
+                    border: Border.all(color: Colors.white.withOpacity(0.4), width: 3),
+                  ),
+                  child: Text(
+                    r.rank,
+                    style: const TextStyle(color: Colors.white, fontSize: 40, fontWeight: FontWeight.w900, letterSpacing: 2),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                const Text('考试已结束 · 成绩分析报告', style: TextStyle(color: Colors.white70, fontSize: 11.5, letterSpacing: 0.4), textAlign: TextAlign.center),
+                const SizedBox(height: 5),
                 Text(
                   r.paper.title,
-                  style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.w700, letterSpacing: 0.3),
+                  style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w700, letterSpacing: 0.3),
+                  textAlign: TextAlign.center,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
                 ),
-                const SizedBox(height: 16),
+                const SizedBox(height: 14),
+                // 4个指标 2x2 网格
                 Row(
                   children: [
-                    _ScoreBadge(label: '总分', value: '${r.totalScore}', sub: '/ ${r.maxScore}'),
-                    const SizedBox(width: 18),
-                    _ScoreBadge(label: '百分位', value: '${(pct * 100).toStringAsFixed(1)}', sub: '%'),
-                    const SizedBox(width: 18),
-                    _ScoreBadge(label: '评级', value: r.rank, sub: '等级'),
-                    const SizedBox(width: 18),
-                    _ScoreBadge(label: '做对', value: '${r.sectionCorrect.values.fold<int>(0, (a, b) => a + b)}', sub: '/ 76'),
+                    Expanded(child: _ScoreBadge(label: '总分', value: '${r.totalScore}', sub: '/ ${r.maxScore}')),
+                    const SizedBox(width: 10),
+                    Expanded(child: _ScoreBadge(label: '百分位', value: '${(pct * 100).toStringAsFixed(1)}', sub: '%')),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    Expanded(child: _ScoreBadge(label: '评级', value: r.rank, sub: '等级')),
+                    const SizedBox(width: 10),
+                    Expanded(child: _ScoreBadge(label: '做对', value: '$totalCorrect', sub: '/ 76')),
                   ],
                 ),
               ],
+            )
+          : Row(
+              children: [
+                Container(
+                  width: 120,
+                  height: 120,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(0.12),
+                    shape: BoxShape.circle,
+                    border: Border.all(color: Colors.white.withOpacity(0.4), width: 3),
+                  ),
+                  child: Text(
+                    r.rank,
+                    style: const TextStyle(color: Colors.white, fontSize: 52, fontWeight: FontWeight.w900, letterSpacing: 2),
+                  ),
+                ),
+                const SizedBox(width: 22),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('考试已结束 · 成绩分析报告', style: TextStyle(color: Colors.white70, fontSize: 13, letterSpacing: 0.6)),
+                      const SizedBox(height: 6),
+                      Text(
+                        r.paper.title,
+                        style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.w700, letterSpacing: 0.3),
+                      ),
+                      const SizedBox(height: 16),
+                      Row(
+                        children: [
+                          _ScoreBadge(label: '总分', value: '${r.totalScore}', sub: '/ ${r.maxScore}'),
+                          const SizedBox(width: 18),
+                          _ScoreBadge(label: '百分位', value: '${(pct * 100).toStringAsFixed(1)}', sub: '%'),
+                          const SizedBox(width: 18),
+                          _ScoreBadge(label: '评级', value: r.rank, sub: '等级'),
+                          const SizedBox(width: 18),
+                          _ScoreBadge(label: '做对', value: '$totalCorrect', sub: '/ 76'),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ],
             ),
-          ),
-        ],
-      ),
     );
   }
 }
@@ -1637,22 +2186,23 @@ class _ScoreBadge extends StatelessWidget {
 
 class _SectionBreakdown extends StatelessWidget {
   final ExamResult r;
-  const _SectionBreakdown({required this.r});
+  final bool isMobile;
+  const _SectionBreakdown({required this.r, required this.isMobile});
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.all(18),
+      padding: EdgeInsets.all(isMobile ? 14 : 18),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(18),
+        borderRadius: BorderRadius.circular(isMobile ? 14 : 18),
         boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 18, offset: const Offset(0, 6))],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('各题型得分', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: Color(0xFF0F172A))),
+          Text('各题型得分', style: TextStyle(fontSize: isMobile ? 14.5 : 16, fontWeight: FontWeight.w700, color: const Color(0xFF0F172A))),
           const SizedBox(height: 4),
-          Text('逐题型展示得分/满分/正确率，帮助定位薄弱环节', style: TextStyle(fontSize: 12, color: Colors.grey[500])),
+          Text('逐题型展示得分/满分/正确率，帮助定位薄弱环节', style: TextStyle(fontSize: isMobile ? 11 : 12, color: Colors.grey[500])),
           const SizedBox(height: 14),
           ...ExamSection.values.map((s) {
             final sc = r.sectionScores[s] ?? 0;
@@ -1661,7 +2211,7 @@ class _SectionBreakdown extends StatelessWidget {
             final total = s.questionCount;
             final pct = max == 0 ? 0.0 : sc / max;
             return Padding(
-              padding: const EdgeInsets.symmetric(vertical: 8),
+              padding: EdgeInsets.symmetric(vertical: isMobile ? 6 : 8),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -1669,13 +2219,14 @@ class _SectionBreakdown extends StatelessWidget {
                     children: [
                       Expanded(
                         child: Text(s.shortLabel,
-                            style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600, color: Color(0xFF1E293B))),
+                            style: TextStyle(fontSize: isMobile ? 12.5 : 13.5, fontWeight: FontWeight.w600, color: const Color(0xFF1E293B)),
+                            overflow: TextOverflow.ellipsis),
                       ),
-                      Text('做对 $correct / $total',
-                          style: TextStyle(fontSize: 11.5, color: Colors.grey[500])),
-                      const SizedBox(width: 12),
-                      Text('$sc / $max 分',
-                          style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: Color(0xFF1E3A8A))),
+                      Text('做对 $correct/$total',
+                          style: TextStyle(fontSize: isMobile ? 10.5 : 11.5, color: Colors.grey[500])),
+                      SizedBox(width: isMobile ? 8 : 12),
+                      Text('$sc/$max',
+                          style: TextStyle(fontSize: isMobile ? 12 : 13, fontWeight: FontWeight.w700, color: const Color(0xFF1E3A8A))),
                     ],
                   ),
                   const SizedBox(height: 6),
@@ -1693,7 +2244,7 @@ class _SectionBreakdown extends StatelessWidget {
                                     ? const Color(0xFFF59E0B)
                                     : const Color(0xFFEF4444),
                       ),
-                      minHeight: 10,
+                      minHeight: isMobile ? 8 : 10,
                     ),
                   ),
                 ],
@@ -1709,24 +2260,25 @@ class _SectionBreakdown extends StatelessWidget {
 class _OverallStats extends StatelessWidget {
   final ExamResult r;
   final String dur;
-  const _OverallStats({required this.r, required this.dur});
+  final bool isMobile;
+  const _OverallStats({required this.r, required this.dur, required this.isMobile});
   @override
   Widget build(BuildContext context) {
     final totalCorrect = r.sectionCorrect.values.fold<int>(0, (a, b) => a + b);
     final totalQ = r.sectionTotal.values.fold<int>(0, (a, b) => a + b);
     final qpm = r.durationSec == 0 ? 0 : totalQ / (r.durationSec / 60);
     return Container(
-      padding: const EdgeInsets.all(18),
+      padding: EdgeInsets.all(isMobile ? 14 : 18),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(18),
+        borderRadius: BorderRadius.circular(isMobile ? 14 : 18),
         boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 18, offset: const Offset(0, 6))],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('整体表现', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: Color(0xFF0F172A))),
-          const SizedBox(height: 14),
+          Text('整体表现', style: TextStyle(fontSize: isMobile ? 14.5 : 16, fontWeight: FontWeight.w700, color: const Color(0xFF0F172A))),
+          SizedBox(height: isMobile ? 10 : 14),
           _StatRow(icon: Icons.timer_rounded, label: '答题用时', value: dur, accent: const Color(0xFF3B82F6)),
           _StatRow(icon: Icons.gavel_rounded, label: '客观做对', value: '$totalCorrect 题', accent: const Color(0xFF10B981)),
           _StatRow(icon: Icons.track_changes_rounded, label: '客观作答', value: '$totalQ 题', accent: const Color(0xFF8B5CF6)),

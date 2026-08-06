@@ -1,0 +1,25 @@
+﻿Running Gradle task 'assembleRelease'...                        
+e:\YINGYU\YINGYU\flutter-sdk-2026\flutter\bin\flutter.bat : 
+At C:\Users\33397\AppData\Local\Temp\trae-agent-toolhost\jobs\job-d1000b3752744a7787a7ef0e8a8449da\command.ps1:15 char:
+6121
++ ... pgrep\bin'; e:\YINGYU\YINGYU\flutter-sdk-2026\flutter\bin\flutter.bat ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':app:configureCMakeRelease[arm64-v8a]'.
+> Process 'command 'E:\YINGYU\YINGYU\dev-cache\android-sdk\cmake\3.22.1\bin\cmake'' finished with non-zero exit value 2
+68435466
+
+* Try:
+> Run with --stacktrace option to get the stack trace.
+> Run with --info or --debug option to get more log output.
+> Run with --scan to generate a Build Scan (Powered by Develocity).
+> Get more help at https://help.gradle.org.
+
+BUILD FAILED in 3s
+Running Gradle task 'assembleRelease'...                            3.5s
+Gradle task assembleRelease failed with exit code 1

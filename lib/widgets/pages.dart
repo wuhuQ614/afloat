@@ -774,11 +774,12 @@ class _DictionaryPageState extends State<DictionaryPage> {
   Widget build(BuildContext context) {
     final s = AppScope.of(context);
     final c = AppColors.of(context);
+    final isMobile = s.uiMode == 'mobile';
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Padding(
-        padding: const EdgeInsets.fromLTRB(20, 20, 20, 0),
+        padding: EdgeInsets.fromLTRB(isMobile ? 14 : 20, isMobile ? 14 : 20, isMobile ? 14 : 20, 0),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text('单词查询', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: c.text)),
+          Text('单词查询', style: TextStyle(fontSize: isMobile ? 17 : 20, fontWeight: FontWeight.bold, color: c.text)),
           const SizedBox(height: 14),
           Container(
             decoration: BoxDecoration(
@@ -847,46 +848,98 @@ class _DictionaryPageState extends State<DictionaryPage> {
     }
     final entry = _foundEntry;
     final word = _foundWord;
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 20, left: 20, right: 20),
-      child: Card(
-        color: c.cardAlt,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        elevation: 0,
-        child: Padding(
-          padding: const EdgeInsets.all(20),
-          child: entry != null && word != null
-              ? Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  // 左侧：单词信息
+    final isMobile = s.uiMode == 'mobile';
+
+    final body = entry != null && word != null
+        ? Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              // 单词头部：单词 + 音标 + 发音
+              Row(children: [
+                Flexible(
+                  child: Text(word, style: TextStyle(fontSize: isMobile ? 24 : 28, fontWeight: FontWeight.bold, color: c.text), overflow: TextOverflow.ellipsis),
+                ),
+                if (TtsService.instance.available)
+                  Padding(
+                    padding: const EdgeInsets.only(left: 8),
+                    child: IconButton(
+                      icon: Icon(Icons.volume_up_rounded, size: 22, color: _primary),
+                      tooltip: '发音',
+                      onPressed: () => TtsService.instance.speakWord(word),
+                    ),
+                  ),
+              ]),
+              if (entry.phonetic.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Text('/${entry.phonetic}/', style: TextStyle(fontSize: 15, color: c.textTertiary)),
+                ),
+              const SizedBox(height: 16),
+              // 词性、释义、补充
+              if (entry.pos.isNotEmpty) _InfoRow(label: '词性', value: entry.pos, c: c),
+              if (entry.translation.isNotEmpty) _InfoRow(label: '释义', value: entry.translation, c: c),
+              if (entry.other.isNotEmpty) _InfoRow(label: '补充', value: entry.other, c: c),
+              const SizedBox(height: 16),
+              Divider(height: 1, color: c.divider),
+              const SizedBox(height: 12),
+              // 手机端：垂直布局；桌面端：左右两栏
+              if (isMobile) ...[
+                // 例句
+                Text('例句', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: c.text)),
+                const SizedBox(height: 8),
+                if (_loadingExtras)
+                  const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 8),
+                    child: SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
+                  )
+                else if (_examples.isEmpty)
+                  Text('暂无例句', style: TextStyle(fontSize: 13, color: c.textTertiary))
+                else
+                  ..._examples.map((ex) => Column(
+                        children: [
+                          _ExampleItem(en: ex['en'] ?? '', zh: ex['zh'] ?? '', c: c),
+                          const SizedBox(height: 8),
+                        ],
+                      )),
+                const SizedBox(height: 16),
+                // 常见搭配
+                Text('常见搭配', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: c.text)),
+                const SizedBox(height: 10),
+                if (_loadingExtras)
+                  const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 8),
+                    child: SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
+                  )
+                else
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: _collocations.isEmpty
+                        ? [_Chip(text: '暂无', c: null)]
+                        : _collocations.map((col) => _Chip(text: col, c: c)).toList(),
+                  ),
+                const SizedBox(height: 16),
+                // 同义词
+                Text('同义词', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: c.text)),
+                const SizedBox(height: 10),
+                if (_loadingExtras)
+                  const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 8),
+                    child: SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
+                  )
+                else
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: _synonyms.isEmpty
+                        ? [_Chip(text: '暂无', c: null)]
+                        : _synonyms.map((syn) => _Chip(text: syn, c: c)).toList(),
+                  ),
+              ] else ...[
+                // 桌面端：左右两栏布局
+                Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  // 左侧：例句
                   Expanded(
                     flex: 5,
                     child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                      Row(children: [
-                        Flexible(
-                          child: Text(word, style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: c.text), overflow: TextOverflow.ellipsis),
-                        ),
-                        if (TtsService.instance.available)
-                          Padding(
-                            padding: const EdgeInsets.only(left: 8),
-                            child: IconButton(
-                              icon: Icon(Icons.volume_up_rounded, size: 22, color: _primary),
-                              tooltip: '发音',
-                              onPressed: () => TtsService.instance.speakWord(word),
-                            ),
-                          ),
-                      ]),
-                      if (entry.phonetic.isNotEmpty)
-                        Padding(
-                          padding: const EdgeInsets.only(top: 4),
-                          child: Text('/${entry.phonetic}/', style: TextStyle(fontSize: 15, color: c.textTertiary)),
-                        ),
-                      const SizedBox(height: 16),
-                      if (entry.pos.isNotEmpty) _InfoRow(label: '词性', value: entry.pos, c: c),
-                      if (entry.translation.isNotEmpty) _InfoRow(label: '释义', value: entry.translation, c: c),
-                      if (entry.other.isNotEmpty) _InfoRow(label: '补充', value: entry.other, c: c),
-                      const SizedBox(height: 16),
-                      Divider(height: 1, color: c.divider),
-                      const SizedBox(height: 12),
                       Text('例句', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: c.text)),
                       const SizedBox(height: 8),
                       if (_loadingExtras)
@@ -903,24 +956,6 @@ class _DictionaryPageState extends State<DictionaryPage> {
                                 const SizedBox(height: 8),
                               ],
                             )),
-                      const SizedBox(height: 16),
-                      SizedBox(
-                        width: double.infinity,
-                        child: OutlinedButton.icon(
-                          style: OutlinedButton.styleFrom(
-                            foregroundColor: _primary,
-                            side: BorderSide(color: _primary.withValues(alpha: 0.3)),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                          ),
-                          onPressed: () {
-                            final w = word.toLowerCase();
-                            s.addToWordBook(w, entry.translation);
-                            setState(() {});
-                          },
-                          icon: const Icon(Icons.star_outline_rounded, size: 18),
-                          label: const Text('加入生词本'),
-                        ),
-                      ),
                     ]),
                   ),
                   // 右侧分隔线
@@ -962,10 +997,38 @@ class _DictionaryPageState extends State<DictionaryPage> {
                         ),
                     ]),
                   ),
-                ])
-              : Text(_result ?? '', style: TextStyle(fontSize: 14, height: 1.7, color: c.text)),
-        ),
-      ),
+                ]),
+              ],
+              const SizedBox(height: 16),
+              // 加入生词本按钮
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: _primary,
+                    side: BorderSide(color: _primary.withValues(alpha: 0.3)),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  ),
+                  onPressed: () {
+                    final w = word.toLowerCase();
+                    s.addToWordBook(w, entry.translation);
+                    setState(() {});
+                  },
+                  icon: const Icon(Icons.star_outline_rounded, size: 18),
+                  label: const Text('加入生词本'),
+                ),
+              ),
+            ])
+          : Text(_result ?? '', style: TextStyle(fontSize: 14, height: 1.7, color: c.text));
+    if (isMobile) {
+      return SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(14, 4, 14, 20),
+        child: body,
+      );
+    }
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 20, left: 20, right: 20),
+      child: body,
     );
   }
 
