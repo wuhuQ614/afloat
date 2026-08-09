@@ -3,6 +3,7 @@ library;
 
 import 'dart:async';
 import 'dart:math';
+import 'dart:ui' show ImageFilter;
 import 'package:flutter/material.dart';
 import '../models.dart';
 import '../services/dict_service.dart';
@@ -10,6 +11,7 @@ import '../services/tts_service.dart';
 import '../state.dart';
 import '../theme_colors.dart' show kPrimary, kPrimaryLight, kSuccess, kDanger, AppColors;
 import 'settings_dialog.dart';
+import 'glass_background.dart';
 
 const _primary = kPrimary;
 const _primaryLight = kPrimaryLight;
@@ -248,7 +250,7 @@ class _AnswerPageState extends State<AnswerPage> {
               color: c.cardAlt,
               borderRadius: BorderRadius.circular(12),
             ),
-            child: _showAnalysis && s.analysisTokens.isNotEmpty
+            child: (_showAnalysis || s.chatTriggeredAnalysis) && s.analysisTokens.isNotEmpty
                 ? _buildAnalyzedText(q.passage, isLight)
                 : Text(q.passage, style: TextStyle(fontSize: 14, height: 1.8, color: c.text)),
           ),
@@ -256,9 +258,9 @@ class _AnswerPageState extends State<AnswerPage> {
         ],
         // 题目文本（翻译题显示实时进度变色）
         if (q.type != QType.reading || q.passage.isEmpty)
-          q.type == QType.translation && s.textAnswerValue.isNotEmpty && !_showAnalysis
+          q.type == QType.translation && s.textAnswerValue.isNotEmpty && !_showAnalysis && !s.chatTriggeredAnalysis
               ? _buildTextWithProgress(q, isLight)
-              : (_showAnalysis && s.analysisTokens.isNotEmpty
+              : ((_showAnalysis || s.chatTriggeredAnalysis) && s.analysisTokens.isNotEmpty
                   ? _buildAnalyzedText(q.text, isLight)
                   : Text(q.text, style: TextStyle(fontSize: 15, height: 1.7, color: c.text))),
         // 选择题：显示题干
@@ -267,7 +269,7 @@ class _AnswerPageState extends State<AnswerPage> {
           Text(q.question, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: c.text)),
         ],
         // 分析中提示
-        if (_showAnalysis && s.analyzing) ...[
+        if ((_showAnalysis || s.chatTriggeredAnalysis) && s.analyzing) ...[
           const SizedBox(height: 8),
           Row(children: [
             SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2, color: c.primaryText)),
@@ -1567,11 +1569,17 @@ class _LearnPageState extends State<LearnPage> {
           ]),
         ),
         const SizedBox(height: 24),
-        // 生成按钮
+        // 生成按钮（纯玻璃：无底色，磨砂+紫边框+紫字；classic 模式保持紫色实底）
         SizedBox(
           width: double.infinity,
           height: 52,
-          child: FilledButton(
+          child: widget.state.uiStyle == 'glass'
+              ? _PureGlassGenerateButton(
+                  onPressed: (widget.state.generating || widget.state.generatingFullExam) ? null : () => _generate(widget.state),
+                  isLoading: (widget.state.generating || widget.state.generatingFullExam),
+                  isMixed: isMixed,
+                )
+              : FilledButton(
             style: FilledButton.styleFrom(
               backgroundColor: _primary,
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
@@ -1673,47 +1681,71 @@ class _LearnPageState extends State<LearnPage> {
     ]);
   }
 
+  // 纯玻璃卡片外壳：与上方三张题卡（_TypeCardV2）完全同款
+  // 真实模糊 + 70% 白色玻璃填充 + 细白边 + 中性阴影
   Widget _buildCard({required Widget child}) {
     final c = AppColors.of(context);
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: c.card,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: c.border),
+    final fillColor = (c.isLight ? Colors.white : const Color(0xFF2A2A32)).withValues(alpha: c.isLight ? 0.78 : 0.72);
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(20),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+        child: Container(
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            color: fillColor, // 与 _TypeCardV2 同款半透白玻璃
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(
+              color: c.isLight ? Colors.white.withValues(alpha: 0.7) : Colors.white.withValues(alpha: 0.12),
+              width: 1.2,
+            ),
+            boxShadow: [
+              // 中性阴影：去掉 kPrimary 紫色投影，与 _TypeCardV2 一致
+              BoxShadow(
+                color: Colors.black.withValues(alpha: c.isLight ? 0.04 : 0.18),
+                blurRadius: 18,
+                offset: const Offset(0, 6),
+              ),
+              BoxShadow(
+                color: Colors.black.withValues(alpha: c.isLight ? 0.02 : 0.10),
+                blurRadius: 6,
+                offset: const Offset(0, 1),
+              ),
+            ],
+          ),
+          child: child,
+        ),
       ),
-      child: child,
     );
   }
 
-  // ===== 01. 题型 3x2 网格 =====
+  // ===== 01. 题型 3x2 网格 — 每张卡片自带毛玻璃 =====
   Widget _buildTypeGrid() {
     final isMobile = AppScope.of(context).uiMode == 'mobile';
     final cols = isMobile ? 2 : 3;
     final rows = isMobile ? 3 : 2;
     final types = [
-      ('translation', '翻译题', '中英互译·长难句', Icons.translate_rounded, const Color(0xFF7C3AED)),
-      ('reading', '阅读理解', '细节理解·推断题', Icons.menu_book_rounded, const Color(0xFF3B82F6)),
-      ('grammar', '语法填空', '时态语态·从句', Icons.quiz_rounded, const Color(0xFF10B981)),
-      ('choice', '选择题', '单选 / 多选辨析', Icons.check_circle_rounded, const Color(0xFFF59E0B)),
-      ('writing', '写作题', '应用文·议论文', Icons.edit_rounded, const Color(0xFFEC4899)),
-      ('mixed', '综合模拟套卷', 'AI混合全题型考卷', Icons.layers_rounded, const Color(0xFF8B5CF6)),
+      ('translation', '翻译题', '中英互译·长难句', Icons.translate_outlined),
+      ('reading', '阅读理解', '细节理解·推断题', Icons.menu_book_outlined),
+      ('grammar', '语法填空', '时态语态·从句', Icons.quiz_outlined),
+      ('choice', '选择题', '单选 / 多选辨析', Icons.check_circle_outline),
+      ('writing', '写作题', '应用文·议论文', Icons.edit_outlined),
+      ('mixed', '综合模拟套卷', 'AI混合全题型考卷', Icons.layers_outlined),
     ];
     return Column(children: [
       for (var row = 0; row < rows; row++)
         Padding(
-          padding: EdgeInsets.only(bottom: row < rows - 1 ? 12 : 0),
+          padding: EdgeInsets.only(bottom: row < rows - 1 ? (isMobile ? 10 : 16) : 0),
           child: Row(children: [
             for (var col = 0; col < cols; col++)
               Expanded(
                 child: Padding(
-                  padding: EdgeInsets.only(right: col < cols - 1 ? 12 : 0),
+                  padding: EdgeInsets.only(right: col < cols - 1 ? (isMobile ? 10 : 16) : 0),
                   child: _TypeCardV2(
                     type: types[row * cols + col].$1,
                     title: types[row * cols + col].$2,
                     subtitle: types[row * cols + col].$3,
                     icon: types[row * cols + col].$4,
-                    iconColor: types[row * cols + col].$5,
                     selected: _selectedType == types[row * cols + col].$1,
                     isMixed: types[row * cols + col].$1 == 'mixed',
                     onTap: () => setState(() => _selectedType = types[row * cols + col].$1),
@@ -1747,7 +1779,8 @@ class _LearnPageState extends State<LearnPage> {
               color: _selectedLevel == l.$1 ? c.chipSelectedBg : c.card,
               borderRadius: BorderRadius.circular(20),
               border: Border.all(color: _selectedLevel == l.$1 ? c.chipSelectedBorder : c.chipBorder),
-              boxShadow: _selectedLevel == l.$1 ? [BoxShadow(color: kPrimary.withValues(alpha: 0.1), blurRadius: 12, offset: const Offset(0, 2))] : null,
+              // 选中态用中性阴影，不带紫色调
+              boxShadow: _selectedLevel == l.$1 ? [BoxShadow(color: Colors.black.withValues(alpha: c.isLight ? 0.05 : 0.25), blurRadius: 8, offset: const Offset(0, 2))] : null,
             ),
             child: Text(l.$2, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: _selectedLevel == l.$1 ? c.chipSelectedText : c.textSecondary)),
           ),
@@ -1940,73 +1973,167 @@ class _LearnPageState extends State<LearnPage> {
   }
 }
 
-// ===== 题型卡片 V2（3x2 网格样式） =====
-class _TypeCardV2 extends StatelessWidget {
+// ===== 纯玻璃生成按钮（无填充色，只做磨砂+紫边+紫字） =====
+class _PureGlassGenerateButton extends StatelessWidget {
+  final VoidCallback? onPressed;
+  final bool isLoading;
+  final bool isMixed;
+  const _PureGlassGenerateButton({required this.onPressed, required this.isLoading, required this.isMixed});
+
+  @override
+  Widget build(BuildContext context) {
+    final disabled = onPressed == null;
+    const radius = BorderRadius.all(Radius.circular(14));
+    final iconData = isMixed ? Icons.assignment_outlined : Icons.auto_awesome_outlined;
+    final btnText = isMixed ? '生成全卷' : '生成题目';
+    return ClipRRect(
+      borderRadius: radius,
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+        child: Material(
+          color: Colors.transparent, // 纯玻璃：无底色
+          shape: RoundedRectangleBorder(
+            borderRadius: radius,
+            side: BorderSide(
+              color: disabled
+                  ? kPrimary.withValues(alpha: 0.25)
+                  : kPrimary.withValues(alpha: 0.65),
+              width: 1.3,
+            ),
+          ),
+          child: InkWell(
+            onTap: onPressed,
+            borderRadius: radius,
+            child: SizedBox(
+              height: double.infinity,
+              width: double.infinity,
+              child: Center(
+                child: isLoading
+                    ? const SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2.5, color: kPrimary))
+                    : Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                        Icon(iconData, color: kPrimary, size: 20),
+                        const SizedBox(width: 8),
+                        Text(
+                          btnText,
+                          style: const TextStyle(color: kPrimary, fontSize: 15, fontWeight: FontWeight.w700, letterSpacing: 0.3),
+                        ),
+                      ]),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ===== 题型卡片 V2（毛玻璃外观） =====
+class _TypeCardV2 extends StatefulWidget {
   final String type;
   final String title;
   final String subtitle;
   final IconData icon;
-  final Color iconColor;
   final bool selected;
   final bool isMixed;
   final VoidCallback onTap;
-  const _TypeCardV2({required this.type, required this.title, required this.subtitle, required this.icon, required this.iconColor, required this.selected, required this.isMixed, required this.onTap});
+  const _TypeCardV2({required this.type, required this.title, required this.subtitle, required this.icon, required this.selected, required this.isMixed, required this.onTap});
+
+  @override
+  State<_TypeCardV2> createState() => _TypeCardV2State();
+}
+
+class _TypeCardV2State extends State<_TypeCardV2> {
+  bool _hovered = false;
 
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(16),
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 200),
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: selected ? c.primaryBg : c.card,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: selected ? c.chipSelectedBorder : c.chipBorder, width: selected ? 2 : 1),
-          boxShadow: selected ? [BoxShadow(color: kPrimary.withValues(alpha: 0.1), blurRadius: 12, offset: const Offset(0, 2))] : null,
+    final isSelected = widget.selected;
+    final isHovered = _hovered;
+    final lift = (isHovered || isSelected) ? -1.5 : 0.0;
+    final cardRadius = BorderRadius.circular(16);
+
+    final content = Stack(children: [
+      Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        // 纯灰 outlined 图标，不再套紫色方块
+        Icon(widget.icon, size: 28, color: c.textSecondary),
+        const SizedBox(height: 14),
+        Text(widget.title, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: c.text)),
+        const SizedBox(height: 4),
+        Text(widget.subtitle, style: TextStyle(fontSize: 11, color: c.textTertiary)),
+      ]),
+      if (widget.isMixed)
+        Positioned(
+          right: 0,
+          top: 0,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+            decoration: BoxDecoration(
+              color: c.chipBorder.withValues(alpha: 0.5),
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: Text('MIX', style: TextStyle(fontSize: 9, fontWeight: FontWeight.w700, color: c.textSecondary)),
+          ),
         ),
-        child: Stack(children: [
-          Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Container(
-              width: 40,
-              height: 40,
-              decoration: BoxDecoration(
-                color: iconColor.withValues(alpha: 0.1),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Icon(icon, size: 20, color: iconColor),
+    ]);
+
+    final glassBody = ClipRRect(
+      borderRadius: cardRadius,
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 200),
+          curve: Curves.easeOutCubic,
+          transform: Matrix4.translationValues(0, lift, 0),
+          padding: const EdgeInsets.all(18),
+          decoration: BoxDecoration(
+            color: (c.isLight ? Colors.white : const Color(0xFF2A2A32)).withValues(
+              alpha: isSelected ? 0.95 : (isHovered ? 0.85 : 0.7),
             ),
-            const SizedBox(height: 12),
-            Text(title, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: selected ? c.primaryText : c.text)),
-            const SizedBox(height: 4),
-            Text(subtitle, style: TextStyle(fontSize: 11, color: c.textTertiary)),
-          ]),
-          if (isMixed)
-            Positioned(
-              right: 0,
-              top: 0,
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                decoration: BoxDecoration(
-                  color: c.primaryBg,
-                  borderRadius: BorderRadius.circular(6),
+            borderRadius: cardRadius,
+            border: Border.all(
+              // 选中/悬停态边框统一用中性灰阶，与上方三张题卡同款
+              color: isSelected
+                  ? (c.isLight ? Colors.black.withValues(alpha: 0.18) : Colors.white.withValues(alpha: 0.30))
+                  : (isHovered
+                      ? (c.isLight ? Colors.black.withValues(alpha: 0.10) : Colors.white.withValues(alpha: 0.20))
+                      : (c.isLight ? Colors.white.withValues(alpha: 0.7) : Colors.white.withValues(alpha: 0.12))),
+              width: isSelected ? 1.2 : 1,
+            ),
+            boxShadow: [
+              // 中性阴影：与上方三张题卡同款，去掉 kPrimary 紫调
+              if (isSelected)
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: c.isLight ? 0.10 : 0.32),
+                  blurRadius: 12,
+                  offset: const Offset(0, 4),
+                )
+              else if (isHovered)
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: c.isLight ? 0.07 : 0.25),
+                  blurRadius: 10,
+                  offset: const Offset(0, 3),
+                )
+              else
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: c.isLight ? 0.04 : 0.18),
+                  blurRadius: 8,
+                  offset: const Offset(0, 2),
                 ),
-                child: Text('MIX', style: TextStyle(fontSize: 9, fontWeight: FontWeight.w700, color: c.primaryText)),
-              ),
-            ),
-          if (selected && !isMixed)
-            Positioned(
-              right: 0,
-              top: 0,
-              child: Container(
-                width: 8,
-                height: 8,
-                decoration: BoxDecoration(color: _primary, shape: BoxShape.circle),
-              ),
-            ),
-        ]),
+            ],
+          ),
+          child: content,
+        ),
+      ),
+    );
+
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() => _hovered = false),
+      cursor: SystemMouseCursors.click,
+      child: GestureDetector(
+        onTap: widget.onTap,
+        child: glassBody,
       ),
     );
   }

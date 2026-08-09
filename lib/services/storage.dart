@@ -153,6 +153,16 @@ class Storage {
   static String loadUiMode() => _get('uiMode', '');
   static void saveUiMode(String v) => _set('uiMode', v);
 
+  // ===== UI 风格 =====
+  /// 'classic' | 'glass'
+  static String loadUiStyle() => _get('uiStyle', 'classic');
+  static void saveUiStyle(String v) => _set('uiStyle', v);
+
+  // ===== 导航指示器 =====
+  /// 'underline' = 灰色下划线 | 'pill' = 紫色渐变胶囊
+  static String loadNavIndicator() => _get('navIndicator', 'underline');
+  static void saveNavIndicator(String v) => _set('navIndicator', v);
+
   // ===== 收藏 =====
   static List<Favorite> loadFavorites() {
     final s = _get('favorites', '');
@@ -199,6 +209,22 @@ class Storage {
 
   static void saveStudyRecords(List<StudyRecord> list) {
     _set('studyRecords', jsonEncode(list.map((e) => e.toJson()).toList()));
+  }
+
+  // ===== 题库已作答索引 =====
+  static Set<int> loadAnsweredBankIndices() {
+    final s = _get('answeredBankIdx', '');
+    if (s.isEmpty) return <int>{};
+    try {
+      final list = jsonDecode(s) as List;
+      return Set<int>.from(list.whereType<int>());
+    } catch (_) {
+      return <int>{};
+    }
+  }
+
+  static void saveAnsweredBankIndices(Set<int> set) {
+    _set('answeredBankIdx', jsonEncode(set.toList()));
   }
 
   // ===== 生词本 =====
@@ -356,6 +382,7 @@ class Storage {
       'examLastResult': _get('examLastResult', ''),
       'examHistory': _get('examHistory', ''),
       'grammarProgress': _get('grammarProgress', ''),
+      'answeredBankIdx': _get('answeredBankIdx', ''),
     };
     return jsonEncode(data);
   }
@@ -383,6 +410,7 @@ class Storage {
       if (data.containsKey('examLastResult')) _set('examLastResult', data['examLastResult'] as String);
       if (data.containsKey('examHistory')) _set('examHistory', data['examHistory'] as String);
       if (data.containsKey('grammarProgress')) _set('grammarProgress', data['grammarProgress'] as String);
+      if (data.containsKey('answeredBankIdx')) _set('answeredBankIdx', data['answeredBankIdx'] as String);
       return true;
     } catch (_) {
       return false;
@@ -401,5 +429,6 @@ class Storage {
     _set('examLastResult', '');
     _set('examHistory', '');
     _set('grammarProgress', '');
+    _set('answeredBankIdx', '');
   }
 }

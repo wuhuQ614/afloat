@@ -10,6 +10,7 @@ import 'models.dart';
 import 'services/api_service.dart';
 import 'services/storage.dart';
 import 'services/dict_service.dart';
+import 'services/agent_service.dart';
 
 /// 单词跨度信息（用于词组匹配）
 class _WordSpan {
@@ -78,6 +79,11 @@ class AppState extends ChangeNotifier {
   int generatedQuestionIdx = 0;
   Question currentQuestion = Question();
   List<Question> questions = []; // 题库
+  // 上一次出题规则：'bank' = 题库选题 | 'ai' = AI 生成
+  String lastQuestionSource = 'bank';
+  String lastCustomReq = '';
+  int lastWordCount = 80;
+  int lastQuestionCount = 1;
   ApiConfig apiConfig = ApiConfig();
   bool chatApiIndependent = false;
   ApiConfig chatApiConfig = ApiConfig();
@@ -99,6 +105,10 @@ class AppState extends ChangeNotifier {
   bool onboardingDone = false;
   /// '' = 未选择（首次启动）, 'desktop' = 桌面端, 'mobile' = 手机端
   String uiMode = '';
+  /// UI 风格：'classic' = 经典(不透明), 'glass' = 毛玻璃(半透明模糊)
+  String uiStyle = 'classic';
+  /// 导航指示器：'underline' = 灰色下划线 | 'pill' = 紫色渐变胶囊
+  String navIndicator = 'underline';
   String selectedType = 'translation';
   String selectedLevel = 'zsb';
   int questionStartTime = 0;
@@ -155,6 +165,8 @@ class AppState extends ChangeNotifier {
   // 词汇剖析状态
   bool analysisLoading = false;
   List<WordToken> analysisTokens = [];
+  /// Agent 通过聊天触发了剖析，答题区监听此标志自动打开剖析视图
+  bool chatTriggeredAnalysis = false;
 
   // 默写状态
   List<WordToken> dictationQueue = [];
@@ -178,6 +190,8 @@ class AppState extends ChangeNotifier {
     powerSavingMode = Storage.loadPowerSavingMode();
     onboardingDone = Storage.loadOnboardingDone();
     uiMode = Storage.loadUiMode();
+    uiStyle = Storage.loadUiStyle();
+    navIndicator = Storage.loadNavIndicator();
     // 手机端启动即进入沉浸式全屏（隐藏系统状态栏/导航栏），电脑端不受影响
     _applySystemUiMode();
     // 全卷模拟考试：恢复最近一次成绩与历史摘要（供学习报告展示）；
@@ -327,6 +341,10 @@ class AppState extends ChangeNotifier {
   void loadQuestionFromBank(int idx) {
     if (idx < 0 || idx >= questions.length) return;
     final q = questions[idx];
+    // 题库题：清空 AI 生成序列，标记来源为 bank
+    generatedQuestions = [];
+    generatedQuestionIdx = 0;
+    lastQuestionSource = 'bank';
     direction = 'en2zh';
     currentQuestion = q.copyWith(userAnswerIdx: null, userAnswers: []);
     questionStartTime = DateTime.now().millisecondsSinceEpoch;
@@ -343,30 +361,43 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  void nextQuestion() {
-    if (generatedQuestions.length > 1) {
-      generatedQuestionIdx = (generatedQuestionIdx + 1) % generatedQuestions.length;
-      loadGeneratedQuestion();
+  /// 「换一道」：按上次出题规则换题
+  /// - AI 生成题（lastQuestionSource='ai'）：按同参数重新生成
+  /// - 题库题（lastQuestionSource='bank'）：从题库随机选一道不同的题（优先同题型）
+  Future<void> nextQuestion() async {
+    if (lastQuestionSource == 'ai') {
+      // AI 生成：按相同参数重新出题
+      await generateQuestions(
+        count: lastQuestionCount < 1 ? 1 : lastQuestionCount,
+        customReq: lastCustomReq,
+        wordCount: lastWordCount,
+      );
       return;
     }
-    if (questions.isEmpty) return;
 
-    // 保持当前题型和方向（如英→中翻译题换一道后仍是英→中翻译题）
+    // 默认 / Bank：从题库随机抽不同的题（优先同题型，若题库已空则静默返回）
+    if (questions.isEmpty) return;
+    final curBankIdx = currentQuestion.bankIdx;
     final curType = currentQuestion.type;
     final curDir = direction;
 
-    // 筛选同类型题目索引
-    final sameTypeIndices = <int>[];
+    // 先筛选：同题型且不是当前题
+    var sameType = <int>[];
+    var allOthers = <int>[];
     for (var i = 0; i < questions.length; i++) {
-      if (questions[i].type == curType) sameTypeIndices.add(i);
+      if (curBankIdx != null && i == curBankIdx) continue;
+      if (questions[i].type == curType) {
+        sameType.add(i);
+      } else {
+        allOthers.add(i);
+      }
     }
-    final pool = sameTypeIndices.isNotEmpty
-        ? sameTypeIndices
-        : List.generate(questions.length, (i) => i);
+    final pool = sameType.isNotEmpty ? sameType : (allOthers.isNotEmpty ? allOthers : (curBankIdx != null ? [curBankIdx] : [0]));
     final idx = pool[Random().nextInt(pool.length)];
-
-    // 加载题目但保持方向
     final q = questions[idx];
+
+    // 保持来源为 bank，方向沿用当前选择
+    lastQuestionSource = 'bank';
     direction = curDir;
     currentQuestion = q.copyWith(userAnswerIdx: null, userAnswers: []);
     questionStartTime = DateTime.now().millisecondsSinceEpoch;
@@ -404,6 +435,11 @@ class AppState extends ChangeNotifier {
   Future<bool> generateQuestions({required int count, required String customReq, int wordCount = 80}) async {
     generating = true;
     notifyListeners();
+    // 记录本次 AI 生成参数，供「换一道」重生成时复用
+    lastQuestionSource = 'ai';
+    lastCustomReq = customReq;
+    lastWordCount = wordCount;
+    lastQuestionCount = count;
     final levelNames = {
       'cet4': '大学英语四级（CET-4）',
       'zsb': '专升本英语',
@@ -884,6 +920,8 @@ class AppState extends ChangeNotifier {
         ));
     if (studyRecords.length > 1000) studyRecords.removeRange(1000, studyRecords.length);
     Storage.saveStudyRecords(studyRecords);
+    // 题库题标记为已作答
+    _markBankAnswered(q.bankIdx);
     questionStartTime = now;
   }
 
@@ -1546,6 +1584,19 @@ class AppState extends ChangeNotifier {
       imageDark: hasImage && !hasVision,
     ));
     _notifyChatUpdate();
+
+    // 优先尝试 Agent（Function Calling）路径
+    // 注意：_runAgentLoop 内部会创建占位消息并实时更新，成功后占位消息即为最终回复
+    final agentResult = await _runAgentLoop(trimmed, imageData: imageData);
+    if (agentResult != null) {
+      // Agent 成功：占位消息已更新为最终回复，无需再添加
+      chatSending = false;
+      notifyListeners();
+      _notifyChatUpdate();
+      return agentResult.reply;
+    }
+
+    // 回退：原对话流程（流式 / 非流式）
     final q = currentQuestion;
     final dirDesc = isZh2En ? '中译英' : '英译中';
     final userAnswer = currentUserAnswer;
@@ -1841,6 +1892,391 @@ class AppState extends ChangeNotifier {
     _notifyChatUpdate();
   }
 
+  // ===== Agent（Function Calling）=====
+
+  /// 执行单个工具调用，返回结果给 AI。所有工具都在这里分发。
+  Future<ToolExecResult> executeTool(String name, Map<String, dynamic> args) async {
+    try {
+      switch (name) {
+        case 'generate_questions':
+          return await _toolGenerateQuestions(args);
+        case 'generate_full_exam':
+          return await _toolGenerateFullExam(args);
+        case 'lookup_word':
+          return _toolLookupWord(args);
+        case 'analyze_words':
+          return await _toolAnalyzeWords(args);
+        case 'get_current_question':
+          return _toolGetCurrentQuestion();
+        case 'next_question':
+          return _toolNextQuestion();
+        case 'toggle_favorite':
+          return _toolToggleFavorite();
+        case 'get_progress':
+          return _toolGetProgress();
+        default:
+          return ToolExecResult(content: '未知工具：$name', ok: false);
+      }
+    } catch (e) {
+      return ToolExecResult(content: '工具执行异常：$e', ok: false);
+    }
+  }
+
+  Future<ToolExecResult> _toolGenerateQuestions(Map<String, dynamic> args) async {
+    final type = (args['type'] as String?) ?? 'translation';
+    final level = (args['level'] as String?) ?? 'zsb';
+    var count = (args['count'] as num?)?.toInt() ?? 1;
+    if (count < 1) count = 1;
+    if (count > 10) count = 10;
+    final useBank = (args['useBank'] as bool?) ?? true;
+    if (generating) {
+      return const ToolExecResult(content: '正在生成中，请稍候', ok: false);
+    }
+    // 翻译题优先走题库（除非用户明确说不要题库）
+    if (type == 'translation' && useBank) {
+      final bankLevels = switch (level) {
+        'cet4' => const ['medium', 'hard'],
+        'zsb' => const ['medium'],
+        _ => [level],
+      };
+      final picked = pickQuestionsFromBank(QType.translation, bankLevels, count);
+      if (picked.isNotEmpty) {
+        selectedType = type;
+        selectedLevel = level;
+        generatedQuestions = picked;
+        generatedQuestionIdx = 0;
+        loadGeneratedQuestion();
+        _gotoAnswerPage();
+        return ToolExecResult(
+          content: '{"ok":true,"count":${picked.length},"type":"$type","level":"$level","source":"bank"}',
+          ok: true,
+          actionLabel: '已从题库抽取 ${picked.length} 道${levelName(level)}翻译题',
+        );
+      }
+    }
+    if (!apiConfig.ready) {
+      return const ToolExecResult(content: '{"ok":false,"reason":"api_not_configured"}', ok: false);
+    }
+    selectedType = type;
+    selectedLevel = level;
+    final ok = await generateQuestions(count: count, customReq: '');
+    if (ok) {
+      _gotoAnswerPage();
+      return ToolExecResult(
+        content: '{"ok":true,"count":${generatedQuestions.length},"type":"$type","level":"$level","source":"ai"}',
+        ok: true,
+        actionLabel: '已生成 ${generatedQuestions.length} 道${levelName(level)}${qTypeName(qTypeFrom(type))}',
+      );
+    }
+    return const ToolExecResult(content: '{"ok":false,"reason":"generate_failed"}', ok: false);
+  }
+
+  Future<ToolExecResult> _toolGenerateFullExam(Map<String, dynamic> args) async {
+    final level = (args['level'] as String?) ?? 'zsb';
+    if (examGeneratingBatch) {
+      return const ToolExecResult(content: '{"ok":false,"reason":"already_generating"}', ok: false);
+    }
+    if (!apiConfig.ready) {
+      return const ToolExecResult(content: '{"ok":false,"reason":"api_not_configured"}', ok: false);
+    }
+    selectedLevel = level;
+    generatingFullExam = true;
+    final ok = await generateFullExam(customReq: '');
+    generatingFullExam = false;
+    if (ok && currentExamPaper != null) {
+      return ToolExecResult(
+        content: '{"ok":true,"totalQuestions":${currentExamPaper!.totalQuestions}}',
+        ok: true,
+        actionLabel: '已生成全卷（${currentExamPaper!.totalQuestions}题）',
+      );
+    }
+    return const ToolExecResult(content: '{"ok":false,"reason":"generate_failed"}', ok: false);
+  }
+
+  ToolExecResult _toolLookupWord(Map<String, dynamic> args) {
+    final word = ((args['word'] as String?) ?? '').trim().toLowerCase();
+    if (word.isEmpty) {
+      return const ToolExecResult(content: '{"ok":false,"reason":"empty_word"}', ok: false);
+    }
+    final e = DictService.lookup(word);
+    if (e == null) {
+      return ToolExecResult(
+        content: '{"ok":false,"word":"$word","reason":"not_found"}',
+        ok: false,
+        actionLabel: '词典未收录：$word',
+      );
+    }
+    return ToolExecResult(
+      content: '{"ok":true,"word":"$word","pos":"${e.pos}","translation":"${e.translation}","phonetic":"${e.phonetic}","other":"${e.other}"}',
+      ok: true,
+      actionLabel: '查询：$word',
+    );
+  }
+
+  Future<ToolExecResult> _toolAnalyzeWords(Map<String, dynamic> args) async {
+    final text = (args['text'] as String?) ?? '';
+    final mode = (args['mode'] as String?) ?? 'normal';
+    if (text.isEmpty) {
+      return const ToolExecResult(content: '{"ok":false,"reason":"empty_text"}', ok: false);
+    }
+    if ((mode == 'normal' || mode == 'deep') && !apiConfig.ready) {
+      return const ToolExecResult(content: '{"ok":false,"reason":"api_not_configured"}', ok: false);
+    }
+    analysisMode = mode;
+    await analyzeWords(text);
+    chatTriggeredAnalysis = true;
+    notifyListeners();
+    final tokenCount = analysisTokens.where((t) => t.type == 'word' || t.type == 'phrase').length;
+    return ToolExecResult(
+      content: '{"ok":true,"mode":"$mode","wordCount":$tokenCount}',
+      ok: true,
+      actionLabel: '已剖析 $tokenCount 个单词（${mode == 'fast' ? '快速' : mode == 'normal' ? '正常' : '深度'}）',
+    );
+  }
+
+  ToolExecResult _toolGetCurrentQuestion() {
+    final q = currentQuestion;
+    final userAnswer = currentUserAnswer;
+    return ToolExecResult(
+      content: '{"ok":true,"type":"${q.type.name}","level":"${q.level}","text":${jsonEncode(q.text)},"chinese":${jsonEncode(q.chinese)},"english":${jsonEncode(q.english)},"correctAnswer":${jsonEncode(q.correctAnswer)},"userAnswer":${jsonEncode(userAnswer)},"knowledge":${jsonEncode(q.knowledge)}}',
+      ok: true,
+      actionLabel: '读取当前题目',
+    );
+  }
+
+  ToolExecResult _toolNextQuestion() {
+    if (generatedQuestions.length <= 1) {
+      return const ToolExecResult(content: '{"ok":false,"reason":"no_more_questions"}', ok: false);
+    }
+    nextQuestion();
+    textAnswerValue = '';
+    return ToolExecResult(
+      content: '{"ok":true,"index":$generatedQuestionIdx,"total":${generatedQuestions.length}}',
+      ok: true,
+      actionLabel: '已切换下一题',
+    );
+  }
+
+  ToolExecResult _toolToggleFavorite() {
+    final wasFav = isCurrentFavorite;
+    toggleFavorite();
+    return ToolExecResult(
+      content: '{"ok":true,"favorited":${!wasFav}}',
+      ok: true,
+      actionLabel: wasFav ? '已取消收藏' : '已收藏',
+    );
+  }
+
+  ToolExecResult _toolGetProgress() {
+    final total = wrongQuestions.fold<int>(0, (s, w) => s + w.wrongCount);
+    return ToolExecResult(
+      content: '{"ok":true,"favorites":${favorites.length},"wrongCount":${wrongQuestions.length},"wrongTotal":$total}',
+      ok: true,
+      actionLabel: '读取学习进度',
+    );
+  }
+
+  /// Agent 循环：发送用户消息 → AI 返回 tool_calls → 执行工具 → 把结果喂回 AI → 直到 AI 返回纯文本
+  /// 返回最终回复内容；如果 agent 不可用或失败，返回 null，调用方回退到原流程。
+  /// 带 UI 实时反馈：占位消息显示"正在思考→正在出题→流式输出回复"。
+  Future<({String reply, List<String> actions})?> _runAgentLoop(String text, {String? imageData}) async {
+    final cfg = effectiveChatConfig;
+    if (!cfg.ready) return null;
+    if (!AgentService.modelSupportsTools(cfg.model)) return null;
+
+    // 创建占位 AI 消息，实时更新（让用户看到 Agent 在做什么）
+    final placeholder = ChatMessage(role: 'ai', content: '正在思考…', showReasoning: true, reasoning: '');
+    chatHistory.add(placeholder);
+    _notifyChatUpdate();
+
+    final tools = AgentService.toolDefinitions();
+    final actions = <String>[];
+
+    // 动态 system prompt：注入当前题目上下文
+    final q = currentQuestion;
+    final dirDesc = isZh2En ? '中译英' : '英译中';
+    final sysPrompt = AgentService.buildSystemPrompt(
+      qType: qTypeName(q.type),
+      qLevel: levelName(q.level),
+      qText: q.text,
+      dirDesc: dirDesc,
+    );
+
+    // 构建 messages：从 chatHistory 读历史，但排除最后一条（刚加的 user 消息，避免重复）
+    final historyLen = chatHistory.length;
+    final baseHistory = chatHistory
+        .getRange(0, historyLen - 1)
+        .where((m) => m.role != 'system')
+        .map((m) => {
+              'role': m.role == 'ai' ? 'assistant' : 'user',
+              'content': (m.role == 'user' && m.imageData != null && m.imageData!.isNotEmpty)
+                  ? ApiService.buildContent(m.content, m.imageData)
+                  : m.content,
+            })
+        .toList();
+    // 追加当前用户消息
+    baseHistory.add({
+      'role': 'user',
+      'content': imageData != null && imageData.isNotEmpty && cfg.vision
+          ? ApiService.buildContent(text, imageData)
+          : text,
+    });
+
+    final messages = List<Map<String, dynamic>>.from(baseHistory);
+
+    try {
+      // 最多循环 5 轮（防止死循环）
+      for (var round = 0; round < 5; round++) {
+        // 更新占位消息
+        if (actions.isEmpty) {
+          placeholder.content = '正在思考…';
+        } else {
+          placeholder.content = '🔧 ${actions.join("\n ")}\n\n正在思考…';
+        }
+        _notifyChatUpdate();
+
+        // 最后一轮用流式调用（真实推理过程可见），前几轮用非流式（需要解析 tool_calls）
+        if (round == 4) {
+          // 最后一轮：流式输出，带思考过程（不用 noThinking，让 AI 有思考能力）
+          String rawReasoning = '';
+          String fullContent = '';
+          final reply = await ApiService.streamChatWithTools(
+            messages,
+            sysPrompt,
+            config: cfg,
+            tools: tools,
+            onReasoning: (chunk) {
+              rawReasoning += chunk;
+              placeholder.reasoning = rawReasoning;
+              _notifyChatUpdate();
+            },
+            onDelta: (chunk) {
+              fullContent += chunk;
+              placeholder.content = fullContent;
+              _notifyChatUpdate();
+            },
+          );
+          return (reply: fullContent.isNotEmpty ? fullContent : reply, actions: actions);
+        }
+
+        final resp = await ApiService.callAIWithTools(
+          messages,
+          sysPrompt,
+          config: cfg,
+          tools: tools,
+          // 注意：agent 循环中不用 noThinkingParams，让 AI 有思考能力来选择工具
+        );
+        if (resp.content == null) {
+          // API 失败，移除占位消息，回退
+          chatHistory.remove(placeholder);
+          _notifyChatUpdate();
+          return null;
+        }
+        // 显示思考过程（如果非流式响应中包含 reasoning_content）
+        if (resp.reasoning.isNotEmpty) {
+          placeholder.reasoning = resp.reasoning;
+          _notifyChatUpdate();
+        }
+        if (resp.toolCalls.isEmpty) {
+          // 纯文本回复，结束循环 → 模拟流式输出
+          final reply = resp.content!;
+          await _simulateStreamOutput(placeholder, reply, actions);
+          return (reply: reply, actions: actions);
+        }
+        // 有工具调用：把 assistant 的 tool_calls 消息加入历史
+        messages.add({
+          'role': 'assistant',
+          'content': resp.content,
+          'tool_calls': resp.toolCalls
+              .map((tc) => {
+                    'id': tc.id,
+                    'type': 'function',
+                    'function': {'name': tc.name, 'arguments': tc.arguments},
+                  })
+              .toList(),
+        });
+        // 执行每个工具调用，实时更新占位消息
+        for (final tc in resp.toolCalls) {
+          final args = AgentService.parseArgs(tc.arguments);
+          // 工具执行前：显示"正在xxx"
+          final runningLabel = _toolRunningLabel(tc.name, args);
+          if (runningLabel.isNotEmpty) {
+            placeholder.content = actions.isEmpty
+                ? ' $runningLabel…'
+                : ' ${actions.join("\n🔧 ")}\n\n🔧 $runningLabel…';
+            _notifyChatUpdate();
+          }
+          final result = await executeTool(tc.name, args);
+          if (result.actionLabel.isNotEmpty) {
+            actions.add(result.actionLabel);
+          }
+          messages.add({
+            'role': 'tool',
+            'tool_call_id': tc.id,
+            'name': tc.name,
+            'content': result.content,
+          });
+        }
+      }
+      // 超过最大轮次，用动作兜底
+      final reply = actions.isEmpty ? '操作已完成。' : '已完成：${actions.join("、")}。';
+      await _simulateStreamOutput(placeholder, reply, actions);
+      return (reply: reply, actions: actions);
+    } catch (e) {
+      // 异常时移除占位消息，回退
+      chatHistory.remove(placeholder);
+      _notifyChatUpdate();
+      return null;
+    }
+  }
+
+  /// 工具执行中的进度文案
+  String _toolRunningLabel(String name, Map<String, dynamic> args) {
+    switch (name) {
+      case 'generate_questions':
+        final type = (args['type'] as String?) ?? 'translation';
+        final count = (args['count'] as num?)?.toInt() ?? 1;
+        return '正在生成 $count 道${qTypeName(qTypeFrom(type))}';
+      case 'generate_full_exam':
+        return '正在生成全卷（约1-2分钟）';
+      case 'lookup_word':
+        final w = (args['word'] as String?) ?? '';
+        return '正在查询 "$w"';
+      case 'analyze_words':
+        return '正在剖析词汇';
+      case 'next_question':
+        return '正在切换题目';
+      case 'toggle_favorite':
+        return '正在收藏';
+      case 'get_current_question':
+        return '正在读取题目';
+      case 'get_progress':
+        return '正在读取进度';
+      default:
+        return '正在处理';
+    }
+  }
+
+  /// 模拟流式输出：把完整回复逐字显示到占位消息，给用户流式体验
+  Future<void> _simulateStreamOutput(ChatMessage msg, String reply, List<String> actions) async {
+    final prefix = actions.isEmpty ? '' : '🔧 ${actions.join("\n🔧 ")}\n\n';
+    // 分块输出（每块 2-4 个字符），模拟流式效果
+    final chunkSize = reply.length > 200 ? 4 : 2;
+    var displayed = '';
+    for (var i = 0; i < reply.length; i += chunkSize) {
+      final end = (i + chunkSize).clamp(0, reply.length);
+      displayed = reply.substring(0, end);
+      msg.content = '$prefix$displayed';
+      _notifyChatUpdate();
+      // 短暂延迟（让用户看到"打字"效果），但不影响总时长太多
+      if (i % (chunkSize * 10) == 0) {
+        await Future.delayed(const Duration(milliseconds: 16));
+      }
+    }
+    msg.content = '$prefix$reply';
+    _notifyChatUpdate();
+  }
+
   // ===== 默写 =====
   void startDictation(String mode, int count) {
     dictationMode = mode;
@@ -1983,6 +2419,7 @@ class AppState extends ChangeNotifier {
   // ===== 学习报告数据 =====
   List<StudyRecord> studyRecords = [];
   List<WrongItem> wrongQuestions = [];
+  Set<int> answeredBankIndices = <int>{};
 
   void loadStudyRecords() {
     studyRecords = Storage.loadStudyRecords();
@@ -1992,6 +2429,18 @@ class AppState extends ChangeNotifier {
   void loadWrongQuestions() {
     wrongQuestions = Storage.loadWrongQuestions();
     notifyListeners();
+  }
+
+  void loadAnsweredBankIndices() {
+    answeredBankIndices = Storage.loadAnsweredBankIndices();
+    notifyListeners();
+  }
+
+  void _markBankAnswered(int? idx) {
+    if (idx == null) return;
+    if (answeredBankIndices.add(idx)) {
+      Storage.saveAnsweredBankIndices(answeredBankIndices);
+    }
   }
 
   void clearStudyRecords() {
@@ -2124,6 +2573,20 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  void setUiStyle(String style) {
+    if (uiStyle == style) return;
+    uiStyle = style;
+    Storage.saveUiStyle(style);
+    notifyListeners();
+  }
+
+  void setNavIndicator(String type) {
+    if (navIndicator == type) return;
+    navIndicator = type;
+    Storage.saveNavIndicator(type);
+    notifyListeners();
+  }
+
   /// 根据当前 uiMode 切换系统 UI 模式：手机端沉浸式全屏（隐藏状态栏与导航栏），
   /// 电脑端恢复常规显示。SystemChrome 在桌面平台为 no-op，不会影响 Windows 端。
   void _applySystemUiMode() {
@@ -2171,6 +2634,7 @@ class AppState extends ChangeNotifier {
       loadWordBook();
       loadRecordedWords();
       loadRecordsSelected();
+      loadAnsweredBankIndices();
       notifyListeners();
     }
     return ok;

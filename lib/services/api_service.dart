@@ -13,6 +13,22 @@ class AIResult {
   const AIResult(this.content, this.finishReason);
 }
 
+/// 工具调用（Function Calling）
+class ToolCall {
+  final String id;
+  final String name;
+  final String arguments; // JSON 字符串
+  const ToolCall({required this.id, required this.name, required this.arguments});
+}
+
+/// 带 tools 的 AI 响应：包含文本内容 + 工具调用列表 + 思考过程
+class AIResponse {
+  final String? content;
+  final List<ToolCall> toolCalls;
+  final String reasoning; // 思考过程内容（reasoning_content 字段）
+  const AIResponse({required this.content, required this.toolCalls, this.reasoning = ''});
+}
+
 class ApiService {
   /// 最近一次 AI 请求的失败原因（供调用方透传给用户排查；非请求异常时为 null）
   static String? lastError;
@@ -134,6 +150,92 @@ class ApiService {
     }
   }
 
+  /// 带 tools 的非流式调用（Function Calling）。
+  /// 返回 AIResponse：包含 content 和 toolCalls 列表。
+  /// 如果模型不支持 tools 或返回纯文本，toolCalls 为空。
+  static Future<AIResponse> callAIWithTools(
+    List<Map<String, dynamic>> messages,
+    String systemPrompt, {
+    ApiConfig? config,
+    List<Map<String, dynamic>>? tools,
+    double? temperature,
+    int maxTokens = 4096,
+    Map<String, dynamic>? extraParams,
+  }) async {
+    final cfg = config;
+    if (cfg == null || !cfg.ready) {
+      lastError = '未配置 API 地址或密钥';
+      return const AIResponse(content: null, toolCalls: []);
+    }
+    lastError = null;
+    try {
+      final body = <String, dynamic>{
+        'model': _realModel(cfg.model),
+        'temperature': _resolveTemp(cfg, temperature),
+        'max_tokens': maxTokens,
+        'messages': [
+          {'role': 'system', 'content': systemPrompt},
+          ...messages,
+        ],
+      };
+      if (tools != null && tools.isNotEmpty) {
+        body['tools'] = tools;
+        body['tool_choice'] = 'auto';
+      }
+      if (extraParams != null && extraParams.isNotEmpty) {
+        body.addAll(extraParams);
+      }
+      final resp = await http
+          .post(
+            Uri.parse(cfg.effectiveUrl),
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer ${cfg.key}',
+            },
+            body: jsonEncode(body),
+          )
+          .timeout(const Duration(seconds: 120));
+      if (resp.statusCode != 200) {
+        final errBody = utf8.decode(resp.bodyBytes, allowMalformed: true).trim();
+        lastError = 'HTTP ${resp.statusCode}${errBody.length <= 200 ? '：$errBody' : ''}';
+        return const AIResponse(content: null, toolCalls: []);
+      }
+      final data = jsonDecode(utf8.decode(resp.bodyBytes)) as Map<String, dynamic>;
+      final choices = data['choices'] as List?;
+      if (choices == null || choices.isEmpty) {
+        lastError = '响应缺少 choices 字段';
+        return const AIResponse(content: null, toolCalls: []);
+      }
+      final choice = choices.first as Map<String, dynamic>;
+      final msg = choice['message'] as Map<String, dynamic>? ?? {};
+      final content = (msg['content'] as String?) ?? '';
+      // 提取思考过程（reasoning_content 字段，部分模型在 message 中返回）
+      final reasoning = (msg['reasoning_content'] as String?) ?? '';
+      final toolCallsRaw = msg['tool_calls'] as List?;
+      final toolCalls = <ToolCall>[];
+      if (toolCallsRaw != null) {
+        for (final tc in toolCallsRaw) {
+          final m = tc as Map<String, dynamic>;
+          final fn = m['function'] as Map<String, dynamic>?;
+          if (fn != null) {
+            toolCalls.add(ToolCall(
+              id: (m['id'] ?? '').toString(),
+              name: (fn['name'] ?? '').toString(),
+              arguments: (fn['arguments'] ?? '{}').toString(),
+            ));
+          }
+        }
+      }
+      return AIResponse(content: content, toolCalls: toolCalls, reasoning: reasoning);
+    } on TimeoutException catch (_) {
+      lastError = '请求超时（120 秒）';
+      return const AIResponse(content: null, toolCalls: []);
+    } catch (e) {
+      lastError = e.toString();
+      return const AIResponse(content: null, toolCalls: []);
+    }
+  }
+
   /// 流式对话（SSE）。onReasoning/onDelta 回调增量内容，返回完整内容
   static Future<String> streamChat(
     List<Map<String, dynamic>> messages,
@@ -142,12 +244,24 @@ class ApiService {
     void Function(String chunk)? onReasoning,
     void Function(String chunk)? onDelta,
     double? temperature,
+  }) =>
+      streamChatWithTools(messages, systemPrompt, config: config, onReasoning: onReasoning, onDelta: onDelta, temperature: temperature);
+
+  /// 流式对话（SSE），支持 tools。与 streamChat 相同但可传入 tools 参数。
+  static Future<String> streamChatWithTools(
+    List<Map<String, dynamic>> messages,
+    String systemPrompt, {
+    ApiConfig? config,
+    void Function(String chunk)? onReasoning,
+    void Function(String chunk)? onDelta,
+    double? temperature,
+    List<Map<String, dynamic>>? tools,
   }) async {
     final cfg = config;
     if (cfg == null || !cfg.ready) return '';
     String full = '';
     try {
-      final body = {
+      final body = <String, dynamic>{
         'model': _realModel(cfg.model),
         'temperature': _resolveTemp(cfg, temperature),
         'stream': true,
@@ -156,6 +270,10 @@ class ApiService {
           ...messages,
         ],
       };
+      if (tools != null && tools.isNotEmpty) {
+        body['tools'] = tools;
+        body['tool_choice'] = 'auto';
+      }
       final req = http.Request('POST', Uri.parse(cfg.effectiveUrl));
       req.headers.addAll({
         'Content-Type': 'application/json',

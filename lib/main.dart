@@ -3,6 +3,7 @@ library;
 
 import 'dart:convert';
 import 'dart:io' show File, Platform;
+import 'dart:ui' show ImageFilter;
 import 'package:cross_file/cross_file.dart';
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:file_picker/file_picker.dart';
@@ -17,25 +18,159 @@ import 'theme_colors.dart';
 import 'widgets/learn_page.dart';
 import 'widgets/grammar_page.dart';
 import 'widgets/onboarding_page.dart';
+// import 'widgets/onboarding_web_page.dart';  // WebView 版（Windows 不兼容，先切回原版）
 import 'widgets/pages.dart';
 import 'widgets/exam_page.dart';
 import 'widgets/settings_dialog.dart';
 import 'widgets/platform_select_page.dart';
+import 'widgets/glass_background.dart';
 
 final bool _isWindows = !kIsWeb && Platform.isWindows;
 
 // 更多功能列表：(图标, 标题, 副标题, 页面索引)
 const _moreItemsData = [
-  (Icons.list_alt_rounded, '题库', '管理题目集', 4),
-  (Icons.error_outline_rounded, '错题本', '复习做错的题', 5),
-  (Icons.star_outline_rounded, '生词本', '收藏的生词', 6),
+  (Icons.list_alt_outlined, '题库', '管理题目集', 4),
+  (Icons.error_outline_outlined, '错题本', '复习做错的题', 5),
+  (Icons.star_outline_outlined, '生词本', '收藏的生词', 6),
   (Icons.bookmark_add_outlined, '答题记录', '记录已答单词', 7),
-  (Icons.edit_note_rounded, '默写', '单词默写练习', 8),
-  (Icons.school_rounded, '语法学习', '从零学会专升本语法', 12),
+  (Icons.edit_note_outlined, '默写', '单词默写练习', 8),
+  (Icons.school_outlined, '语法学习', '从零学会专升本语法', 12),
 ];
 
 // 更多功能选择页索引
 const _morePageIndex = 9;
+
+/// 导航项按压反馈：按下时整体缩放，松开回弹
+class _NavPressFeedback extends StatefulWidget {
+  final Widget child;
+  final VoidCallback onTap;
+  final double pressedScale;
+  final BorderRadius borderRadius;
+  const _NavPressFeedback({
+    required this.child,
+    required this.onTap,
+    this.pressedScale = 0.94,
+    this.borderRadius = const BorderRadius.all(Radius.circular(12)),
+  });
+  @override
+  State<_NavPressFeedback> createState() => _NavPressFeedbackState();
+}
+
+class _NavPressFeedbackState extends State<_NavPressFeedback> {
+  bool _pressed = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTapDown: (_) => setState(() => _pressed = true),
+      onTapUp: (_) => setState(() => _pressed = false),
+      onTapCancel: () => setState(() => _pressed = false),
+      onTap: widget.onTap,
+      child: AnimatedScale(
+        scale: _pressed ? widget.pressedScale : 1.0,
+        duration: const Duration(milliseconds: 140),
+        curve: _pressed ? Curves.easeOut : Curves.easeOutBack,
+        child: widget.child,
+      ),
+    );
+  }
+}
+
+/// 侧边栏导航指示器：underline=灰色下划线，pill=紫色渐变胶囊
+class _SidebarNavPill extends StatelessWidget {
+  final bool selected;
+  final IconData icon;
+  final String label;
+  final bool showChevron;
+  final String indicator; // 'underline' | 'pill'
+  const _SidebarNavPill({required this.selected, required this.icon, required this.label, this.showChevron = false, this.indicator = 'underline'});
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppColors.of(context);
+    final usePill = indicator == 'pill';
+
+    if (usePill) {
+      // === 紫色渐变胶囊 ===
+      return AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOut,
+        height: 44,
+        padding: const EdgeInsets.symmetric(horizontal: 14),
+        decoration: BoxDecoration(
+          gradient: selected
+              ? const LinearGradient(
+                  begin: Alignment.centerLeft,
+                  end: Alignment.centerRight,
+                  colors: [Color(0xFF9F7AEA), Color(0xFF7C3AED)],
+                )
+              : null,
+          borderRadius: BorderRadius.circular(10),
+          boxShadow: selected
+              ? [
+                  BoxShadow(
+                    color: kPrimary.withValues(alpha: 0.18),
+                    blurRadius: 10,
+                    offset: const Offset(0, 2),
+                  ),
+                ]
+              : null,
+        ),
+        child: _buildRow(c, selected: selected, usePill: true),
+      );
+    }
+
+    // === 灰色下划线 ===（背景完全透明，只在底部画一条 3px 灰线）
+    final underlineColor = c.isLight ? const Color(0xFF9CA3AF) : const Color(0xFFB0B5C0);
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 180),
+      curve: Curves.easeOut,
+      height: 44,
+      padding: const EdgeInsets.symmetric(horizontal: 14),
+      decoration: BoxDecoration(
+        // 选中时用极淡的灰色背景指示行，未选中全透明
+        color: selected
+            ? (c.isLight ? Colors.black.withValues(alpha: 0.03) : Colors.white.withValues(alpha: 0.04))
+            : Colors.transparent,
+        borderRadius: BorderRadius.circular(10),
+        border: Border(
+          bottom: BorderSide(
+            color: selected ? underlineColor : Colors.transparent,
+            width: selected ? 3.0 : 0,
+          ),
+        ),
+      ),
+      child: _buildRow(c, selected: selected, usePill: false),
+    );
+  }
+
+  Row _buildRow(AppColors c, {required bool selected, required bool usePill}) {
+    final textColor = usePill && selected ? Colors.white : c.text;
+    final iconColor = usePill && selected ? Colors.white : c.textSecondary;
+    return Row(children: [
+      Icon(icon, size: 19, color: iconColor),
+      const SizedBox(width: 11),
+      Expanded(
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 14,
+            fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+            color: selected ? textColor : c.textSecondary,
+          ),
+          overflow: TextOverflow.ellipsis,
+        ),
+      ),
+      if (showChevron)
+        Icon(
+          Icons.chevron_right_rounded,
+          size: 17,
+          color: (usePill && selected) ? Colors.white.withValues(alpha: 0.8) : c.textTertiary,
+        ),
+    ]);
+  }
+}
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -94,6 +229,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
     _state.loadWordBook();
     _state.loadRecordedWords();
     _state.loadRecordsSelected();
+    _state.loadAnsweredBankIndices();
     if (mounted) setState(() => _ready = true);
     // 初始化帧率
     _updateFrameRate();
@@ -156,7 +292,9 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
   Widget build(BuildContext context) {
     return AppScope(
       state: _state,
-      child: MaterialApp(
+      child: ListenableBuilder(
+        listenable: _state,
+        builder: (context, _) => MaterialApp(
         title: 'AFloat',
         debugShowCheckedModeBanner: false,
         theme: _buildTheme(Brightness.light),
@@ -166,7 +304,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
           final c = AppColors.of(context);
           // 全局玻璃背景层（渐变 + 3 光斑）覆盖加载页/引导页/桌面/手机全部分支
           return Stack(children: [
-            Positioned.fill(child: RepaintBoundary(child: _AppGlassBackground(colors: c))),
+            Positioned.fill(child: RepaintBoundary(child: _AppGlassBackground(colors: c, isGlass: _state.uiStyle == 'glass'))),
             Positioned.fill(
               child: Focus(
                 autofocus: true,
@@ -198,6 +336,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                       )
                     : !_state.onboardingDone
                         ? OnboardingPage(state: _state)
+                        // ? OnboardingWebPage(state: _state)  // WebView 版（Windows 不兼容，先切回原版）
                         : _state.uiMode.isEmpty
                             ? PlatformSelectPage(
                                 onDesktop: () => _state.setUiMode('desktop'),
@@ -217,7 +356,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
             ),
           ]);
         }),
-      ),
+      )),
     );
   }
 
@@ -350,23 +489,46 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
       final c = AppColors.of(context);
       final page = _state.page;
       const mainItems = [
-        (Icons.home_rounded, '学习', 0),
-        (Icons.quiz_rounded, '答题', 1),
-        (Icons.insights_rounded, '学习报告', 2),
-        (Icons.search_rounded, '查询', 3),
+        (Icons.home_outlined, '学习', 0),
+        (Icons.help_outline, '答题', 1),
+        (Icons.bar_chart_rounded, '学习报告', 2),
+        (Icons.search_outlined, '查询', 3),
       ];
       final inMore = page >= 4;
       final inSubFeature = page >= 4 && (page <= 8 || page == 12);
       final moreTitle = inSubFeature ? _moreItemsData.firstWhere((e) => e.$4 == page).$2 : '更多功能';
-      final moreIcon = inSubFeature ? _moreItemsData.firstWhere((e) => e.$4 == page).$1 : Icons.apps_rounded;
+      final moreIcon = inSubFeature ? _moreItemsData.firstWhere((e) => e.$4 == page).$1 : Icons.grid_view_outlined;
+      final isGlass = _state.uiStyle == 'glass';
       return RepaintBoundary(
-        child: Container(
+        child: isGlass
+          ? ClipRRect(
+              child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 30, sigmaY: 30),
+                child: Container(
+                  width: 200,
+                  decoration: BoxDecoration(
+                    color: c.sidebar.withValues(alpha: _state.darkMode ? 0.5 : 0.55),
+                    border: Border(right: BorderSide(color: c.divider)),
+                  ),
+                  child: _buildSidebarContent(c, page, mainItems, inMore, inSubFeature, moreTitle, moreIcon, context),
+                ),
+              ),
+            )
+          : Container(
         width: 200,
         decoration: BoxDecoration(
           color: c.sidebar,
           border: Border(right: BorderSide(color: c.divider)),
         ),
-        child: Column(children: [
+        child: _buildSidebarContent(c, page, mainItems, inMore, inSubFeature, moreTitle, moreIcon, context),
+      ),
+      );
+    });
+  }
+
+  Widget _buildSidebarContent(AppColors c, int page, List mainItems, bool inMore, bool inSubFeature, String moreTitle, IconData moreIcon, BuildContext context) {
+    final isGlass = _state.uiStyle == 'glass';
+    return Column(children: [
           const SizedBox(height: 24),
           // 应用名
           Padding(
@@ -397,24 +559,14 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
               child: Tooltip(
                 message: item.$2,
-                child: InkWell(
+                child: _NavPressFeedback(
                   onTap: () => _state.setPage(item.$3),
-                  borderRadius: BorderRadius.circular(12),
-                  child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 200),
-                    curve: Curves.easeOut,
-                    height: 44,
-                    padding: const EdgeInsets.symmetric(horizontal: 14),
-                    decoration: BoxDecoration(
-                      gradient: page == item.$3 ? c.primaryGradient : null,
-                      borderRadius: BorderRadius.circular(12),
-                      boxShadow: page == item.$3 ? [BoxShadow(color: c.primary.withValues(alpha: 0.25), blurRadius: 8, offset: const Offset(0, 2))] : null,
-                    ),
-                    child: Row(children: [
-                      Icon(item.$1, size: 20, color: page == item.$3 ? Colors.white : c.textTertiary),
-                      const SizedBox(width: 12),
-                      Text(item.$2, style: TextStyle(fontSize: 14, fontWeight: page == item.$3 ? FontWeight.w700 : FontWeight.w500, color: page == item.$3 ? Colors.white : c.textSecondary)),
-                    ]),
+                  child: _SidebarNavPill(
+                    selected: page == item.$3,
+                    icon: item.$1,
+                    label: item.$2,
+                    showChevron: false,
+                    indicator: _state.navIndicator,
                   ),
                 ),
               ),
@@ -424,25 +576,14 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
             child: Tooltip(
               message: '更多功能',
-              child: InkWell(
+              child: _NavPressFeedback(
                 onTap: () => _state.setPage(_morePageIndex),
-                borderRadius: BorderRadius.circular(12),
-                child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 200),
-                  curve: Curves.easeOut,
-                  height: 44,
-                  padding: const EdgeInsets.symmetric(horizontal: 14),
-                  decoration: BoxDecoration(
-                    gradient: inMore ? c.primaryGradient : null,
-                    borderRadius: BorderRadius.circular(12),
-                    boxShadow: inMore ? [BoxShadow(color: c.primary.withValues(alpha: 0.25), blurRadius: 8, offset: const Offset(0, 2))] : null,
-                  ),
-                  child: Row(children: [
-                    Icon(moreIcon, size: 20, color: inMore ? Colors.white : c.textTertiary),
-                    const SizedBox(width: 12),
-                    Expanded(child: Text(moreTitle, style: TextStyle(fontSize: 14, fontWeight: inMore ? FontWeight.w700 : FontWeight.w500, color: inMore ? Colors.white : c.textSecondary), overflow: TextOverflow.ellipsis)),
-                    Icon(Icons.chevron_right_rounded, size: 18, color: inMore ? Colors.white70 : c.textTertiary),
-                  ]),
+                child: _SidebarNavPill(
+                  selected: inMore,
+                  icon: moreIcon,
+                  label: moreTitle,
+                  showChevron: true,
+                  indicator: _state.navIndicator,
                 ),
               ),
             ),
@@ -466,14 +607,13 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
             ),
           ),
           const SizedBox(height: 16),
-        ]),
-      ),
-      );
-    });
+    ]);
   }
 
   // ===== 主内容区 =====
   Widget _buildMainContent() {
+    final isGlass = _state.uiStyle == 'glass';
+    final c = AppColors(!_state.darkMode);
     // 考场沉浸模式（page==10/11）：隐藏 AI 对话栏（右侧30%），卷面独占
     if (_state.page == 10 || _state.page == 11) {
       return Row(children: [
@@ -484,7 +624,17 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
       // 中间内容区（70%）
       Expanded(
         flex: 7,
-        child: _buildPage(),
+        child: isGlass
+          ? ClipRect(child: BackdropFilter(
+              filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+              child: Container(
+                decoration: BoxDecoration(
+                  color: c.bg.withValues(alpha: _state.darkMode ? 0.45 : 0.5),
+                ),
+                child: _buildPage(),
+              ),
+            ))
+          : _buildPage(),
       ),
       // 右侧 AI 对话助手（30%）— 监听 darkMode + chatUpdate，避免流式输出时全应用重建
       Expanded(
@@ -510,22 +660,24 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
         final examMode = _state.page == 10 || _state.page == 11;
         // 主导航：0学习 1答题 2报告 3更多(触发) 4查询
         const navItems = [
-          (Icons.home_rounded, '学习', 0),
-          (Icons.quiz_rounded, '答题', 1),
-          (Icons.insights_rounded, '报告', 2),
-          (Icons.apps_rounded, '更多', -1),
-          (Icons.search_rounded, '查询', 3),
+          (Icons.home_outlined, '学习', 0),
+          (Icons.help_outline, '答题', 1),
+          (Icons.analytics_outlined, '报告', 2),
+          (Icons.grid_view_outlined, '更多', -1),
+          (Icons.search_outlined, '查询', 3),
         ];
         final inMore = _state.page >= 4;
         final inSubFeature = _state.page >= 4 && (_state.page <= 8 || _state.page == 12);
         final navIndex = inMore ? 3 : (_state.page == 3 ? 4 : _state.page.clamp(0, 2));
+        final isGlass = _state.uiStyle == 'glass';
+        final glassBg = isGlass ? c.sidebar.withValues(alpha: _state.darkMode ? 0.5 : 0.55) : c.sidebar;
         return Scaffold(
           // 透明：让全局玻璃背景层透出
           backgroundColor: Colors.transparent,
           appBar: examMode
               ? null
               : AppBar(
-            backgroundColor: c.sidebar,
+            backgroundColor: glassBg,
             elevation: 0,
             title: Row(children: [
               const SizedBox(width: 0),
@@ -537,7 +689,17 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
               ),
             ],
           ),
-          body: _buildPage(),
+          body: isGlass
+            ? ClipRect(child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: c.bg.withValues(alpha: _state.darkMode ? 0.4 : 0.45),
+                  ),
+                  child: _buildPage(),
+                ),
+              ))
+            : _buildPage(),
           bottomNavigationBar: examMode
               ? null
               : NavigationBar(
@@ -550,7 +712,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
               }
             },
             labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
-            backgroundColor: c.sidebar,
+            backgroundColor: glassBg,
             indicatorColor: kPrimary.withValues(alpha: c.isLight ? 0.12 : 0.3),
             destinations: [
               for (var i = 0; i < navItems.length; i++)
@@ -563,7 +725,12 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
           ),
           floatingActionButton: examMode
               ? null
-              : Container(
+              : _state.uiStyle == 'glass'
+                  ? GlassFab(
+                      onPressed: () => _showMobileChatSheet(ctx),
+                      icon: const Icon(Icons.auto_awesome_rounded, color: Colors.white, size: 24),
+                    )
+                  : Container(
             decoration: BoxDecoration(
               gradient: c.primaryGradient,
               shape: BoxShape.circle,
@@ -846,17 +1013,36 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
     final levelName = {'cet4': '四级', 'zsb': '专升本', 'easy': '简单', 'medium': '中等', 'hard': '困难'}[s.selectedLevel] ?? s.selectedLevel;
     final typeName = {'translation': '翻译题', 'reading': '阅读理解', 'grammar': '语法填空', 'choice': '选择题', 'writing': '写作题', 'mixed': '综合套卷'}[s.selectedType] ?? s.selectedType;
     final aiIconAsset = _getAiIconAsset(modelName);
+    final isGlass = s.uiStyle == 'glass';
     // RepaintBoundary：聊天面板处于流式重建区，隔离重绘
     return RepaintBoundary(
       child: DropTarget(
       onDragDone: (details) => _setChatImageFromFiles(details.files),
-      child: Container(
+      child: isGlass
+        ? ClipRect(child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+            child: Container(
+              decoration: BoxDecoration(
+                color: c.sidebar.withValues(alpha: s.darkMode ? 0.4 : 0.45),
+                border: Border(left: BorderSide(color: c.divider)),
+              ),
+              child: _buildChatPanelContent(c, s, cfg, modelName, levelName, typeName, aiIconAsset),
+            ),
+          ))
+        : Container(
         decoration: BoxDecoration(
           // 透明：让全局玻璃背景层透出
           color: Colors.transparent,
           border: Border(left: BorderSide(color: c.divider)),
         ),
-        child: Column(children: [
+        child: _buildChatPanelContent(c, s, cfg, modelName, levelName, typeName, aiIconAsset),
+      ),
+      ),
+    );
+  }
+
+  Widget _buildChatPanelContent(AppColors c, AppState s, dynamic cfg, String modelName, String levelName, String typeName, String? aiIconAsset) {
+    return Column(children: [
           // 头部（AI信息栏 + 操作按钮）— 透明背景 + 底部分割线
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
@@ -1050,7 +1236,12 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                 ),
               ),
               const SizedBox(width: 8),
-              Container(
+              s.uiStyle == 'glass'
+                ? GlassSendButton(
+                    onPressed: s.chatSending ? null : () => _sendChat(s),
+                    sending: s.chatSending,
+                  )
+                : Container(
                 width: 40,
                 height: 40,
                 decoration: BoxDecoration(
@@ -1068,9 +1259,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
             ]),
           ]),
         ),
-      ]),
-      ),
-      ),
+      ],
     );
   }
 
@@ -1634,65 +1823,111 @@ class _PageScaffold extends StatelessWidget {
   }
 }
 
-// ===== "更多功能"独立选择页面（桌面/手机自适应） =====
-class _MoreSelectPage extends StatelessWidget {
+// ===== "更多功能"独立选择页面（桌面/手机自适应） — 毛玻璃大面板 =====
+class _MoreSelectPage extends StatefulWidget {
   final int currentIndex;
   final void Function(int index) onSelect;
   const _MoreSelectPage({required this.currentIndex, required this.onSelect});
+
+  @override
+  State<_MoreSelectPage> createState() => _MoreSelectPageState();
+}
+
+class _MoreSelectPageState extends State<_MoreSelectPage> {
+  int? _hoveredIdx;
 
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
     final isMobile = AppScope.of(context).uiMode == 'mobile';
     final crossCount = isMobile ? 2 : 3;
-    final aspectRatio = isMobile ? 1.0 : 2.4;
+    final panelRadius = BorderRadius.circular(isMobile ? 20 : 28);
+    final padAll = isMobile ? 18.0 : 28.0;
 
     return SafeArea(
       child: Padding(
-        padding: EdgeInsets.fromLTRB(isMobile ? 16 : 32, isMobile ? 12 : 24, isMobile ? 16 : 32, 16),
+        padding: EdgeInsets.fromLTRB(isMobile ? 14 : 32, isMobile ? 12 : 24, isMobile ? 14 : 32, 16),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           // 标题区
-          Row(children: [
-            Container(
-              width: isMobile ? 36 : 44,
-              height: isMobile ? 36 : 44,
-              decoration: BoxDecoration(
-                gradient: c.primaryGradient,
-                borderRadius: BorderRadius.circular(isMobile ? 10 : 12),
-                boxShadow: [BoxShadow(color: c.primary.withValues(alpha: 0.25), blurRadius: 8, offset: const Offset(0, 2))],
-              ),
-              child: Icon(Icons.apps_rounded, color: Colors.white, size: isMobile ? 20 : 24),
+          Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
+            Icon(Icons.grid_view_outlined, color: c.textSecondary, size: isMobile ? 24 : 30),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text('更多功能', style: TextStyle(
+                  fontSize: isMobile ? 20 : 26,
+                  fontWeight: FontWeight.w800,
+                  color: c.text,
+                  letterSpacing: 0.2,
+                )),
+                const SizedBox(height: 2),
+                Text('选择你需要的工具', style: TextStyle(fontSize: isMobile ? 11.5 : 13, color: c.textTertiary)),
+              ]),
             ),
-            const SizedBox(width: 12),
-            Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text('更多功能', style: TextStyle(fontSize: isMobile ? 18 : 22, fontWeight: FontWeight.w800, color: c.text)),
-              const SizedBox(height: 2),
-              Text('选择你需要的工具', style: TextStyle(fontSize: isMobile ? 11.5 : 13, color: c.textTertiary)),
-            ]),
+            // 右上角 + 按钮：克制灰底半透明
+            _GlassAddButton(onTap: () {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('更多自定义功能正在规划中…'),
+                  duration: Duration(seconds: 2),
+                  behavior: SnackBarBehavior.floating,
+                ),
+              );
+            }),
           ]),
-          SizedBox(height: isMobile ? 16 : 24),
-          // 功能网格
+          SizedBox(height: isMobile ? 14 : 22),
+          // 单一毛玻璃大面板
           Expanded(
-            child: GridView.builder(
-              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: crossCount,
-                mainAxisSpacing: isMobile ? 10 : 14,
-                crossAxisSpacing: isMobile ? 10 : 14,
-                childAspectRatio: aspectRatio,
+            child: ClipRRect(
+              borderRadius: panelRadius,
+              child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
+                child: Container(
+                  padding: EdgeInsets.all(padAll),
+                  decoration: BoxDecoration(
+                    color: (c.isLight ? Colors.white : const Color(0xFF1F1F26)).withValues(alpha: c.isLight ? 0.55 : 0.5),
+                    borderRadius: panelRadius,
+                    border: Border.all(color: c.isLight ? Colors.white.withValues(alpha: 0.7) : Colors.white.withValues(alpha: 0.12), width: 1.2),
+                    boxShadow: [
+                      // 中性阴影：去掉 kPrimary 紫调
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: c.isLight ? 0.05 : 0.22),
+                        blurRadius: 24,
+                        offset: const Offset(0, 8),
+                      ),
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: c.isLight ? 0.04 : 0.18),
+                        blurRadius: 12,
+                        offset: const Offset(0, 2),
+                      ),
+                    ],
+                  ),
+                  child: GridView.builder(
+                    physics: const NeverScrollableScrollPhysics(),
+                    gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: crossCount,
+                      mainAxisSpacing: isMobile ? 10 : 16,
+                      crossAxisSpacing: isMobile ? 10 : 16,
+                      childAspectRatio: isMobile ? 1.05 : 2.4,
+                    ),
+                    itemCount: _moreItemsData.length,
+                    itemBuilder: (ctx, i) {
+                      final item = _moreItemsData[i];
+                      return _GlassFeatureCard(
+                        icon: item.$1,
+                        title: item.$2,
+                        subtitle: item.$3,
+                        selected: widget.currentIndex == item.$4,
+                        hovered: _hoveredIdx == i,
+                        c: c,
+                        isMobile: isMobile,
+                        onHover: (h) => setState(() => _hoveredIdx = h ? i : (_hoveredIdx == i ? null : _hoveredIdx)),
+                        onTap: () => widget.onSelect(item.$4),
+                      );
+                    },
+                  ),
+                ),
               ),
-              itemCount: _moreItemsData.length,
-              itemBuilder: (ctx, i) {
-                final item = _moreItemsData[i];
-                return _MoreCard(
-                  icon: item.$1,
-                  title: item.$2,
-                  subtitle: item.$3,
-                  selected: currentIndex == item.$4,
-                  isLight: c.isLight,
-                  isMobile: isMobile,
-                  onTap: () => onSelect(item.$4),
-                );
-              },
             ),
           ),
         ]),
@@ -1701,85 +1936,179 @@ class _MoreSelectPage extends StatelessWidget {
   }
 }
 
-class _MoreCard extends StatelessWidget {
+/// 毛玻璃功能卡片：56px 渐变图标 + 标题 + 副标题 + hover 抬起效果
+class _GlassFeatureCard extends StatelessWidget {
   final IconData icon;
   final String title;
   final String subtitle;
   final bool selected;
-  final bool isLight;
+  final bool hovered;
+  final AppColors c;
   final bool isMobile;
+  final ValueChanged<bool> onHover;
   final VoidCallback onTap;
-  const _MoreCard({required this.icon, required this.title, required this.subtitle, required this.selected, required this.isLight, required this.isMobile, required this.onTap});
+
+  const _GlassFeatureCard({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.selected,
+    required this.hovered,
+    required this.c,
+    required this.isMobile,
+    required this.onHover,
+    required this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
-    final c = AppColors(isLight);
-    // 手机端：纵向布局（图标在上，文字在下）
-    if (isMobile) {
-      return Material(
-        color: Colors.transparent,
-        child: InkWell(
-          onTap: onTap,
-          borderRadius: BorderRadius.circular(16),
-          child: Container(
-            decoration: BoxDecoration(
-              gradient: selected ? c.primaryGradient : null,
-              color: selected ? null : c.card,
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: selected ? Colors.transparent : c.divider),
-            ),
-            child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-              Container(
-                width: 44, height: 44,
-                decoration: BoxDecoration(
-                  gradient: selected ? LinearGradient(colors: [Colors.white.withValues(alpha: 0.25), Colors.white.withValues(alpha: 0.1)]) : c.primaryGradient,
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Icon(icon, size: 22, color: Colors.white),
-              ),
-              const SizedBox(height: 10),
-              Text(title, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: selected ? Colors.white : c.text)),
-              const SizedBox(height: 3),
-              Text(subtitle, style: TextStyle(fontSize: 11, color: selected ? Colors.white70 : c.textTertiary), overflow: TextOverflow.ellipsis),
-            ]),
-          ),
-        ),
-      );
-    }
-    // 桌面端：横向布局（图标在左，文字在右）
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
+    final lift = (hovered || selected) ? -1.5 : 0.0;
+    final iconSize = isMobile ? 28.0 : 32.0;
+    final cardRadius = BorderRadius.circular(isMobile ? 16 : 18);
+
+    return MouseRegion(
+      onEnter: (_) => onHover(true),
+      onExit: (_) => onHover(false),
+      cursor: SystemMouseCursors.click,
+      child: GestureDetector(
         onTap: onTap,
-        borderRadius: BorderRadius.circular(16),
         child: AnimatedContainer(
-          duration: const Duration(milliseconds: 150),
-          padding: const EdgeInsets.all(18),
-          decoration: BoxDecoration(
-            gradient: selected ? c.primaryGradient : null,
-            color: selected ? null : c.card,
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: selected ? Colors.transparent : c.divider),
-            boxShadow: selected ? [BoxShadow(color: c.primary.withValues(alpha: 0.25), blurRadius: 10, offset: const Offset(0, 3))] : null,
+          duration: const Duration(milliseconds: 200),
+          curve: Curves.easeOutCubic,
+          transform: Matrix4.translationValues(0, lift, 0),
+          padding: EdgeInsets.symmetric(
+            horizontal: isMobile ? 14 : 18,
+            vertical: isMobile ? 14 : 16,
           ),
-          child: Row(children: [
-            Container(
-              width: 48, height: 48,
-              decoration: BoxDecoration(
-                gradient: selected ? LinearGradient(colors: [Colors.white.withValues(alpha: 0.25), Colors.white.withValues(alpha: 0.1)]) : c.primaryGradient,
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Icon(icon, size: 24, color: Colors.white),
+          decoration: BoxDecoration(
+            color: (c.isLight ? Colors.white : const Color(0xFF2A2A32)).withValues(
+              alpha: selected ? 0.95 : (hovered ? 0.85 : 0.7),
             ),
-            const SizedBox(width: 14),
-            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisAlignment: MainAxisAlignment.center, children: [
-              Text(title, style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: selected ? Colors.white : c.text)),
-              const SizedBox(height: 4),
-              Text(subtitle, style: TextStyle(fontSize: 12, color: selected ? Colors.white70 : c.textTertiary), overflow: TextOverflow.ellipsis),
-            ])),
-            if (selected)
-              Padding(padding: const EdgeInsets.only(left: 4), child: Icon(Icons.check_circle_rounded, size: 20, color: Colors.white.withValues(alpha: 0.9))),
-          ]),
+            borderRadius: cardRadius,
+            border: Border.all(
+              // 统一中性灰阶边框：与题卡同款，去掉紫色调
+              color: selected
+                  ? (c.isLight ? Colors.black.withValues(alpha: 0.18) : Colors.white.withValues(alpha: 0.30))
+                  : (hovered
+                      ? (c.isLight ? Colors.black.withValues(alpha: 0.10) : Colors.white.withValues(alpha: 0.20))
+                      : (c.isLight ? Colors.white.withValues(alpha: 0.6) : Colors.white.withValues(alpha: 0.1))),
+              width: selected ? 1.2 : 1,
+            ),
+            boxShadow: [
+              if (selected)
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: c.isLight ? 0.10 : 0.32),
+                  blurRadius: 12,
+                  offset: const Offset(0, 4),
+                )
+              else if (hovered)
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: c.isLight ? 0.07 : 0.25),
+                  blurRadius: 10,
+                  offset: const Offset(0, 3),
+                )
+              else
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: c.isLight ? 0.04 : 0.18),
+                  blurRadius: 8,
+                  offset: const Offset(0, 2),
+                ),
+            ],
+          ),
+          child: isMobile
+              ? Column(mainAxisAlignment: MainAxisAlignment.center, children: [_buildIcon(iconSize), const SizedBox(height: 10), _buildTitle(), const SizedBox(height: 3), _buildSubtitle()])
+              : Row(children: [
+                  _buildIcon(iconSize),
+                  const SizedBox(width: 14),
+                  Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisAlignment: MainAxisAlignment.center, children: [
+                    _buildTitle(),
+                    const SizedBox(height: 4),
+                    _buildSubtitle(),
+                  ])),
+                ]),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildIcon(double size) {
+    return Icon(icon, size: size, color: c.textSecondary);
+  }
+
+  Widget _buildTitle() {
+    return Text(
+      title,
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: TextStyle(
+        fontSize: isMobile ? 14.5 : 16,
+        fontWeight: FontWeight.w700,
+        color: c.text,
+      ),
+    );
+  }
+
+  Widget _buildSubtitle() {
+    return Text(
+      subtitle,
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: TextStyle(
+        fontSize: isMobile ? 11.5 : 13,
+        color: c.textTertiary,
+      ),
+    );
+  }
+}
+
+/// 右上角 + 按钮（毛玻璃圆形）
+class _GlassAddButton extends StatefulWidget {
+  final VoidCallback onTap;
+  const _GlassAddButton({required this.onTap});
+
+  @override
+  State<_GlassAddButton> createState() => _GlassAddButtonState();
+}
+
+class _GlassAddButtonState extends State<_GlassAddButton> {
+  bool _hovered = false;
+  bool _pressed = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppColors.of(context);
+    final scale = _pressed ? 0.94 : (_hovered ? 1.03 : 1.0);
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() => _hovered = false),
+      cursor: SystemMouseCursors.click,
+      child: GestureDetector(
+        onTapDown: (_) => setState(() => _pressed = true),
+        onTapUp: (_) => setState(() => _pressed = false),
+        onTapCancel: () => setState(() => _pressed = false),
+        onTap: widget.onTap,
+        child: AnimatedScale(
+          scale: scale,
+          duration: const Duration(milliseconds: 160),
+          curve: _pressed ? Curves.easeOut : Curves.easeOutBack,
+          child: Container(
+            width: 38,
+            height: 38,
+            decoration: BoxDecoration(
+              color: c.card.withValues(alpha: 0.85),
+              shape: BoxShape.circle,
+              border: Border.all(color: c.border, width: 1),
+              boxShadow: [
+                if (_hovered)
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: c.isLight ? 0.06 : 0.2),
+                    blurRadius: 8,
+                    offset: const Offset(0, 2),
+                  ),
+              ],
+            ),
+            child: Icon(Icons.add, size: 20, color: c.textSecondary),
+          ),
         ),
       ),
     );
@@ -1789,13 +2118,16 @@ class _MoreCard extends StatelessWidget {
 /// 全局背景层：纯色（浅色纯白 / 深色纯深灰，无光斑无渐变旋涡）
 class _AppGlassBackground extends StatelessWidget {
   final AppColors colors;
-  const _AppGlassBackground({required this.colors});
+  final bool isGlass;
+  const _AppGlassBackground({required this.colors, this.isGlass = false});
 
   @override
   Widget build(BuildContext context) {
-    final c = colors;
+    if (isGlass) {
+      return GlassBackground(isLight: colors.isLight);
+    }
     return DecoratedBox(
-      decoration: BoxDecoration(color: c.appBgGradientTop),
+      decoration: BoxDecoration(color: colors.appBgGradientTop),
       child: const SizedBox.expand(),
     );
   }

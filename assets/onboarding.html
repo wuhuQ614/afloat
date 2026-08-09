@@ -1,0 +1,977 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>AFloat - 引导</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { width: 100%; height: 100%; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+
+  :root {
+    --accent: #6B7CFF;
+    --accent-light: #8B9BFF;
+    --bg-light: #FAFAFA;
+    --bg-dark: #121316;
+    --card-light: #FFFFFF;
+    --card-dark: #1A1C20;
+    --text-light: #1A1D21;
+    --text-dark: #F5F6F7;
+    --sub-light: #6B7280;
+    --sub-dark: #A0A4AB;
+    --dim-light: #9CA3AF;
+    --dim-dark: #6B7076;
+    --border-light: rgba(0,0,0,0.08);
+    --border-dark: rgba(255,255,255,0.08);
+  }
+
+  body {
+    transition: background-color 0.4s ease, color 0.4s ease;
+  }
+  body.theme-light { background: var(--bg-light); color: var(--text-light); }
+  body.theme-dark { background: var(--bg-dark); color: var(--text-dark); }
+
+  /* 装饰光斑 */
+  .blob { position: absolute; border-radius: 50%; filter: blur(80px); opacity: 0.35; pointer-events: none; transition: background 0.6s ease; }
+  .blob1 { width: 400px; height: 400px; top: -150px; left: -100px; animation: float1 18s ease-in-out infinite; }
+  .blob2 { width: 350px; height: 350px; bottom: -100px; right: -80px; animation: float2 22s ease-in-out infinite; }
+  .blob3 { width: 250px; height: 250px; top: 40%; right: 10%; animation: float3 25s ease-in-out infinite; opacity: 0.2; }
+  body.theme-light .blob1 { background: #C7D2FE; }
+  body.theme-light .blob2 { background: #DDD6FE; }
+  body.theme-light .blob3 { background: #BAE6FD; }
+  body.theme-dark .blob1 { background: #4338CA; }
+  body.theme-dark .blob2 { background: #6D28D9; }
+  body.theme-dark .blob3 { background: #0369A1; }
+
+  @keyframes float1 { 0%,100% { transform: translate(0,0) scale(1);} 50% { transform: translate(60px,40px) scale(1.1);} }
+  @keyframes float2 { 0%,100% { transform: translate(0,0) scale(1);} 50% { transform: translate(-50px,-30px) scale(1.08);} }
+  @keyframes float3 { 0%,100% { transform: translate(0,0);} 50% { transform: translate(-40px,50px);} }
+
+  /* 容器 */
+  .app {
+    position: relative; z-index: 1;
+    width: 100%; height: 100%;
+    display: flex; flex-direction: column;
+  }
+
+  /* 顶部进度条 */
+  .topbar {
+    padding: 16px 48px 0;
+    display: flex; align-items: center; gap: 12px;
+  }
+  .progress-track {
+    flex: 1; height: 2px; border-radius: 2px; overflow: hidden;
+    background: var(--border-light);
+    position: relative;
+  }
+  body.theme-dark .progress-track { background: var(--border-dark); }
+  .progress-fill {
+    height: 100%; width: 25%;
+    background: var(--accent);
+    border-radius: 2px;
+    transition: width 0.5s cubic-bezier(0.4,0,0.2,1);
+  }
+  .step-counter {
+    font-size: 12px; color: var(--dim-light);
+    white-space: nowrap; font-variant-numeric: tabular-nums;
+  }
+  body.theme-dark .step-counter { color: var(--dim-dark); }
+
+  /* 跳过按钮 */
+  .skip-bar {
+    padding: 8px 32px 0 0;
+    display: flex; justify-content: flex-end;
+    min-height: 40px;
+  }
+  .skip-btn {
+    background: none; border: none; cursor: pointer;
+    font-size: 12px; color: var(--dim-light);
+    padding: 0 8px; height: 32px; line-height: 32px;
+    border-radius: 6px; transition: all 0.2s;
+    font-family: inherit;
+  }
+  .skip-btn:hover { background: rgba(107,124,255,0.08); color: var(--accent); }
+  body.theme-dark .skip-btn { color: var(--dim-dark); }
+
+  /* 页面内容区 */
+  .pages-wrap {
+    flex: 1; position: relative; overflow: hidden;
+  }
+  .page {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    padding: 24px 48px 48px;
+    transition: opacity 0.45s cubic-bezier(0.4,0,0.2,1), transform 0.45s cubic-bezier(0.4,0,0.2,1);
+  }
+  .page.hidden-left { opacity: 0; transform: translateX(-40px) scale(0.96); pointer-events: none; }
+  .page.hidden-right { opacity: 0; transform: translateX(40px) scale(0.96); pointer-events: none; }
+  .page.active { opacity: 1; transform: translateX(0) scale(1); pointer-events: auto; }
+
+  .page-inner {
+    width: 100%; max-width: 560px;
+  }
+
+  /* 页头 */
+  .page-title {
+    font-size: 28px; font-weight: 700; line-height: 1.3;
+    letter-spacing: 0.2px;
+    margin-bottom: 12px;
+  }
+  .page-subtitle {
+    font-size: 14px; line-height: 1.6;
+    color: var(--sub-light);
+    margin-bottom: 32px;
+  }
+  body.theme-dark .page-subtitle { color: var(--sub-dark); }
+
+  /* === Step 1: 主题选择 === */
+  .theme-cards {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 16px;
+  }
+  .theme-card {
+    border-radius: 14px; cursor: pointer;
+    transition: all 0.3s cubic-bezier(0.4,0,0.2,1);
+    position: relative; overflow: hidden;
+  }
+  .theme-light-card {
+    background: var(--card-light);
+    border: 1.5px solid var(--border-light);
+  }
+  .theme-dark-card {
+    background: var(--card-dark);
+    border: 1.5px solid var(--border-dark);
+  }
+  .theme-card.selected {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent), 0 8px 24px rgba(107,124,255,0.18);
+    transform: translateY(-2px);
+  }
+  .theme-preview {
+    aspect-ratio: 16/10; padding: 10px;
+  }
+  .mini-window {
+    width: 100%; height: 100%;
+    border-radius: 8px; overflow: hidden;
+    display: flex; flex-direction: column;
+  }
+  .light-mw { background: #F0F0F5; }
+  .dark-mw { background: #1E1E2E; }
+
+  .mini-titlebar {
+    height: 14px; padding: 0 6px;
+    display: flex; align-items: center;
+    border-radius: 4px 4px 0 0;
+  }
+  .light-mw .mini-titlebar { background: #E8E8F0; }
+  .dark-mw .mini-titlebar { background: #252538; }
+  .dots { display: flex; gap: 3px; }
+  .dot { width: 5px; height: 5px; border-radius: 50%; }
+  .dot.r { background: #FF5F57; }
+  .dot.y { background: #FFBD2E; }
+  .dot.g { background: #28C840; }
+  .mini-title {
+    margin-left: auto; width: 28px; height: 6px;
+    border-radius: 2px;
+  }
+  .light-mw .mini-title { background: #D8D8E2; }
+  .dark-mw .mini-title { background: #3A3A55; }
+
+  .mini-body {
+    flex: 1; display: flex; padding: 6px; gap: 6px;
+  }
+  .mini-sidebar {
+    width: 28px; border-radius: 4px; padding: 6px 4px;
+    display: flex; flex-direction: column; gap: 5px;
+  }
+  .light-mw .mini-sidebar { background: #E8E8F0; }
+  .dark-mw .mini-sidebar { background: #252538; }
+  .mini-nav { height: 4px; border-radius: 2px; width: 100%; }
+  .mini-nav.active { background: var(--accent); }
+  .light-mw .mini-nav:not(.active) { background: #D8D8E2; }
+  .dark-mw .mini-nav:not(.active) { background: #3A3A55; }
+
+  .mini-content {
+    flex: 1; border-radius: 4px; padding: 6px;
+    display: flex; flex-direction: column; gap: 3px;
+  }
+  .mini-line { height: 4px; border-radius: 2px; }
+  .light-mw .mini-line { background: #D8D8E2; }
+  .dark-mw .mini-line { background: #3A3A55; }
+  .mini-line.title { height: 6px; width: 50%; opacity: 0.7; }
+  .mini-line.short { width: 60%; }
+  .mini-line.mid { width: 80%; }
+  .light-mw .mini-line.title { background: #8A8AA0; }
+  .dark-mw .mini-line.title { background: #8A8AD0; }
+
+  .theme-label {
+    padding: 12px 14px;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .theme-name { font-size: 14px; font-weight: 500; }
+  body.theme-dark .theme-light-card .theme-name { color: var(--text-light); }
+  body.theme-dark .theme-dark-card .theme-name { color: var(--text-dark); }
+  .theme-sub { font-size: 11px; margin-top: 2px; }
+  .theme-light-card .theme-sub { color: var(--dim-light); }
+  .theme-dark-card .theme-sub { color: var(--dim-dark); }
+  .check-mark {
+    width: 20px; height: 20px; border-radius: 50%;
+    background: var(--accent);
+    display: flex; align-items: center; justify-content: center;
+    opacity: 0; transform: scale(0.6);
+    transition: all 0.3s cubic-bezier(0.4,0,0.2,1);
+  }
+  .theme-card.selected .check-mark { opacity: 1; transform: scale(1); }
+  .check-mark svg { width: 12px; height: 12px; stroke: white; stroke-width: 2.5; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+
+  /* === Step 2: API 配置 === */
+  .field { margin-bottom: 14px; }
+  .field-label {
+    font-size: 12px; margin-bottom: 6px;
+    color: var(--dim-light);
+  }
+  body.theme-dark .field-label { color: var(--dim-dark); }
+  .input-wrap {
+    height: 40px; border-radius: 8px;
+    display: flex; align-items: center;
+    transition: all 0.2s;
+    border: 1px solid var(--border-light);
+    background: var(--card-light);
+  }
+  body.theme-dark .input-wrap {
+    border-color: var(--border-dark);
+    background: var(--card-dark);
+  }
+  .input-wrap:focus-within {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(107,124,255,0.12);
+  }
+  .input-wrap input {
+    flex: 1; height: 100%;
+    background: transparent; border: none; outline: none;
+    padding: 0 12px;
+    font-size: 13px; font-family: inherit;
+    color: inherit;
+  }
+  .input-wrap input::placeholder { color: var(--dim-light); }
+  body.theme-dark .input-wrap input::placeholder { color: var(--dim-dark); }
+
+  .help-link {
+    background: none; border: none; cursor: pointer;
+    font-size: 12px; color: var(--accent);
+    padding: 0; margin-top: 6px;
+    font-family: inherit;
+    text-decoration: none;
+  }
+  .help-link:hover { text-decoration: underline; }
+
+  .checkbox-row {
+    display: flex; align-items: center; gap: 6px;
+    margin: 6px 0 14px;
+  }
+  .custom-check {
+    width: 20px; height: 20px; border-radius: 4px;
+    border: 1.5px solid var(--border-light);
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer; transition: all 0.2s;
+    flex-shrink: 0;
+  }
+  body.theme-dark .custom-check { border-color: var(--border-dark); }
+  .custom-check.checked {
+    background: var(--accent); border-color: var(--accent);
+  }
+  .custom-check svg {
+    width: 13px; height: 13px; stroke: white; stroke-width: 3;
+    fill: none; stroke-linecap: round; stroke-linejoin: round;
+    opacity: 0; transform: scale(0.5); transition: all 0.2s;
+  }
+  .custom-check.checked svg { opacity: 1; transform: scale(1); }
+  .checkbox-label { font-size: 12px; }
+  .checkbox-hint {
+    font-size: 11px; color: var(--dim-light);
+    margin-left: auto;
+  }
+  body.theme-dark .checkbox-hint { color: var(--dim-dark); }
+
+  .skip-row {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-top: 24px;
+  }
+  .skip-step-btn {
+    background: none; border: none; cursor: pointer;
+    font-size: 12px; color: var(--dim-light);
+    padding: 0; height: 28px;
+    font-family: inherit;
+  }
+  .skip-step-btn:hover { color: var(--accent); }
+  body.theme-dark .skip-step-btn { color: var(--dim-dark); }
+  .hint-text { font-size: 12px; color: var(--dim-light); }
+  body.theme-dark .hint-text { color: var(--dim-dark); }
+
+  /* === Step 3: 剖析模式 === */
+  .mode-card {
+    border-radius: 10px; padding: 16px;
+    margin-bottom: 12px; cursor: pointer;
+    display: flex; align-items: center; justify-content: space-between;
+    transition: all 0.25s cubic-bezier(0.4,0,0.2,1);
+    border: 1px solid var(--border-light);
+    background: var(--card-light);
+    position: relative;
+  }
+  body.theme-dark .mode-card {
+    border-color: var(--border-dark);
+    background: var(--card-dark);
+  }
+  .mode-card:hover {
+    border-color: rgba(107,124,255,0.4);
+    transform: translateY(-1px);
+  }
+  .mode-card.selected {
+    border-color: var(--accent);
+    border-width: 2px;
+    background: var(--accent);
+    background-blend-mode: overlay;
+  }
+  body.theme-light .mode-card.selected {
+    background: linear-gradient(135deg, rgba(107,124,255,0.06), rgba(139,155,255,0.04)), var(--card-light);
+  }
+  body.theme-dark .mode-card.selected {
+    background: linear-gradient(135deg, rgba(107,124,255,0.1), rgba(139,155,255,0.06)), var(--card-dark);
+  }
+  .mode-info { flex: 1; min-width: 0; }
+  .mode-title { font-size: 14px; font-weight: 500; margin-bottom: 4px; }
+  .mode-desc { font-size: 12px; color: var(--sub-light); line-height: 1.5; }
+  body.theme-dark .mode-desc { color: var(--sub-dark); }
+  .mode-sub {
+    font-size: 10.5px; margin-top: 3px;
+    color: var(--dim-light); opacity: 0.7;
+  }
+  body.theme-dark .mode-sub { color: var(--dim-dark); }
+  .mode-check {
+    width: 18px; height: 18px; border-radius: 50%;
+    background: var(--accent);
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0; margin-left: 12px;
+    opacity: 0; transform: scale(0.5);
+    transition: all 0.25s cubic-bezier(0.4,0,0.2,1);
+  }
+  .mode-card.selected .mode-check { opacity: 1; transform: scale(1); }
+  .mode-check svg { width: 11px; height: 11px; stroke: white; stroke-width: 3; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+
+  /* === Step 4: 欢迎 === */
+  .welcome-wrap {
+    text-align: center;
+    padding: 56px 0;
+  }
+  .welcome-icon {
+    width: 80px; height: 80px;
+    margin: 0 auto 32px;
+    border-radius: 24px;
+    background: linear-gradient(135deg, var(--accent), #8B5CF6);
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 16px 40px rgba(107,124,255,0.35);
+    animation: welcomePulse 2.5s ease-in-out infinite;
+  }
+  @keyframes welcomePulse {
+    0%,100% { transform: scale(1); box-shadow: 0 16px 40px rgba(107,124,255,0.35); }
+    50% { transform: scale(1.03); box-shadow: 0 20px 50px rgba(107,124,255,0.45); }
+  }
+  .welcome-icon svg { width: 38px; height: 38px; stroke: white; stroke-width: 2; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+  .welcome-title {
+    font-size: 36px; font-weight: 700;
+    letter-spacing: 2px;
+    margin-bottom: 16px;
+    background: linear-gradient(135deg, var(--accent), #8B5CF6);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .welcome-sub {
+    font-size: 14px; line-height: 1.7;
+    color: var(--sub-light);
+    max-width: 400px; margin: 0 auto;
+  }
+  body.theme-dark .welcome-sub { color: var(--sub-dark); }
+
+  /* 底部按钮栏 */
+  .bottom-bar {
+    padding: 0 48px 28px;
+    display: flex; align-items: center;
+  }
+  .back-btn {
+    background: none; border: none; cursor: pointer;
+    display: flex; align-items: center; gap: 4px;
+    padding: 0; height: 40px;
+    font-size: 14px; color: var(--sub-light);
+    font-family: inherit;
+    opacity: 0; transform: translateX(-10px);
+    transition: all 0.3s;
+    pointer-events: none;
+  }
+  .back-btn.visible { opacity: 1; transform: translateX(0); pointer-events: auto; }
+  .back-btn:hover { color: var(--accent); }
+  .back-btn svg { width: 15px; height: 15px; stroke: currentColor; stroke-width: 2.5; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+  body.theme-dark .back-btn { color: var(--sub-dark); }
+
+  .spacer { flex: 1; }
+
+  .next-btn {
+    height: 40px; padding: 0 24px;
+    border: none; border-radius: 8px; cursor: pointer;
+    font-size: 14px; font-weight: 500;
+    font-family: inherit;
+    display: flex; align-items: center; gap: 6px;
+    transition: all 0.25s cubic-bezier(0.4,0,0.2,1);
+    position: relative; overflow: hidden;
+  }
+  body.theme-light .next-btn {
+    background: var(--text-light); color: white;
+  }
+  body.theme-dark .next-btn {
+    background: var(--text-dark); color: var(--bg-dark);
+  }
+  .next-btn:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 8px 20px rgba(0,0,0,0.15);
+  }
+  .next-btn:active { transform: translateY(0); }
+  .next-btn svg { width: 15px; height: 15px; stroke: currentColor; stroke-width: 2.5; fill: none; stroke-linecap: round; stroke-linejoin: round; transition: transform 0.2s; }
+  .next-btn:hover svg { transform: translateX(2px); }
+  .next-btn.primary {
+    background: linear-gradient(135deg, var(--accent), #8B5CF6);
+    color: white;
+    box-shadow: 0 4px 14px rgba(107,124,255,0.3);
+  }
+  .next-btn.primary:hover {
+    box-shadow: 0 8px 24px rgba(107,124,255,0.45);
+  }
+
+  /* 交错渐入 */
+  .stagger-item {
+    opacity: 0; transform: translateY(12px);
+    transition: opacity 0.5s ease, transform 0.5s ease;
+  }
+  .page.active .stagger-item.show {
+    opacity: 1; transform: translateY(0);
+  }
+
+  /* 帮助对话框 */
+  .modal-mask {
+    position: fixed; inset: 0; z-index: 100;
+    background: rgba(0,0,0,0.45);
+    display: flex; align-items: center; justify-content: center;
+    padding: 20px;
+    opacity: 0; pointer-events: none;
+    transition: opacity 0.25s;
+  }
+  .modal-mask.show { opacity: 1; pointer-events: auto; }
+  .modal {
+    width: 100%; max-width: 420px;
+    border-radius: 12px;
+    padding: 22px 22px 18px;
+    transform: scale(0.94) translateY(8px);
+    transition: transform 0.25s cubic-bezier(0.4,0,0.2,1);
+    max-height: 80vh; overflow-y: auto;
+  }
+  .modal-mask.show .modal { transform: scale(1) translateY(0); }
+  body.theme-light .modal { background: var(--card-light); border: 1px solid var(--border-light); }
+  body.theme-dark .modal { background: var(--card-dark); border: 1px solid var(--border-dark); }
+  .modal-title {
+    font-size: 16px; font-weight: 600; margin-bottom: 14px;
+  }
+  .modal-content {
+    font-size: 13px; line-height: 1.7;
+    color: var(--sub-light);
+  }
+  body.theme-dark .modal-content { color: var(--sub-dark); }
+  .modal-content p { margin-bottom: 10px; }
+  .modal-footer {
+    display: flex; justify-content: flex-end; margin-top: 18px;
+  }
+  .modal-btn {
+    background: none; border: none; cursor: pointer;
+    padding: 6px 14px; height: 34px; border-radius: 6px;
+    font-size: 13px; color: var(--accent);
+    font-family: inherit;
+    transition: background 0.2s;
+  }
+  .modal-btn:hover { background: rgba(107,124,255,0.08); }
+
+  /* Toast */
+  .toast {
+    position: fixed; top: 24px; left: 50%;
+    transform: translateX(-50%) translateY(-20px);
+    background: rgba(0,0,0,0.85); color: white;
+    padding: 10px 18px; border-radius: 8px;
+    font-size: 13px; z-index: 200;
+    opacity: 0; pointer-events: none;
+    transition: all 0.3s;
+  }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+  /* 响应式 */
+  @media (max-width: 520px) {
+    .topbar, .bottom-bar { padding-left: 20px; padding-right: 20px; }
+    .page { padding: 16px 20px 32px; }
+    .skip-bar { padding-right: 12px; }
+    .theme-cards { gap: 12px; }
+    .page-title { font-size: 24px; }
+    .welcome-title { font-size: 30px; }
+  }
+</style>
+</head>
+<body class="theme-light">
+
+<div class="blob blob1"></div>
+<div class="blob blob2"></div>
+<div class="blob blob3"></div>
+
+<div class="app">
+  <!-- 进度条 -->
+  <div class="topbar">
+    <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
+    <div class="step-counter" id="stepCounter">1 / 4</div>
+  </div>
+
+  <!-- 跳过 -->
+  <div class="skip-bar">
+    <button class="skip-btn" id="skipBtn" onclick="skipAll()">跳过引导</button>
+  </div>
+
+  <!-- 页面内容 -->
+  <div class="pages-wrap">
+
+    <!-- Step 1: 主题 -->
+    <div class="page active" id="page0">
+      <div class="page-inner">
+        <div class="stagger-item page-title">选择外观模式</div>
+        <div class="theme-cards stagger-item" style="transition-delay: 80ms">
+          <div class="theme-card theme-light-card selected" onclick="selectTheme(false)" id="themeLight">
+            <div class="theme-preview">
+              <div class="mini-window light-mw">
+                <div class="mini-titlebar">
+                  <div class="dots"><div class="dot r"></div><div class="dot y"></div><div class="dot g"></div></div>
+                  <div class="mini-title"></div>
+                </div>
+                <div class="mini-body">
+                  <div class="mini-sidebar">
+                    <div class="mini-nav active"></div>
+                    <div class="mini-nav"></div>
+                    <div class="mini-nav"></div>
+                    <div class="mini-nav"></div>
+                    <div class="mini-nav"></div>
+                  </div>
+                  <div class="mini-content">
+                    <div class="mini-line title"></div>
+                    <div class="mini-line"></div>
+                    <div class="mini-line mid"></div>
+                    <div class="mini-line short" style="margin-top: 6px"></div>
+                    <div class="mini-line"></div>
+                    <div class="mini-line short"></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="theme-label">
+              <div>
+                <div class="theme-name">白色模式</div>
+                <div class="theme-sub">Light</div>
+              </div>
+              <div class="check-mark"><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"></polyline></svg></div>
+            </div>
+          </div>
+
+          <div class="theme-card theme-dark-card" onclick="selectTheme(true)" id="themeDark">
+            <div class="theme-preview">
+              <div class="mini-window dark-mw">
+                <div class="mini-titlebar">
+                  <div class="dots"><div class="dot r"></div><div class="dot y"></div><div class="dot g"></div></div>
+                  <div class="mini-title"></div>
+                </div>
+                <div class="mini-body">
+                  <div class="mini-sidebar">
+                    <div class="mini-nav active"></div>
+                    <div class="mini-nav"></div>
+                    <div class="mini-nav"></div>
+                    <div class="mini-nav"></div>
+                    <div class="mini-nav"></div>
+                  </div>
+                  <div class="mini-content">
+                    <div class="mini-line title"></div>
+                    <div class="mini-line"></div>
+                    <div class="mini-line mid"></div>
+                    <div class="mini-line short" style="margin-top: 6px"></div>
+                    <div class="mini-line"></div>
+                    <div class="mini-line short"></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="theme-label">
+              <div>
+                <div class="theme-name">深色模式</div>
+                <div class="theme-sub">Dark</div>
+              </div>
+              <div class="check-mark"><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"></polyline></svg></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 2: API -->
+    <div class="page hidden-right" id="page1">
+      <div class="page-inner">
+        <div class="stagger-item page-title">设置 API</div>
+        <div class="page-subtitle stagger-item" style="transition-delay: 50ms">连接 AI 服务，获取更智能的学习体验。此步骤可跳过。</div>
+
+        <div class="stagger-item" style="transition-delay: 100ms">
+          <div class="field">
+            <div class="field-label">API Key</div>
+            <div class="input-wrap">
+              <input type="text" id="apiKey" placeholder="sk-..." autocomplete="off">
+            </div>
+            <button class="help-link" onclick="showApiHelp()">如何获取 API Key?</button>
+          </div>
+
+          <div class="field">
+            <div class="field-label">API 地址</div>
+            <div class="input-wrap">
+              <input type="text" id="apiUrl" placeholder="https://api.openai.com/v1" autocomplete="off">
+            </div>
+            <div class="checkbox-row">
+              <div class="custom-check" id="fullUrlCheck" onclick="toggleFullUrl()">
+                <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"></polyline></svg>
+              </div>
+              <div class="checkbox-label">完整 URL</div>
+              <div class="checkbox-hint">关闭时自动在地址后添加 /chat/completions</div>
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="field-label">模型</div>
+            <div class="input-wrap">
+              <input type="text" id="apiModel" placeholder="gpt-4o" autocomplete="off">
+            </div>
+          </div>
+
+          <div class="skip-row">
+            <button class="skip-step-btn" onclick="goTo(2)">跳过此步骤</button>
+            <div class="hint-text">你可以在设置中随时修改</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 3: 剖析模式 -->
+    <div class="page hidden-right" id="page2">
+      <div class="page-inner">
+        <div class="stagger-item page-title">选择词汇剖析强度</div>
+        <div class="page-subtitle stagger-item" style="transition-delay: 50ms">AI 将根据你的选择提供不同深度的解析，之后可随时更换。</div>
+
+        <div class="stagger-item" style="transition-delay: 100ms">
+          <div class="mode-card selected" onclick="selectMode('fast')" id="modeFast">
+            <div class="mode-info">
+              <div class="mode-title">快速模式</div>
+              <div class="mode-desc">简要释义，核心词义速记</div>
+            </div>
+            <div class="mode-check"><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"></polyline></svg></div>
+          </div>
+
+          <div class="mode-card" onclick="selectMode('normal')" id="modeNormal">
+            <div class="mode-info">
+              <div class="mode-title">正常模式</div>
+              <div class="mode-desc">详细释义，常用例句与搭配</div>
+              <div class="mode-sub">需配置 API 才可正常使用</div>
+            </div>
+            <div class="mode-check"><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"></polyline></svg></div>
+          </div>
+
+          <div class="mode-card" onclick="selectMode('deep')" id="modeDeep">
+            <div class="mode-info">
+              <div class="mode-title">深度模式</div>
+              <div class="mode-desc">全面剖析，词源、用法与文化背景</div>
+              <div class="mode-sub">需配置 API 才可正常使用</div>
+            </div>
+            <div class="mode-check"><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"></polyline></svg></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 4: 欢迎 -->
+    <div class="page hidden-right" id="page3">
+      <div class="page-inner">
+        <div class="welcome-wrap">
+          <div class="welcome-icon stagger-item">
+            <svg viewBox="0 0 24 24">
+              <polyline points="20 6 9 17 4 12"></polyline>
+            </svg>
+          </div>
+          <div class="stagger-item welcome-title" style="transition-delay: 100ms">欢迎使用</div>
+          <div class="stagger-item welcome-sub" id="welcomeSub" style="transition-delay: 200ms">
+            初始配置已完成，AI 接口可稍后在设置中补充。
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- 底部按钮 -->
+  <div class="bottom-bar">
+    <button class="back-btn" id="backBtn" onclick="goPrev()">
+      <svg viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"></polyline></svg>
+      上一步
+    </button>
+    <div class="spacer"></div>
+    <button class="next-btn" id="nextBtn" onclick="goNext()">
+      <span id="nextBtnText">下一步</span>
+      <svg id="nextBtnIcon" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"></polyline></svg>
+    </button>
+  </div>
+</div>
+
+<!-- 帮助弹窗 -->
+<div class="modal-mask" id="helpModal" onclick="hideApiHelp(event)">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="modal-title">如何获取 API Key?</div>
+    <div class="modal-content">
+      <p>在模型服务商官网的控制台获取 API Key，本应用支持 OpenAI 兼容接口（如 OpenAI、DeepSeek、通义千问、Moonshot、智谱等）。</p>
+      <p>获取后填入输入框，并配置对应的 API 地址与模型名称即可。</p>
+    </div>
+    <div class="modal-footer">
+      <button class="modal-btn" onclick="hideApiHelp()">知道了</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+  // ===== 状态 =====
+  let currentStep = 0;
+  const totalSteps = 4;
+  let darkMode = false;
+  let analysisMode = 'fast';
+  let fullUrl = false;
+
+  // ===== 初始化：从 Flutter 获取初始值 =====
+  function initFromFlutter(data) {
+    if (data.darkMode !== undefined) {
+      darkMode = data.darkMode;
+      applyTheme();
+    }
+    if (data.analysisMode) analysisMode = data.analysisMode;
+    if (data.apiKey) document.getElementById('apiKey').value = data.apiKey;
+    if (data.apiUrl) document.getElementById('apiUrl').value = data.apiUrl;
+    if (data.apiModel) document.getElementById('apiModel').value = data.apiModel;
+    if (data.fullUrl !== undefined) {
+      fullUrl = data.fullUrl;
+      const el = document.getElementById('fullUrlCheck');
+      if (fullUrl) el.classList.add('checked'); else el.classList.remove('checked');
+    }
+    // 应用选择状态
+    selectMode(analysisMode, true);
+  }
+
+  // ===== 主题 =====
+  function selectTheme(isDark) {
+    darkMode = isDark;
+    applyTheme();
+    postMessage({ action: 'setDarkMode', value: isDark });
+  }
+  function applyTheme() {
+    const body = document.body;
+    const lightCard = document.getElementById('themeLight');
+    const darkCard = document.getElementById('themeDark');
+    if (darkMode) {
+      body.classList.remove('theme-light');
+      body.classList.add('theme-dark');
+      lightCard.classList.remove('selected');
+      darkCard.classList.add('selected');
+    } else {
+      body.classList.remove('theme-dark');
+      body.classList.add('theme-light');
+      lightCard.classList.add('selected');
+      darkCard.classList.remove('selected');
+    }
+  }
+
+  // ===== 剖析模式 =====
+  function selectMode(mode, skipPost) {
+    analysisMode = mode;
+    ['fast','normal','deep'].forEach(m => {
+      const el = document.getElementById('mode' + m.charAt(0).toUpperCase() + m.slice(1));
+      if (m === mode) el.classList.add('selected');
+      else el.classList.remove('selected');
+    });
+    if (!skipPost) postMessage({ action: 'setAnalysisMode', value: mode });
+  }
+
+  // ===== 完整 URL =====
+  function toggleFullUrl() {
+    fullUrl = !fullUrl;
+    const el = document.getElementById('fullUrlCheck');
+    if (fullUrl) el.classList.add('checked'); else el.classList.remove('checked');
+    saveApiIfFilled();
+  }
+
+  // ===== 页面切换 =====
+  function goTo(step) {
+    if (step < 0 || step >= totalSteps) return;
+    if (currentStep === 1) saveApiIfFilled();
+
+    const oldPage = document.getElementById('page' + currentStep);
+    const newPage = document.getElementById('page' + step);
+    const dir = step > currentStep ? 'right' : 'left';
+
+    oldPage.classList.remove('active');
+    oldPage.classList.add(dir === 'right' ? 'hidden-left' : 'hidden-right');
+    setTimeout(() => {
+      oldPage.classList.remove('hidden-left', 'hidden-right');
+    }, 500);
+
+    newPage.classList.remove('hidden-left', 'hidden-right');
+    // 强制 reflow
+    void newPage.offsetWidth;
+    newPage.classList.add('active');
+
+    currentStep = step;
+    updateUI();
+    triggerStagger();
+  }
+
+  function goNext() {
+    if (currentStep === totalSteps - 1) {
+      finish();
+    } else {
+      goTo(currentStep + 1);
+    }
+  }
+  function goPrev() { goTo(currentStep - 1); }
+  function skipAll() {
+    if (currentStep === 1) saveApiIfFilled();
+    finish();
+  }
+
+  function finish() {
+    if (currentStep === 1) saveApiIfFilled();
+    postMessage({ action: 'completeOnboarding' });
+  }
+
+  // ===== 保存 API =====
+  function saveApiIfFilled() {
+    const key = document.getElementById('apiKey').value.trim();
+    const url = document.getElementById('apiUrl').value.trim();
+    const model = document.getElementById('apiModel').value.trim();
+    if (key && url && model) {
+      postMessage({
+        action: 'saveApiConfig',
+        value: { key, url, model, fullUrl }
+      });
+    }
+  }
+
+  // ===== UI 更新 =====
+  function updateUI() {
+    // 进度
+    document.getElementById('progressFill').style.width = ((currentStep + 1) / totalSteps * 100) + '%';
+    document.getElementById('stepCounter').textContent = (currentStep + 1) + ' / ' + totalSteps;
+
+    // 跳过按钮
+    const skipBtn = document.getElementById('skipBtn');
+    skipBtn.style.visibility = currentStep < totalSteps - 1 ? 'visible' : 'hidden';
+
+    // 上一步
+    const backBtn = document.getElementById('backBtn');
+    const isLast = currentStep === totalSteps - 1;
+    if (currentStep > 0 && !isLast) backBtn.classList.add('visible');
+    else backBtn.classList.remove('visible');
+
+    // 下一步按钮
+    const nextBtn = document.getElementById('nextBtn');
+    const nextText = document.getElementById('nextBtnText');
+    const nextIcon = document.getElementById('nextBtnIcon');
+    if (isLast) {
+      nextBtn.classList.add('primary');
+      nextText.textContent = '开始使用';
+      nextIcon.style.display = 'none';
+    } else {
+      nextBtn.classList.remove('primary');
+      nextText.textContent = '下一步';
+      nextIcon.style.display = '';
+    }
+
+    // 欢迎页副标题
+    if (currentStep === 3) {
+      const key = document.getElementById('apiKey').value.trim();
+      const url = document.getElementById('apiUrl').value.trim();
+      const model = document.getElementById('apiModel').value.trim();
+      const ready = key && url && model;
+      document.getElementById('welcomeSub').textContent = ready
+        ? '一切就绪，开始你的词汇学习之旅。'
+        : '初始配置已完成，AI 接口可稍后在设置中补充。';
+    }
+  }
+
+  // ===== 交错动画 =====
+  function triggerStagger() {
+    const page = document.getElementById('page' + currentStep);
+    const items = page.querySelectorAll('.stagger-item');
+    items.forEach((el, i) => {
+      el.classList.remove('show');
+      setTimeout(() => el.classList.add('show'), 50 + i * 60);
+    });
+  }
+
+  // ===== API 帮助弹窗 =====
+  function showApiHelp() {
+    document.getElementById('helpModal').classList.add('show');
+  }
+  function hideApiHelp(e) {
+    if (e && e.target && e.target.id !== 'helpModal' && e.type === 'click') return;
+    document.getElementById('helpModal').classList.remove('show');
+  }
+
+  // ===== 消息通道 =====
+  function postMessage(msg) {
+    if (window.FlutterChannel && window.FlutterChannel.postMessage) {
+      window.FlutterChannel.postMessage(JSON.stringify(msg));
+    } else if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
+      window.ReactNativeWebView.postMessage(JSON.stringify(msg));
+    } else {
+      // Fallback for testing in browser
+      console.log('[WebView -> Flutter]', msg);
+    }
+  }
+
+  // Flutter 调用入口
+  window.flutterCall = function(action, data) {
+    switch (action) {
+      case 'init':
+        initFromFlutter(data || {});
+        break;
+      case 'toast':
+        showToast(data);
+        break;
+    }
+  };
+
+  function showToast(text) {
+    const t = document.getElementById('toast');
+    t.textContent = text;
+    t.classList.add('show');
+    setTimeout(() => t.classList.remove('show'), 2000);
+  }
+
+  // ===== 启动 =====
+  window.addEventListener('load', () => {
+    updateUI();
+    setTimeout(triggerStagger, 50);
+    // 自动通知 Flutter 页面已就绪
+    postMessage({ action: 'ready' });
+  });
+</script>
+
+</body>
+</html>

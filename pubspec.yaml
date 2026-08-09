@@ -17,6 +17,7 @@ dependencies:
   flutter_svg: ^2.0.10
   flutter_tts: ^4.2.5
   desktop_drop: ^0.7.1
+  webview_flutter: ^4.10.0
 
 dev_dependencies:
   flutter_test:
@@ -30,4 +31,5 @@ flutter:
     - assets/zsb-dict.bin
     - assets/questions.json
     - assets/grammar_course.json
+    - assets/onboarding.html
     - assets/ai-icons/
