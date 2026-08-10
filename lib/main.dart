@@ -24,6 +24,12 @@ import 'widgets/exam_page.dart';
 import 'widgets/settings_dialog.dart';
 import 'widgets/platform_select_page.dart';
 import 'widgets/glass_background.dart';
+import 'widgets/drawing/drawing_feature_page.dart';
+import 'widgets/tools/tools_mode_page.dart';
+import 'widgets/tools/wheel_page.dart';
+import 'widgets/tools/number_page.dart';
+import 'widgets/tools/gomoku_page.dart';
+import 'widgets/tools/chess_page.dart';
 
 final bool _isWindows = !kIsWeb && Platform.isWindows;
 
@@ -35,6 +41,11 @@ const _moreItemsData = [
   (Icons.bookmark_add_outlined, '答题记录', '记录已答单词', 7),
   (Icons.edit_note_outlined, '默写', '单词默写练习', 8),
   (Icons.school_outlined, '语法学习', '从零学会专升本语法', 12),
+  (Icons.brush_outlined, '画板', '自由绘画与涂鸦', 13),
+  (Icons.explore_outlined, '暴力转盘', '命运转盘', 14),
+  (Icons.numbers_outlined, '暴力数字', '随机数生成', 15),
+  (Icons.grid_4x4_outlined, '五子棋', '人机/人人对战', 16),
+  (Icons.castle_outlined, '中国象棋', '人机/人人对战', 17),
 ];
 
 // 更多功能选择页索引
@@ -342,7 +353,10 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                                 onDesktop: () => _state.setUiMode('desktop'),
                                 onMobile: () => _state.setUiMode('mobile'),
                               )
-                            : _state.uiMode == 'desktop'
+                            // 工具模式：独立外壳（自带桌面/手机响应式），不进入英语学习的侧边栏布局
+                            : _state.appMode == 'tools'
+                                ? ToolsModePage(state: _state)
+                                : _state.uiMode == 'desktop'
                                 ? Scaffold(
                                     body: (_state.page == 10 || _state.page == 11)
                                         ? ListenableBuilder(listenable: _state, builder: (ctx, _) => _buildMainContent())
@@ -495,7 +509,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
         (Icons.search_outlined, '查询', 3),
       ];
       final inMore = page >= 4;
-      final inSubFeature = page >= 4 && (page <= 8 || page == 12);
+      final inSubFeature = page >= 4 && (page <= 8 || (page >= 12 && page <= 17));
       final moreTitle = inSubFeature ? _moreItemsData.firstWhere((e) => e.$4 == page).$2 : '更多功能';
       final moreIcon = inSubFeature ? _moreItemsData.firstWhere((e) => e.$4 == page).$1 : Icons.grid_view_outlined;
       final isGlass = _state.uiStyle == 'glass';
@@ -667,7 +681,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
           (Icons.search_outlined, '查询', 3),
         ];
         final inMore = _state.page >= 4;
-        final inSubFeature = _state.page >= 4 && (_state.page <= 8 || _state.page == 12);
+        final inSubFeature = _state.page >= 4 && (_state.page <= 8 || (_state.page >= 12 && _state.page <= 17));
         final navIndex = inMore ? 3 : (_state.page == 3 ? 4 : _state.page.clamp(0, 2));
         final isGlass = _state.uiStyle == 'glass';
         final glassBg = isGlass ? c.sidebar.withValues(alpha: _state.darkMode ? 0.5 : 0.55) : c.sidebar;
@@ -961,6 +975,16 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
         return const DictationPage();
       case 12:
         return const _PageScaffold(title: '语法学习', child: GrammarPage());
+      case 13:
+        return DrawingFeaturePage(darkMode: _state.darkMode);
+      case 14:
+        return WheelTabPage(state: _state);
+      case 15:
+        return const NumberTabPage();
+      case 16:
+        return const GomokuPage();
+      case 17:
+        return const ChineseChessPage();
       case 10:
       case 11:
         // 沉浸考场或成绩解析页（外层已隐藏 AI 对话栏）

@@ -145,13 +145,19 @@ class Storage {
   static bool loadFullscreen() => _getBool('fullscreen', false);
   static void saveFullscreen(bool v) => _setBool('fullscreen', v);
 
-  static bool loadPowerSavingMode() => _getBool('powerSavingMode', true);
+  static bool loadPowerSavingMode() => _getBool('powerSavingMode', false);
   static void savePowerSavingMode(bool v) => _setBool('powerSavingMode', v);
 
   // ===== 界面模式 =====
   /// 'desktop' | 'mobile' | '' (未选择，首次启动)
   static String loadUiMode() => _get('uiMode', '');
   static void saveUiMode(String v) => _set('uiMode', v);
+
+  // ===== 应用模式 =====
+  /// 'english' = 英语学习模式（现有） | 'tools' = 工具模式（复刻参考项目）
+  /// '' = 未选择（新手引导中让用户选择）
+  static String loadAppMode() => _get('appMode', '');
+  static void saveAppMode(String v) => _set('appMode', v);
 
   // ===== UI 风格 =====
   /// 'classic' | 'glass'

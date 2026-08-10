@@ -100,11 +100,13 @@ class AppState extends ChangeNotifier {
   /// 深色模式开关
   bool darkMode = false;
   bool fullscreen = false;
-  bool powerSavingMode = true; // 省电模式，默认开启，锁60帧
+  bool powerSavingMode = false; // 省电模式，默认关闭，关闭时支持120帧
   /// 首次启动快速引导是否已完成（false 时启动进入引导向导）
   bool onboardingDone = false;
   /// '' = 未选择（首次启动）, 'desktop' = 桌面端, 'mobile' = 手机端
   String uiMode = '';
+  /// 应用模式：'' = 未选择（新手引导中选择）| 'english' = 英语学习模式 | 'tools' = 工具模式
+  String appMode = '';
   /// UI 风格：'classic' = 经典(不透明), 'glass' = 毛玻璃(半透明模糊)
   String uiStyle = 'classic';
   /// 导航指示器：'underline' = 灰色下划线 | 'pill' = 紫色渐变胶囊
@@ -190,6 +192,7 @@ class AppState extends ChangeNotifier {
     powerSavingMode = Storage.loadPowerSavingMode();
     onboardingDone = Storage.loadOnboardingDone();
     uiMode = Storage.loadUiMode();
+    appMode = Storage.loadAppMode();
     uiStyle = Storage.loadUiStyle();
     navIndicator = Storage.loadNavIndicator();
     // 手机端启动即进入沉浸式全屏（隐藏系统状态栏/导航栏），电脑端不受影响
@@ -2570,6 +2573,14 @@ class AppState extends ChangeNotifier {
     uiMode = mode;
     Storage.saveUiMode(mode);
     _applySystemUiMode();
+    notifyListeners();
+  }
+
+  /// 切换应用模式：'english' = 英语学习模式 | 'tools' = 工具模式
+  void setAppMode(String mode) {
+    if (appMode == mode) return;
+    appMode = mode;
+    Storage.saveAppMode(mode);
     notifyListeners();
   }
 

@@ -5,7 +5,6 @@ library;
 import 'package:flutter/material.dart';
 import '../models.dart';
 import '../state.dart';
-import '../theme_colors.dart';
 
 // ===== 中性色板常量（不带主题色调） =====
 const Color _kBgDark = Color(0xFF121316);
@@ -46,7 +45,7 @@ class OnboardingPage extends StatefulWidget {
 }
 
 class _OnboardingPageState extends State<OnboardingPage> {
-  static const _totalSteps = 4;
+  static const _totalSteps = 5;
   final PageController _pageCtrl = PageController();
   /// 翻页过渡层的全局 key：滚动时只局部重建这四层，不重建 PageView 本体
   final List<GlobalKey> _pageKeys = List.generate(_totalSteps, (_) => GlobalKey());
@@ -103,7 +102,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
 
   void _goTo(int idx) {
     if (idx < 0 || idx >= _totalSteps) return;
-    if (_step == 1) _saveApiIfFilled(); // 离开 API 页（任意方向）均尝试保存
+    if (_step == 2) _saveApiIfFilled(); // 离开 API 页（任意方向）均尝试保存
     _pageCtrl.animateToPage(idx, duration: const Duration(milliseconds: 260), curve: Curves.easeOutCubic);
   }
 
@@ -118,8 +117,14 @@ class _OnboardingPageState extends State<OnboardingPage> {
   }
 
   void _skipAll() {
-    if (_step == 1) _saveApiIfFilled();
+    if (_step == 2) _saveApiIfFilled();
+    _ensureAppMode();
     s.completeOnboarding();
+  }
+
+  /// 未选择应用模式时兜底为英语模式（与模式选择页默认选中一致）
+  void _ensureAppMode() {
+    if (s.appMode.isEmpty) s.setAppMode('english');
   }
 
   void _showApiKeyHelp(_Pal pal) {
@@ -208,11 +213,12 @@ class _OnboardingPageState extends State<OnboardingPage> {
     );
   }
 
-  // ===== 四页 PageView：翻页淡入淡出 + 24px 水平位移 =====
+  // ===== 五页 PageView：翻页淡入淡出 + 24px 水平位移 =====
   // PageView 本体只建一次；滚动时通过 listener + 过渡层局部 setState 驱动动效，
   // 不在 build 期间访问 controller.page（未 attach 前读会崩）
   Widget _buildPages(_Pal pal) {
     final pages = [
+      _buildStepAppMode(pal),
       _buildStepTheme(pal),
       _buildStepApi(pal),
       _buildStepMode(pal),
@@ -222,7 +228,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
       controller: _pageCtrl,
       physics: const ClampingScrollPhysics(),
       onPageChanged: (i) {
-        if (_step == 1) _saveApiIfFilled();
+        if (_step == 2) _saveApiIfFilled();
         setState(() => _step = i);
       },
       children: [
@@ -253,7 +259,38 @@ class _OnboardingPageState extends State<OnboardingPage> {
     ]);
   }
 
-  // ===== 第 1 页：选择外观模式（参考 Trae 引导页风格：带 UI 预览缩略图） =====
+  // ===== 第 1 页：选择应用模式（英语学习模式 / 工具模式） — 大厂风格 =====
+  Widget _buildStepAppMode(_Pal pal) {
+    final mode = s.appMode.isEmpty ? 'english' : s.appMode;
+    return _pageShell(_StaggeredFadeIn(children: [
+      _pageHead(pal, '选择应用模式', '选择你想怎么使用本应用，之后可随时在设置中切换。'),
+      _AppModeCard(
+        icon: Icons.school_outlined,
+        iconBg: const Color(0xFF4F6BF6),
+        title: '英语学习模式',
+        desc: '专升本英语学习：题库答题、学习报告、沉浸考场、词汇剖析',
+        subtitle: '推荐 · 默认',
+        feature: '学习',
+        selected: mode == 'english',
+        pal: pal,
+        onTap: () => s.setAppMode('english'),
+      ),
+      const SizedBox(height: 14),
+      _AppModeCard(
+        icon: Icons.grid_view_rounded,
+        iconBg: const Color(0xFF10B981),
+        title: '工具模式',
+        desc: '暴力转盘、暴力翻牌、暴力数字、画板、BMI 计算、五子棋、中国象棋',
+        subtitle: '轻量工具集合',
+        feature: '工具',
+        selected: mode == 'tools',
+        pal: pal,
+        onTap: () => s.setAppMode('tools'),
+      ),
+    ]));
+  }
+
+  // ===== 第 2 页：选择外观模式（参考 Trae 引导页风格：带 UI 预览缩略图） =====
   Widget _buildStepTheme(_Pal pal) {
     return _pageShell(_StaggeredFadeIn(children: [
       _pageHead(pal, '选择外观模式'),
@@ -343,7 +380,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
           onPressed: () {
             // 与“下一步”保存行为一致：已填完整的配置不因跳过而丢失
             _saveApiIfFilled();
-            _goTo(2);
+            _goTo(3);
           },
           style: TextButton.styleFrom(padding: EdgeInsets.zero, minimumSize: const Size(0, 28)),
           child: Text('跳过此步骤', style: TextStyle(fontSize: 12, color: pal.dim)),
@@ -455,7 +492,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
               padding: const EdgeInsets.symmetric(horizontal: 24),
             ),
-            onPressed: isLast ? () => s.completeOnboarding() : () => _goTo(_step + 1),
+            onPressed: isLast ? () { _ensureAppMode(); s.completeOnboarding(); } : () => _goTo(_step + 1),
             child: Text(isLast ? '开始使用' : '下一步'),
           ),
         ),
@@ -629,6 +666,150 @@ class _ModeCard extends StatelessWidget {
                   child: const Icon(Icons.check_rounded, size: 11, color: Colors.white),
                 ),
             ]),
+          ),
+        ]),
+      ),
+    );
+  }
+}
+
+// ===== 应用模式卡（第 1 页，大厂风格：图标 + 标题 + 描述 + 功能标签） =====
+class _AppModeCard extends StatelessWidget {
+  final IconData icon;
+  final Color iconBg;
+  final String title;
+  final String desc;
+  final String? subtitle;
+  final String feature;
+  final bool selected;
+  final _Pal pal;
+  final VoidCallback onTap;
+  const _AppModeCard({
+    required this.icon,
+    required this.iconBg,
+    required this.title,
+    required this.desc,
+    this.subtitle,
+    required this.feature,
+    required this.selected,
+    required this.pal,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 160),
+        curve: Curves.easeOutCubic,
+        width: double.infinity,
+        padding: const EdgeInsets.all(18),
+        decoration: BoxDecoration(
+          color: selected ? pal.cardSelected : pal.card,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: selected ? _kAccent : pal.border,
+            width: selected ? 2 : 1,
+          ),
+          boxShadow: selected
+              ? [
+                  BoxShadow(
+                    color: _kAccent.withValues(alpha: 0.18),
+                    blurRadius: 20,
+                    offset: const Offset(0, 6),
+                  ),
+                ]
+              : null,
+        ),
+        child: Row(children: [
+          // 图标
+          Container(
+            width: 52,
+            height: 52,
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [iconBg, iconBg.withValues(alpha: 0.75)],
+              ),
+              borderRadius: BorderRadius.circular(15),
+              boxShadow: [
+                BoxShadow(
+                  color: iconBg.withValues(alpha: 0.35),
+                  blurRadius: 12,
+                  offset: const Offset(0, 4),
+                ),
+              ],
+            ),
+            child: Icon(icon, color: Colors.white, size: 26),
+          ),
+          const SizedBox(width: 16),
+          // 文字区
+          Expanded(
+            child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(children: [
+                    Flexible(
+                      child: Text(title,
+                          style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w700,
+                              color: pal.body)),
+                    ),
+                    if (subtitle != null) ...[
+                      const SizedBox(width: 8),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 7, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: _kAccent.withValues(alpha: 0.14),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Text(subtitle!,
+                            style: TextStyle(
+                                fontSize: 10,
+                                fontWeight: FontWeight.w600,
+                                color: _kAccent)),
+                      ),
+                    ],
+                  ]),
+                  const SizedBox(height: 5),
+                  Text(desc,
+                      style:
+                          TextStyle(fontSize: 12, color: pal.dim, height: 1.5)),
+                  const SizedBox(height: 8),
+                  // 功能标签行
+                  Row(children: [
+                    Icon(Icons.auto_awesome,
+                        size: 11, color: _kAccent.withValues(alpha: 0.8)),
+                    const SizedBox(width: 4),
+                    Text(feature,
+                        style: TextStyle(
+                            fontSize: 10.5,
+                            fontWeight: FontWeight.w500,
+                            color: pal.dim)),
+                  ]),
+                ]),
+          ),
+          const SizedBox(width: 12),
+          // 选中态圆点
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 160),
+            width: 26,
+            height: 26,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: selected ? _kAccent : Colors.transparent,
+              border: Border.all(
+                color: selected ? _kAccent : pal.border,
+                width: 1.5,
+              ),
+            ),
+            child: selected
+                ? const Icon(Icons.check_rounded, size: 16, color: Colors.white)
+                : null,
           ),
         ]),
       ),

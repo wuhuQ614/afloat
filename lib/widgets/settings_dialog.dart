@@ -376,11 +376,17 @@ class _SettingsDialogState extends State<SettingsDialog> {
       const SizedBox(height: 6),
       CheckboxListTile(
         value: s.powerSavingMode,
-        onChanged: (v) => s.togglePowerSavingMode(v ?? true),
+        onChanged: (v) => s.togglePowerSavingMode(v ?? false),
         title: Text('省电模式', style: TextStyle(fontSize: 14, color: c.text)),
         subtitle: Text('开启后锁定60帧以节省电量，关闭后支持120帧高刷', style: TextStyle(fontSize: 11.5, color: c.textTertiary)),
         contentPadding: EdgeInsets.zero,
       ),
+      const SizedBox(height: 6),
+      _settingRow('应用模式', c, child: Row(children: [
+        _buildChip2(s.appMode.isEmpty ? 'english' : s.appMode, 'english', '英语学习模式', s, c, (v) => s.setAppMode(v)),
+        const SizedBox(width: 10),
+        _buildChip2(s.appMode.isEmpty ? 'english' : s.appMode, 'tools', '工具模式', s, c, (v) => s.setAppMode(v)),
+      ]), hint: '工具模式包含转盘/翻牌/数字/画板/五子棋/象棋等，切换后立即生效'),
       const SizedBox(height: 6),
       ListTile(
         contentPadding: EdgeInsets.zero,
