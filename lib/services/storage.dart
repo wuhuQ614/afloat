@@ -274,6 +274,16 @@ class Storage {
     _set('answeredBankIdx', jsonEncode(set.toList()));
   }
 
+  // ===== 查词来源：'ai' = AI生成（默认） | 'maimemo' = 墨墨开放API =====
+  static String loadDictSource() {
+    final v = _get('dictSource', 'ai');
+    return v == 'maimemo' ? 'maimemo' : 'ai';
+  }
+
+  static void saveDictSource(String v) {
+    _set('dictSource', v == 'maimemo' ? 'maimemo' : 'ai');
+  }
+
   // ===== 生词本 =====
   static List<WordBookItem> loadWordBook() {
     final s = _get('wordbook', '');

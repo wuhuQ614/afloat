@@ -130,6 +130,8 @@ class AppState extends ChangeNotifier {
   bool get isGlassUI => uiStyle == 'glass' && !darkMode;
   /// 导航指示器：'underline' = 灰色下划线 | 'pill' = 紫色渐变胶囊
   String navIndicator = 'underline';
+  /// 单词查询来源：'ai' = AI生成（默认） | 'maimemo' = 墨墨开放API
+  String dictSource = 'ai';
   String selectedType = 'translation';
   String selectedLevel = 'zsb';
   int questionStartTime = 0;
@@ -220,6 +222,7 @@ class AppState extends ChangeNotifier {
     appMode = Storage.loadAppMode();
     uiStyle = Storage.loadUiStyle();
     navIndicator = Storage.loadNavIndicator();
+    dictSource = Storage.loadDictSource();
     // 手机端启动即进入沉浸式全屏（隐藏系统状态栏/导航栏），电脑端不受影响
     _applySystemUiMode();
     // 全卷模拟考试：恢复最近一次成绩与历史摘要（供学习报告展示）；
@@ -2677,6 +2680,30 @@ class AppState extends ChangeNotifier {
     }
   }
 
+  /// 用墨墨开放 API 查询单词完整信息（释义/例句/助记）。
+  /// 返回 null 表示该单词在墨墨词库中不存在；失败抛 MaimemoException。
+  Future<MaimemoWordLookup?> lookupWordMaimemo(String word) async {
+    final token = maimemoToken.trim();
+    if (token.isEmpty) {
+      throw const MaimemoException('尚未配置墨墨 API Token');
+    }
+    final detail = await MaimemoService.getVocabulary(token, spelling: word.toLowerCase());
+    if (detail == null) return null;
+    // 并发获取释义、例句、助记
+    final results = await Future.wait([
+      MaimemoService.listDefinitions(token, vocId: detail.id),
+      MaimemoService.listExamples(token, vocId: detail.id),
+      MaimemoService.listNotes(token, vocId: detail.id),
+    ]);
+    return MaimemoWordLookup(
+      word: detail.spelling,
+      detail: detail,
+      definitions: results[0] as List<MaimemoDefinition>,
+      examples: results[1] as List<MaimemoExample>,
+      notes: results[2] as List<MaimemoNote>,
+    );
+  }
+
   // ===== 学习报告数据 =====
   List<StudyRecord> studyRecords = [];
   List<WrongItem> wrongQuestions = [];
@@ -2850,6 +2877,15 @@ class AppState extends ChangeNotifier {
     if (uiStyle == style) return;
     uiStyle = style;
     Storage.saveUiStyle(style);
+    notifyListeners();
+  }
+
+  /// 设置单词查询来源：'ai' = AI生成 | 'maimemo' = 墨墨开放API
+  void setDictSource(String source) {
+    final v = source == 'maimemo' ? 'maimemo' : 'ai';
+    if (dictSource == v) return;
+    dictSource = v;
+    Storage.saveDictSource(v);
     notifyListeners();
   }
 

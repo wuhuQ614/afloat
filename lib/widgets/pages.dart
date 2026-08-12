@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import '../models.dart';
 import '../services/api_service.dart' as api;
 import '../services/dict_service.dart';
+import '../services/maimemo_service.dart';
 import '../services/tts_service.dart';
 import '../state.dart';
 import '../theme_colors.dart' show kPrimary, kSuccess, kDanger, kDarkCard, AppColors;
@@ -1620,6 +1621,7 @@ class _DictionaryPageState extends State<DictionaryPage> {
   String? _result;
   String? _foundWord; // 本地词库命中的单词（结构化展示）
   DictEntry? _foundEntry;
+  MaimemoWordLookup? _maimemoLookup; // 墨墨开放 API 查词结果
   bool _searching = false;
   List<String> _collocations = [];
   List<String> _synonyms = [];
@@ -1674,7 +1676,7 @@ class _DictionaryPageState extends State<DictionaryPage> {
                             icon: Icon(Icons.cancel_rounded, size: 18, color: c.textTertiary),
                             onPressed: () {
                               _ctrl.clear();
-                              setState(() { _foundEntry = null; _foundWord = null; _result = null; });
+                              setState(() { _foundEntry = null; _foundWord = null; _result = null; _maimemoLookup = null; });
                             },
                           )
                         : null,
@@ -1708,14 +1710,24 @@ class _DictionaryPageState extends State<DictionaryPage> {
         Text('查询中...', style: TextStyle(fontSize: 13, color: c.textTertiary)),
       ]));
     }
-    if (_result == null && _foundEntry == null) {
+    if (_result == null && _foundEntry == null && _maimemoLookup == null) {
       return const _EmptyState(icon: Icons.search_rounded, title: '输入单词开始查询', subtitle: '英文优先匹配本地词库，中文走 AI 翻译');
     }
     final entry = _foundEntry;
     final word = _foundWord;
     final isMobile = s.uiMode == 'mobile';
+    // 墨墨查询结果：优先展示其释义/例句/助记（墨墨不提供音标，音标取本地词典）
+    final maimemo = _maimemoLookup;
+    final phonetic = entry?.phonetic.isNotEmpty == true ? entry!.phonetic : '';
+    final maimemoDefs = (maimemo != null && maimemo.definitions.isNotEmpty) ? maimemo.definitions : null;
+    final maimemoExamples = (maimemo != null && maimemo.examples.isNotEmpty) ? maimemo.examples : null;
+    final maimemoNotes = (maimemo != null && maimemo.notes.isNotEmpty) ? maimemo.notes : null;
+    // 例句：墨墨优先（含中英），否则用 AI 补充结果
+    final exampleList = maimemoExamples != null
+        ? maimemoExamples.map((e) => {'en': e.content, 'zh': e.translation}).toList()
+        : _examples;
 
-    final body = entry != null && word != null
+    final body = (entry != null || maimemo != null) && word != null
         ? Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               // 单词头部：单词 + 音标 + 发音
               Row(children: [
@@ -1732,16 +1744,24 @@ class _DictionaryPageState extends State<DictionaryPage> {
                     ),
                   ),
               ]),
-              if (entry.phonetic.isNotEmpty)
+              if (phonetic.isNotEmpty)
                 Padding(
                   padding: const EdgeInsets.only(top: 4),
-                  child: Text('/${entry.phonetic}/', style: TextStyle(fontSize: 15, color: c.textTertiary)),
+                  child: Text('/$phonetic/', style: TextStyle(fontSize: 15, color: c.textTertiary)),
                 ),
               const SizedBox(height: 16),
-              // 词性、释义、补充
-              if (entry.pos.isNotEmpty) _InfoRow(label: '词性', value: entry.pos, c: c),
-              if (entry.translation.isNotEmpty) _InfoRow(label: '释义', value: entry.translation, c: c),
-              if (entry.other.isNotEmpty) _InfoRow(label: '补充', value: entry.other, c: c),
+              // 词性、释义（墨墨优先，AI/词典兜底）
+              if (maimemoDefs != null)
+                ...maimemoDefs.map((d) => _InfoRow(
+                      label: d.tags.isNotEmpty ? d.tags.join('、') : '释义',
+                      value: d.content,
+                      c: c,
+                    ))
+              else ...[
+                if (entry != null && entry.pos.isNotEmpty) _InfoRow(label: '词性', value: entry.pos, c: c),
+                if (entry != null && entry.translation.isNotEmpty) _InfoRow(label: '释义', value: entry.translation, c: c),
+                if (entry != null && entry.other.isNotEmpty) _InfoRow(label: '补充', value: entry.other, c: c),
+              ],
               const SizedBox(height: 16),
               Divider(height: 1, color: c.divider),
               const SizedBox(height: 12),
@@ -1750,21 +1770,39 @@ class _DictionaryPageState extends State<DictionaryPage> {
                 // 例句
                 Text('例句', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: c.text)),
                 const SizedBox(height: 8),
-                if (_loadingExtras)
+                if (_loadingExtras && exampleList.isEmpty)
                   const Padding(
                     padding: EdgeInsets.symmetric(vertical: 8),
                     child: SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
                   )
-                else if (_examples.isEmpty)
+                else if (exampleList.isEmpty)
                   Text('暂无例句', style: TextStyle(fontSize: 13, color: c.textTertiary))
                 else
-                  ..._examples.map((ex) => Column(
+                  ...exampleList.map((ex) => Column(
                         children: [
                           _ExampleItem(en: ex['en'] ?? '', zh: ex['zh'] ?? '', c: c),
                           const SizedBox(height: 8),
                         ],
                       )),
                 const SizedBox(height: 16),
+                // 助记（墨墨）
+                if (maimemoNotes != null) ...[
+                  Text('助记', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: c.text)),
+                  const SizedBox(height: 8),
+                  ...maimemoNotes.map((n) => Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: c.primaryBg.withValues(alpha: 0.35),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Text(n.content, style: TextStyle(fontSize: 13, height: 1.5, color: c.text)),
+                        ),
+                      )),
+                  const SizedBox(height: 16),
+                ],
                 // 常见搭配
                 Text('常见搭配', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: c.text)),
                 const SizedBox(height: 10),
@@ -1807,20 +1845,38 @@ class _DictionaryPageState extends State<DictionaryPage> {
                     child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                       Text('例句', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: c.text)),
                       const SizedBox(height: 8),
-                      if (_loadingExtras)
+                      if (_loadingExtras && exampleList.isEmpty)
                         const Padding(
                           padding: EdgeInsets.symmetric(vertical: 8),
                           child: SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
                         )
-                      else if (_examples.isEmpty)
+                      else if (exampleList.isEmpty)
                         Text('暂无例句', style: TextStyle(fontSize: 13, color: c.textTertiary))
                       else
-                        ..._examples.map((ex) => Column(
+                        ...exampleList.map((ex) => Column(
                               children: [
                                 _ExampleItem(en: ex['en'] ?? '', zh: ex['zh'] ?? '', c: c),
                                 const SizedBox(height: 8),
                               ],
                             )),
+                      const SizedBox(height: 16),
+                      // 助记（墨墨）
+                      if (maimemoNotes != null) ...[
+                        Text('助记', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: c.text)),
+                        const SizedBox(height: 8),
+                        ...maimemoNotes.map((n) => Padding(
+                              padding: const EdgeInsets.only(bottom: 8),
+                              child: Container(
+                                width: double.infinity,
+                                padding: const EdgeInsets.all(10),
+                                decoration: BoxDecoration(
+                                  color: c.primaryBg.withValues(alpha: 0.35),
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: Text(n.content, style: TextStyle(fontSize: 13, height: 1.5, color: c.text)),
+                              ),
+                            )),
+                      ],
                     ]),
                   ),
                   // 右侧分隔线
@@ -1876,7 +1932,10 @@ class _DictionaryPageState extends State<DictionaryPage> {
                   ),
                   onPressed: () {
                     final w = word.toLowerCase();
-                    s.addToWordBook(w, entry.translation);
+                    final defText = maimemoDefs != null
+                        ? maimemoDefs.map((d) => d.content).join('；')
+                        : (entry?.translation ?? '');
+                    s.addToWordBook(w, defText);
                     setState(() {});
                   },
                   icon: const Icon(Icons.star_outline_rounded, size: 18),
@@ -1967,12 +2026,39 @@ class _DictionaryPageState extends State<DictionaryPage> {
       _foundEntry = null;
       _foundWord = null;
       _result = null;
+      _maimemoLookup = null;
       _collocations = [];
       _synonyms = [];
+      _examples = [];
       _loadingExtras = false;
     });
+    final isEnglishWord = RegExp(r'^[a-zA-Z\s\-]+$').hasMatch(query);
+    final singleWord = query.toLowerCase().trim().split(RegExp(r'\s+')).where((w) => w.isNotEmpty).length == 1
+        ? query.toLowerCase().trim()
+        : null;
+    // 墨墨模式：单个英文单词优先走墨墨开放 API（助记/释义/例句）
+    if (s.dictSource == 'maimemo' && singleWord != null) {
+      try {
+        final lookup = await s.lookupWordMaimemo(singleWord);
+        if (!mounted) return;
+        if (lookup != null) {
+          final entry = DictService.lookup(singleWord);
+          _maimemoLookup = lookup;
+          _foundWord = lookup.word;
+          _foundEntry = entry;
+          setState(() => _searching = false);
+          // 搭配/同义词墨墨未提供，仍用 AI 补充（若已配置 API）
+          if (s.apiConfig.ready) {
+            _fetchWordExtras(s, lookup.word);
+          }
+          return;
+        }
+      } catch (_) {
+        // 墨墨查询失败（未配置 Token/网络错误）：继续走下方 AI/本地兜底
+      }
+    }
     // 英文 → 本地词库
-    if (RegExp(r'^[a-zA-Z\s\-]+$').hasMatch(query)) {
+    if (isEnglishWord) {
       final words = query.toLowerCase().split(RegExp(r'\s+')).where((w) => w.isNotEmpty).toList();
       if (words.length == 1) {
         final entry = DictService.lookup(words.first);

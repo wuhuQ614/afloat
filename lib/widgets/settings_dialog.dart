@@ -461,6 +461,13 @@ class _SettingsDialogState extends State<SettingsDialog> {
         const SizedBox(width: 10),
         _buildChip2(s.appMode.isEmpty ? 'english' : s.appMode, 'tools', '工具模式', s, c, (v) => s.setAppMode(v)),
       ]), hint: '工具模式包含转盘/翻牌/数字/画板/五子棋/象棋等，切换后立即生效'),
+      const SizedBox(height: 14),
+      // 单词查询来源
+      _settingRow('单词查询来源', c, child: Row(children: [
+        _buildChip2(s.dictSource, 'ai', 'AI 生成', s, c, (v) => s.setDictSource(v)),
+        const SizedBox(width: 10),
+        _buildChip2(s.dictSource, 'maimemo', '墨墨 API', s, c, (v) => s.setDictSource(v)),
+      ]), hint: 'AI 生成需要已配置 API；墨墨 API 需已配置墨墨 Token，单词查询页将优先使用所选来源'),
       const SizedBox(height: 6),
       ListTile(
         contentPadding: EdgeInsets.zero,
