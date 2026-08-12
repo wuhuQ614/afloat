@@ -1712,7 +1712,13 @@ class _DictionaryPageState extends State<DictionaryPage> {
       ]));
     }
     if (_result == null && _foundEntry == null && _maimemoLookup == null) {
-      return const _EmptyState(icon: Icons.search_rounded, title: '输入单词开始查询', subtitle: '英文优先匹配本地词库，中文走 AI 翻译');
+      return _EmptyState(
+        icon: Icons.search_rounded,
+        title: '输入单词开始查询',
+        subtitle: s.dictSource == 'maimemo'
+            ? '墨墨模式下仅支持英文单词查询，结果由墨墨提供'
+            : '英文优先匹配本地词库，中文走 AI 翻译',
+      );
     }
     final entry = _foundEntry;
     final word = _foundWord;
@@ -2052,22 +2058,34 @@ class _DictionaryPageState extends State<DictionaryPage> {
     final singleWord = query.toLowerCase().trim().split(RegExp(r'\s+')).where((w) => w.isNotEmpty).length == 1
         ? query.toLowerCase().trim()
         : null;
-    // 墨墨模式：单个英文单词优先走墨墨开放 API（助记/释义/例句）
-    if (s.dictSource == 'maimemo' && singleWord != null) {
+    // 墨墨模式：单词查询结果只由墨墨开放 API 提供，绝不降级到 AI/本地链路
+    if (s.dictSource == 'maimemo') {
+      if (singleWord == null) {
+        // 墨墨接口仅支持按英文单词拼写查询
+        _result = '墨墨模式仅支持英文单词查询，如需查询中文或短语，请在设置中切换为「AI 生成」';
+        setState(() => _searching = false);
+        return;
+      }
       try {
         final lookup = await s.lookupWordMaimemo(singleWord);
         if (!mounted) return;
-        if (lookup != null) {
-          final entry = DictService.lookup(singleWord);
-          _maimemoLookup = lookup;
-          _foundWord = lookup.word;
-          _foundEntry = entry;
+        if (lookup == null) {
+          _result = '墨墨词库中未找到 "$singleWord"，可前往设置切换为「AI 生成」';
           setState(() => _searching = false);
-          // 墨墨模式：释义/例句/助记全部来自墨墨 API，不再混入 AI 生成内容
           return;
         }
-      } catch (_) {
-        // 墨墨查询失败（未配置 Token/网络错误）：继续走下方 AI/本地兜底
+        final entry = DictService.lookup(singleWord);
+        _maimemoLookup = lookup;
+        _foundWord = lookup.word;
+        _foundEntry = entry;
+        setState(() => _searching = false);
+        // 墨墨模式：释义/例句/助记全部来自墨墨 API，不混入 AI 生成内容
+        return;
+      } catch (e) {
+        if (!mounted) return;
+        _result = e is MaimemoException ? e.message : '墨墨查询失败：$e';
+        setState(() => _searching = false);
+        return;
       }
     }
     // 英文 → 本地词库

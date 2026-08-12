@@ -156,14 +156,33 @@ class MaimemoService {
         throw const MaimemoException('请求过于频繁，墨墨限制了访问频率，请稍后再试');
       }
       if (resp.statusCode != 200) {
+        if (resp.statusCode == 404) {
+          throw const MaimemoException('墨墨词库中未找到该单词');
+        }
         throw MaimemoException('墨墨接口返回 HTTP ${resp.statusCode}');
       }
-      final obj = jsonDecode(utf8.decode(resp.bodyBytes)) as Map<String, dynamic>;
-      final data = obj['data'];
-      if (data is! Map<String, dynamic>) {
-        throw MaimemoException('墨墨响应缺少 data 字段：${obj['msg'] ?? '未知错误'}');
+      final decoded = jsonDecode(utf8.decode(resp.bodyBytes));
+      if (decoded is! Map<String, dynamic>) {
+        throw const MaimemoException('墨墨响应不是合法 JSON');
       }
-      return data;
+      final obj = decoded;
+      // 错误结构：{ "errors": [{ code, msg/message, info }] } 或 { "success": false }
+      final errors = obj['errors'];
+      if (errors is List && errors.isNotEmpty) {
+        final first = errors.first;
+        if (first is Map) {
+          final code = first['code'];
+          final msg = (first['msg'] ?? first['message'])?.toString() ?? '';
+          throw MaimemoException('墨墨接口错误${code != null ? '（$code）' : ''}：$msg');
+        }
+        throw MaimemoException('墨墨接口错误：$errors');
+      }
+      if (obj['success'] == false) {
+        throw MaimemoException('墨墨接口请求失败：${obj['msg'] ?? '未知错误'}');
+      }
+      // 与官方 memo-api-cli 一致：响应若带 data 包装则取 data，否则直接使用整个响应对象
+      final data = obj['data'];
+      return data is Map<String, dynamic> ? data : obj;
     } on TimeoutException {
       throw const MaimemoException('连接墨墨服务器超时');
     } on FormatException {
