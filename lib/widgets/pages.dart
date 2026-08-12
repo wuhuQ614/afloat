@@ -1625,6 +1625,7 @@ class _DictionaryPageState extends State<DictionaryPage> {
   bool _searching = false;
   List<String> _collocations = [];
   List<String> _synonyms = [];
+  List<String> _mnemonics = []; // AI 生成的助记
   List<Map<String, String>> _examples = []; // [{en, zh}]
   bool _loadingExtras = false;
 
@@ -1676,7 +1677,7 @@ class _DictionaryPageState extends State<DictionaryPage> {
                             icon: Icon(Icons.cancel_rounded, size: 18, color: c.textTertiary),
                             onPressed: () {
                               _ctrl.clear();
-                              setState(() { _foundEntry = null; _foundWord = null; _result = null; _maimemoLookup = null; });
+                              setState(() { _foundEntry = null; _foundWord = null; _result = null; _maimemoLookup = null; _mnemonics = []; });
                             },
                           )
                         : null,
@@ -1721,11 +1722,14 @@ class _DictionaryPageState extends State<DictionaryPage> {
     final phonetic = entry?.phonetic.isNotEmpty == true ? entry!.phonetic : '';
     final maimemoDefs = (maimemo != null && maimemo.definitions.isNotEmpty) ? maimemo.definitions : null;
     final maimemoExamples = (maimemo != null && maimemo.examples.isNotEmpty) ? maimemo.examples : null;
-    final maimemoNotes = (maimemo != null && maimemo.notes.isNotEmpty) ? maimemo.notes : null;
     // 例句：墨墨优先（含中英），否则用 AI 补充结果
     final exampleList = maimemoExamples != null
         ? maimemoExamples.map((e) => {'en': e.content, 'zh': e.translation}).toList()
         : _examples;
+    // 助记：墨墨优先，否则用 AI 生成结果
+    final noteList = maimemo != null && maimemo.notes.isNotEmpty
+        ? maimemo.notes.map((n) => n.content).toList()
+        : _mnemonics;
 
     final body = (entry != null || maimemo != null) && word != null
         ? Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -1785,11 +1789,18 @@ class _DictionaryPageState extends State<DictionaryPage> {
                         ],
                       )),
                 const SizedBox(height: 16),
-                // 助记（墨墨）
-                if (maimemoNotes != null) ...[
-                  Text('助记', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: c.text)),
-                  const SizedBox(height: 8),
-                  ...maimemoNotes.map((n) => Padding(
+                // 助记
+                Text('助记', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: c.text)),
+                const SizedBox(height: 8),
+                if (_loadingExtras && noteList.isEmpty)
+                  const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 8),
+                    child: SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
+                  )
+                else if (noteList.isEmpty)
+                  Text('暂无助记', style: TextStyle(fontSize: 13, color: c.textTertiary))
+                else
+                  ...noteList.map((m) => Padding(
                         padding: const EdgeInsets.only(bottom: 8),
                         child: Container(
                           width: double.infinity,
@@ -1798,11 +1809,10 @@ class _DictionaryPageState extends State<DictionaryPage> {
                             color: c.primaryBg.withValues(alpha: 0.35),
                             borderRadius: BorderRadius.circular(8),
                           ),
-                          child: Text(n.content, style: TextStyle(fontSize: 13, height: 1.5, color: c.text)),
+                          child: Text(m, style: TextStyle(fontSize: 13, height: 1.5, color: c.text)),
                         ),
                       )),
-                  const SizedBox(height: 16),
-                ],
+                const SizedBox(height: 16),
                 // 常见搭配
                 Text('常见搭配', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: c.text)),
                 const SizedBox(height: 10),
@@ -1860,11 +1870,18 @@ class _DictionaryPageState extends State<DictionaryPage> {
                               ],
                             )),
                       const SizedBox(height: 16),
-                      // 助记（墨墨）
-                      if (maimemoNotes != null) ...[
-                        Text('助记', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: c.text)),
-                        const SizedBox(height: 8),
-                        ...maimemoNotes.map((n) => Padding(
+                      // 助记
+                      Text('助记', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: c.text)),
+                      const SizedBox(height: 8),
+                      if (_loadingExtras && noteList.isEmpty)
+                        const Padding(
+                          padding: EdgeInsets.symmetric(vertical: 8),
+                          child: SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
+                        )
+                      else if (noteList.isEmpty)
+                        Text('暂无助记', style: TextStyle(fontSize: 13, color: c.textTertiary))
+                      else
+                        ...noteList.map((m) => Padding(
                               padding: const EdgeInsets.only(bottom: 8),
                               child: Container(
                                 width: double.infinity,
@@ -1873,10 +1890,9 @@ class _DictionaryPageState extends State<DictionaryPage> {
                                   color: c.primaryBg.withValues(alpha: 0.35),
                                   borderRadius: BorderRadius.circular(8),
                                 ),
-                                child: Text(n.content, style: TextStyle(fontSize: 13, height: 1.5, color: c.text)),
+                                child: Text(m, style: TextStyle(fontSize: 13, height: 1.5, color: c.text)),
                               ),
                             )),
-                      ],
                     ]),
                   ),
                   // 右侧分隔线
@@ -2029,6 +2045,7 @@ class _DictionaryPageState extends State<DictionaryPage> {
       _maimemoLookup = null;
       _collocations = [];
       _synonyms = [];
+      _mnemonics = [];
       _examples = [];
       _loadingExtras = false;
     });
@@ -2158,18 +2175,19 @@ class _DictionaryPageState extends State<DictionaryPage> {
     };
   }
 
-  /// AI 获取单词的搭配、同义词和例句（关闭思考模式）
+  /// AI 获取单词的搭配、同义词、例句和助记（关闭思考模式）
   Future<void> _fetchWordExtras(AppState s, String word) async {
     if (!mounted) return;
     setState(() => _loadingExtras = true);
-    final prompt = '给出单词 "$word" 的 5 个常见搭配、3 个同义词和 2 个例句。返回 JSON：{"collocations":["..."],"synonyms":["..."],"examples":[{"en":"...","zh":"..."}]}';
+    final prompt = '给出单词 "$word" 的 5 个常见搭配、3 个同义词、2 个例句和 2 条助记（谐音/联想/词根词缀等，帮助记忆）。'
+        '返回 JSON：{"collocations":["..."],"synonyms":["..."],"examples":[{"en":"...","zh":"..."}],"mnemonics":["...","..."]}';
     final reply = await api.ApiService.callAI(
       [
         {'role': 'user', 'content': prompt}
       ],
       '你是英语词典助手。只返回 JSON，不要其他内容。',
       config: s.apiConfig,
-      maxTokens: 512,
+      maxTokens: 600,
       extraParams: api.ApiService.noThinkingParams(s.apiConfig.model),
     );
     if (!mounted) return;
@@ -2178,6 +2196,7 @@ class _DictionaryPageState extends State<DictionaryPage> {
       if (obj != null) {
         final cols = (obj['collocations'] as List?)?.whereType<String>().toList() ?? [];
         final syns = (obj['synonyms'] as List?)?.whereType<String>().toList() ?? [];
+        final mnes = (obj['mnemonics'] as List?)?.whereType<String>().toList() ?? [];
         final examples = (obj['examples'] as List?)
             ?.whereType<Map>()
             .map((e) => {
@@ -2188,6 +2207,7 @@ class _DictionaryPageState extends State<DictionaryPage> {
         setState(() {
           _collocations = cols;
           _synonyms = syns;
+          _mnemonics = mnes;
           _examples = examples;
           _loadingExtras = false;
         });
