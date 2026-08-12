@@ -556,8 +556,8 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
       ];
       final inMore = page >= 4;
       final inSubFeature = page >= 4 && (page <= 8 || (page >= 12 && page <= 17) || page == 18);
-      final moreTitle = inSubFeature ? _moreItemsData.firstWhere((e) => e.$4 == page).$2 : '更多功能';
-      final moreIcon = inSubFeature ? _moreItemsData.firstWhere((e) => e.$4 == page).$1 : Icons.grid_view_outlined;
+      const moreTitle = '更多功能';
+      const moreIcon = Icons.grid_view_outlined;
       final isGlass = _state.isGlassUI;
       return RepaintBoundary(
         child: isGlass
@@ -779,7 +779,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                 NavigationDestination(
                   icon: Icon(navItems[i].$1, size: 22, color: (i == 3 ? inMore : navIndex == i) ? kPrimary : c.textTertiary),
                   selectedIcon: Icon(navItems[i].$1, size: 22, color: kPrimary),
-                  label: i == 3 && inSubFeature ? _moreItemsData.firstWhere((e) => e.$4 == _state.page).$2 : navItems[i].$2,
+                  label: navItems[i].$2,
                 ),
             ],
           ),
