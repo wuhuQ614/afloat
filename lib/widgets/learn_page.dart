@@ -1525,8 +1525,9 @@ class _LearnPageState extends State<LearnPage> {
               Container(
                 padding: const EdgeInsets.all(14),
                 decoration: BoxDecoration(
-                  color: c.chipUnselected,
+                  color: c.primaryLight,
                   borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: c.primary.withValues(alpha: 0.12)),
                 ),
                 child: Row(children: [
                   _buildMetricChip('76', '题量', c),
@@ -1573,7 +1574,7 @@ class _LearnPageState extends State<LearnPage> {
         SizedBox(
           width: double.infinity,
           height: 52,
-          child: widget.state.uiStyle == 'glass'
+          child: widget.state.isGlassUI
               ? _PureGlassGenerateButton(
                   onPressed: (widget.state.generating || widget.state.generatingFullExam) ? null : () => _generate(widget.state),
                   isLoading: (widget.state.generating || widget.state.generatingFullExam),
@@ -1682,41 +1683,39 @@ class _LearnPageState extends State<LearnPage> {
   }
 
   // 纯玻璃卡片外壳：与上方三张题卡（_TypeCardV2）完全同款
-  // 真实模糊 + 70% 白色玻璃填充 + 细白边 + 中性阴影
+  // glass：真实模糊 + 半透明白玻璃；classic：不透明实色（无毛玻璃）
   Widget _buildCard({required Widget child}) {
     final c = AppColors.of(context);
+    final isGlass = AppScope.of(context).isGlassUI;
     final fillColor = (c.isLight ? Colors.white : const Color(0xFF2A2A32)).withValues(alpha: c.isLight ? 0.78 : 0.72);
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(20),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
-        child: Container(
-          padding: const EdgeInsets.all(20),
-          decoration: BoxDecoration(
-            color: fillColor, // 与 _TypeCardV2 同款半透白玻璃
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(
-              color: c.isLight ? Colors.white.withValues(alpha: 0.7) : Colors.white.withValues(alpha: 0.12),
-              width: 1.2,
-            ),
-            boxShadow: [
-              // 中性阴影：去掉 kPrimary 紫色投影，与 _TypeCardV2 一致
-              BoxShadow(
-                color: Colors.black.withValues(alpha: c.isLight ? 0.04 : 0.18),
-                blurRadius: 18,
-                offset: const Offset(0, 6),
-              ),
-              BoxShadow(
-                color: Colors.black.withValues(alpha: c.isLight ? 0.02 : 0.10),
-                blurRadius: 6,
-                offset: const Offset(0, 1),
-              ),
-            ],
-          ),
-          child: child,
+    final card = Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: isGlass ? fillColor : (c.isLight ? Colors.white : const Color(0xFF2A2A32)),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: c.isLight ? Colors.white.withValues(alpha: 0.7) : Colors.white.withValues(alpha: 0.12),
+          width: 1.2,
         ),
+        boxShadow: [
+          // 中性阴影：去掉 kPrimary 紫色投影，与 _TypeCardV2 一致
+          BoxShadow(
+            color: Colors.black.withValues(alpha: c.isLight ? 0.04 : 0.18),
+            blurRadius: 18,
+            offset: const Offset(0, 6),
+          ),
+          BoxShadow(
+            color: Colors.black.withValues(alpha: c.isLight ? 0.02 : 0.10),
+            blurRadius: 6,
+            offset: const Offset(0, 1),
+          ),
+        ],
       ),
+      child: child,
     );
+    return isGlass
+        ? ClipRRect(borderRadius: BorderRadius.circular(20), child: BackdropFilter(filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20), child: card))
+        : card;
   }
 
   // ===== 01. 题型 3x2 网格 — 每张卡片自带毛玻璃 =====
@@ -1986,6 +1985,34 @@ class _PureGlassGenerateButton extends StatelessWidget {
     const radius = BorderRadius.all(Radius.circular(14));
     final iconData = isMixed ? Icons.assignment_outlined : Icons.auto_awesome_outlined;
     final btnText = isMixed ? '生成全卷' : '生成题目';
+    final isGlass = AppScope.of(context).isGlassUI;
+    if (!isGlass) {
+      // 经典模式：紫色实底按钮（无毛玻璃）
+      return Material(
+        color: disabled ? kPrimary.withValues(alpha: 0.35) : kPrimary,
+        borderRadius: radius,
+        child: InkWell(
+          onTap: onPressed,
+          borderRadius: radius,
+          child: SizedBox(
+            height: double.infinity,
+            width: double.infinity,
+            child: Center(
+              child: isLoading
+                  ? const SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2.5, color: Colors.white))
+                  : Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                      Icon(iconData, color: Colors.white, size: 20),
+                      const SizedBox(width: 8),
+                      Text(
+                        btnText,
+                        style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w700, letterSpacing: 0.3),
+                      ),
+                    ]),
+            ),
+          ),
+        ),
+      );
+    }
     return ClipRRect(
       borderRadius: radius,
       child: BackdropFilter(
@@ -2077,55 +2104,62 @@ class _TypeCardV2State extends State<_TypeCardV2> {
         ),
     ]);
 
-    final glassBody = ClipRRect(
-      borderRadius: cardRadius,
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 200),
-          curve: Curves.easeOutCubic,
-          transform: Matrix4.translationValues(0, lift, 0),
-          padding: const EdgeInsets.all(18),
-          decoration: BoxDecoration(
-            color: (c.isLight ? Colors.white : const Color(0xFF2A2A32)).withValues(
-              alpha: isSelected ? 0.95 : (isHovered ? 0.85 : 0.7),
-            ),
-            borderRadius: cardRadius,
-            border: Border.all(
-              // 选中/悬停态边框统一用中性灰阶，与上方三张题卡同款
-              color: isSelected
-                  ? (c.isLight ? Colors.black.withValues(alpha: 0.18) : Colors.white.withValues(alpha: 0.30))
-                  : (isHovered
-                      ? (c.isLight ? Colors.black.withValues(alpha: 0.10) : Colors.white.withValues(alpha: 0.20))
-                      : (c.isLight ? Colors.white.withValues(alpha: 0.7) : Colors.white.withValues(alpha: 0.12))),
-              width: isSelected ? 1.2 : 1,
-            ),
-            boxShadow: [
-              // 中性阴影：与上方三张题卡同款，去掉 kPrimary 紫调
-              if (isSelected)
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: c.isLight ? 0.10 : 0.32),
-                  blurRadius: 12,
-                  offset: const Offset(0, 4),
-                )
-              else if (isHovered)
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: c.isLight ? 0.07 : 0.25),
-                  blurRadius: 10,
-                  offset: const Offset(0, 3),
-                )
-              else
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: c.isLight ? 0.04 : 0.18),
-                  blurRadius: 8,
-                  offset: const Offset(0, 2),
-                ),
-            ],
-          ),
-          child: content,
+    final isGlass = AppScope.of(context).isGlassUI;
+    final cardFill = isGlass
+        ? (c.isLight ? Colors.white : const Color(0xFF2A2A32)).withValues(
+            alpha: isSelected ? 0.95 : (isHovered ? 0.85 : 0.7),
+          )
+        : (c.isLight ? Colors.white : const Color(0xFF2A2A32));
+    final cardBody = AnimatedContainer(
+      duration: const Duration(milliseconds: 200),
+      curve: Curves.easeOutCubic,
+      transform: Matrix4.translationValues(0, lift, 0),
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: cardFill,
+        borderRadius: cardRadius,
+        border: Border.all(
+          // 选中/悬停态边框统一用中性灰阶，与上方三张题卡同款
+          color: isSelected
+              ? (c.isLight ? Colors.black.withValues(alpha: 0.18) : Colors.white.withValues(alpha: 0.30))
+              : (isHovered
+                  ? (c.isLight ? Colors.black.withValues(alpha: 0.10) : Colors.white.withValues(alpha: 0.20))
+                  : (c.isLight ? Colors.white.withValues(alpha: 0.7) : Colors.white.withValues(alpha: 0.12))),
+          width: isSelected ? 1.2 : 1,
         ),
+        boxShadow: [
+          // 中性阴影：与上方三张题卡同款，去掉 kPrimary 紫调
+          if (isSelected)
+            BoxShadow(
+              color: Colors.black.withValues(alpha: c.isLight ? 0.10 : 0.32),
+              blurRadius: 12,
+              offset: const Offset(0, 4),
+            )
+          else if (isHovered)
+            BoxShadow(
+              color: Colors.black.withValues(alpha: c.isLight ? 0.07 : 0.25),
+              blurRadius: 10,
+              offset: const Offset(0, 3),
+            )
+          else
+            BoxShadow(
+              color: Colors.black.withValues(alpha: c.isLight ? 0.04 : 0.18),
+              blurRadius: 8,
+              offset: const Offset(0, 2),
+            ),
+        ],
       ),
+      child: content,
     );
+    final glassBody = isGlass
+        ? ClipRRect(
+            borderRadius: cardRadius,
+            child: BackdropFilter(
+              filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
+              child: cardBody,
+            ),
+          )
+        : cardBody;
 
     return MouseRegion(
       onEnter: (_) => setState(() => _hovered = true),

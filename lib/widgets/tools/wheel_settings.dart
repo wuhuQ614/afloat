@@ -172,23 +172,22 @@ class _WheelSettingsPageState extends State<WheelSettingsPage>
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.transparent,
+      // 性能优化：child 参数复用静态内容，builder 只创建 Transform（GPU 合成），
+      // 去掉 Opacity（saveLayer）与 scale（每帧重绘），避免弹出时卡顿
       body: AnimatedBuilder(
         animation: _ctrl,
         builder: (context, child) {
           final t = const Cubic(0.22, 1, 0.36, 1).transform(_ctrl.value);
-          return Opacity(
-            opacity: t.clamp(0.0, 1.0),
-            child: Transform.translate(
-              offset: Offset(0, 24 * (1 - t)),
-              child: Transform.scale(scale: 0.94 + 0.06 * t, child: child),
-            ),
+          return Transform.translate(
+            offset: Offset(0, 24 * (1 - t)),
+            child: child,
           );
         },
         child: Stack(children: [
           // 全屏半透明背景 + 模糊（对齐参考项目 backdrop-blur-xl）
           Positioned.fill(
             child: BackdropFilter(
-              filter: ui.ImageFilter.blur(sigmaX: 24, sigmaY: 24),
+              filter: ui.ImageFilter.blur(sigmaX: 15, sigmaY: 15),
               child: Container(color: _bg),
             ),
           ),

@@ -53,7 +53,8 @@ enum FeatureIconVariant { warm, green, blue, pink }
 const Color _lightPrimary = Color(0xFF7C3AED);
 const Color _lightGradientStart = Color(0xFFA78BFA);
 const Color _lightGradientEnd = Color(0xFF7C3AED);
-const Color _lightBgTint = Color(0xFFFFFFFF);
+/// 浅色主题页面背景：柔和中性灰白（避免经典模式纯白刺眼）
+const Color _lightBgTint = Color(0xFFF4F4F8);
 
 /// 深色模式调色板（加深加饱和紫色，在纯深灰底上更明显）
 const Color _darkPrimary = Color(0xFFA78BFA);
@@ -152,10 +153,10 @@ class AppColors {
       ];
 
   static Color glassCardColor(bool isLight) =>
-      isLight ? Colors.white.withValues(alpha: 0.78) : kDarkCard.withValues(alpha: 0.72);
+      isLight ? Colors.white.withValues(alpha: 0.78) : kDarkCard;
 
   static Color glassSidebarColor(bool isLight) =>
-      isLight ? Colors.white.withValues(alpha: 0.65) : kDarkSidebar.withValues(alpha: 0.6);
+      isLight ? Colors.white.withValues(alpha: 0.65) : kDarkSidebar;
 
   static Color glassBorderColor(bool isLight) =>
       isLight ? Colors.black.withValues(alpha: 0.06) : kDarkBorder;

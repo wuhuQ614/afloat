@@ -371,11 +371,17 @@ class GlassSendButton extends StatelessWidget {
 }
 
 /// 毛玻璃悬浮按钮（替代 FloatingActionButton）
+///
+/// 设计要点：
+/// - 底色是真正的毛玻璃：BackdropFilter 模糊下层 + 半透明白/深填充
+///   （**不**用实色紫渐变挡住模糊效果）
+/// - 品牌紫色只作为强调色：图标 + 微妙的紫色外光晕
 class GlassFab extends StatelessWidget {
   final VoidCallback? onPressed;
   final Widget icon;
   final String? tooltip;
   final double blur;
+  final bool isLight;
 
   const GlassFab({
     super.key,
@@ -383,10 +389,18 @@ class GlassFab extends StatelessWidget {
     required this.icon,
     this.tooltip,
     this.blur = 18,
+    this.isLight = true,
   });
 
   @override
   Widget build(BuildContext context) {
+    // 半透明白（亮色）/ 透明深灰（深色），让背后模糊层透出形成真正的毛玻璃
+    final base = isLight
+        ? Colors.white.withValues(alpha: 0.55)
+        : Colors.white.withValues(alpha: 0.10);
+    final borderColor = isLight
+        ? Colors.white.withValues(alpha: 0.7)
+        : Colors.white.withValues(alpha: 0.18);
     return ClipRRect(
       borderRadius: BorderRadius.circular(28),
       child: BackdropFilter(
@@ -395,7 +409,7 @@ class GlassFab extends StatelessWidget {
           color: Colors.transparent,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(28),
-            side: BorderSide(color: Colors.white.withValues(alpha: 0.35), width: 1.2),
+            side: BorderSide(color: borderColor, width: 1.2),
           ),
           child: InkWell(
             onTap: onPressed,
@@ -405,16 +419,18 @@ class GlassFab extends StatelessWidget {
               height: 56,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
-                gradient: const LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [Color(0xFFA78BFA), Color(0xFF7C3AED)],
-                ),
+                color: base,
                 boxShadow: [
+                  // 中性投影 + 紫色微光（弱化为主角，不抢毛玻璃的戏）
                   BoxShadow(
-                    color: kPrimary.withValues(alpha: 0.5),
+                    color: Colors.black.withValues(alpha: isLight ? 0.10 : 0.30),
                     blurRadius: 16,
                     offset: const Offset(0, 4),
+                  ),
+                  BoxShadow(
+                    color: const Color(0xFF7C3AED).withValues(alpha: isLight ? 0.18 : 0.32),
+                    blurRadius: 18,
+                    spreadRadius: 0,
                   ),
                 ],
               ),

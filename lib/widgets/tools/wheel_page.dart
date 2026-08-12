@@ -10,6 +10,7 @@ library;
 
 import 'dart:async';
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show HapticFeedback;
 import '../../services/api_service.dart';
@@ -34,16 +35,36 @@ class _WheelTabPageState extends State<WheelTabPage>
   String _activeId = '';
   bool _loaded = false;
 
-  // 旋转状态
+  // 旋转动画控制器（由 Flutter 渲染管线驱动，不触发全页重建）
+  late final AnimationController _spinCtrl;
   double _rotation = 0; // 当前角度（度）
+  double _spinStart = 0; // 本次旋转起始角度
+  double _spinTarget = 0; // 本次旋转目标角度
   bool _isSpinning = false;
   WheelItem? _result;
   int _resultIndex = -1;
-  Timer? _animTimer;
+
+  // ==================== Image 预渲染缓存 ====================
+  // 关键：转盘绘制为 ui.Image（GPU 纹理），旋转时每帧只做 drawImage（1 次 GPU 纹理复制），
+  // 而非 drawPicture（回放 128 个绘制命令）。这是参考项目 CSS transform 的等价方案。
+  ui.Picture? _wheelPicture; // 过渡用：toImage 完成前用 drawPicture 显示
+  ui.Image? _wheelImage;     // 最终目标：GPU 纹理，旋转期间用它
+  int _imageVersion = 0;     // 版本号：防止异步 toImage 竞态
+  List<WheelItem>? _picItems;
+  int _picResultIndex = -999;
+  bool _picHasResult = false;
+  bool _picIsLight = true;
 
   @override
   void initState() {
     super.initState();
+    _spinCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 4000),
+    );
+    // 持久注册：避免每次 _spin 累积 listener
+    _spinCtrl.addListener(_onSpinTick);
+    _spinCtrl.addStatusListener(_onSpinStatus);
     _load();
   }
 
@@ -63,6 +84,11 @@ class _WheelTabPageState extends State<WheelTabPage>
         orElse: () => _collections.first);
   }
 
+  /// 参考项目不做截断，直接使用全部 items
+  List<WheelItem> get _displayItems {
+    return _current?.items ?? const [];
+  }
+
   Future<void> _save() async {
     await WheelStorage.save(_collections, _activeId);
   }
@@ -70,9 +96,15 @@ class _WheelTabPageState extends State<WheelTabPage>
   // ==================== 旋转 ====================
   double _easeOutCubic(double t) => 1 - math.pow(1 - t, 3).toDouble();
 
+  // tick 相关状态（持久 listener，不在 _spin 中重复添加）
+  double _lastTickAngle = 0;
+  double _tickStep = 45;
+  // 节流：最小 60ms 间隔，避免高速旋转时平台通道风暴
+  int _lastTickMs = 0;
+
   void _spin() {
     if (_isSpinning) return;
-    final items = _current?.items ?? [];
+    final items = _displayItems;
     if (items.isEmpty) return;
 
     setState(() {
@@ -82,34 +114,34 @@ class _WheelTabPageState extends State<WheelTabPage>
     });
     ToolsAudio.instance.playTick();
 
-    final start = _rotation;
-    final target = start + 2160 + math.Random().nextDouble() * 360;
-    const duration = 4000;
-    final tickStep = 360 / math.max(items.length, 8);
-    double lastTickAngle = start;
-    final sw = Stopwatch()..start();
+    _spinStart = _rotation;
+    _spinTarget = _spinStart + 2160 + math.Random().nextDouble() * 360;
+    _tickStep = 360 / math.max(items.length, 8);
+    _lastTickAngle = _spinStart;
+    _lastTickMs = DateTime.now().millisecondsSinceEpoch;
 
-    _animTimer?.cancel();
-    _animTimer = Timer.periodic(const Duration(milliseconds: 16), (timer) {
-      final elapsed = sw.elapsedMilliseconds;
-      final progress = math.min(elapsed / duration, 1.0);
-      final cur = start + (target - start) * _easeOutCubic(progress);
+    _spinCtrl.forward(from: 0);
+  }
 
-      // tick 音效 + 振动（对齐参考项目 playWheelTick + vibrate(10)）
-      if ((cur - lastTickAngle).abs() >= tickStep) {
-        lastTickAngle = cur;
+  // 在 initState 中一次性注册，避免每次 _spin 都累积 listener
+  void _onSpinTick() {
+    final cur = _spinStart + (_spinTarget - _spinStart) * _easeOutCubic(_spinCtrl.value);
+    if ((cur - _lastTickAngle).abs() >= _tickStep) {
+      _lastTickAngle = cur;
+      // 节流：高速旋转时跳过部分 tick 音效，避免平台通道风暴（每秒最多 ~16 次）
+      final now = DateTime.now().millisecondsSinceEpoch;
+      if (now - _lastTickMs >= 60) {
+        _lastTickMs = now;
         ToolsAudio.instance.playWheelTick();
         HapticFeedback.selectionClick();
       }
+    }
+  }
 
-      setState(() => _rotation = cur);
-
-      if (progress >= 1) {
-        timer.cancel();
-        sw.stop();
-        _finishSpin(target, items);
-      }
-    });
+  void _onSpinStatus(AnimationStatus status) {
+    if (status == AnimationStatus.completed) {
+      _finishSpin(_spinTarget, _displayItems);
+    }
   }
 
   void _finishSpin(double target, List<WheelItem> items) {
@@ -127,8 +159,10 @@ class _WheelTabPageState extends State<WheelTabPage>
       }
     }
     if (found == -1) found = items.length - 1;
-    ToolsAudio.instance.playNumberDing(); // 对齐参考项目 playNumberDing
-    HapticFeedback.heavyImpact(); // 对齐参考项目 vibrate([50,50,100])
+    // 更新 _rotation 为最终角度，避免旋转结束后回弹
+    _rotation = target;
+    ToolsAudio.instance.playNumberDing();
+    HapticFeedback.heavyImpact();
     setState(() {
       _isSpinning = false;
       _result = items[found];
@@ -143,9 +177,76 @@ class _WheelTabPageState extends State<WheelTabPage>
 
   @override
   void dispose() {
-    _animTimer?.cancel();
+    _spinCtrl.removeListener(_onSpinTick);
+    _spinCtrl.removeStatusListener(_onSpinStatus);
+    _spinCtrl.dispose();
     _menuEntry?.remove();
+    _wheelPicture?.dispose();
+    _wheelImage?.dispose();
     super.dispose();
+  }
+
+  /// 重建转盘缓存：生成 ui.Picture（同步，立即显示）+ ui.Image（异步，GPU 纹理）
+  /// [dpr] 设备像素比：按实际 DPR 光栅化纹理，避免高分屏放大模糊
+  void _rebuildWheelPicture(
+      List<WheelItem> items, int resultIndex, bool hasResult, bool isLight, double dpr) {
+    if (items.isEmpty) {
+      _wheelPicture?.dispose();
+      _wheelPicture = null;
+      _wheelImage?.dispose();
+      _wheelImage = null;
+      _picItems = items;
+      _picResultIndex = resultIndex;
+      _picHasResult = hasResult;
+      _picIsLight = isLight;
+      return;
+    }
+    // 内容完全一致则复用
+    if (_wheelPicture != null &&
+        _picResultIndex == resultIndex &&
+        _picHasResult == hasResult &&
+        _picIsLight == isLight &&
+        _sameWheelItems(_picItems, items)) {
+      return;
+    }
+    // 1. 同步生成 Picture（立即可用于显示）
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder, const Rect.fromLTWH(0, 0, 320, 320));
+    _drawWheel(canvas, const Size(320, 320), items, resultIndex, hasResult, isLight);
+    final pic = recorder.endRecording();
+    _wheelPicture?.dispose();
+    _wheelPicture = pic;
+    _picItems = items;
+    _picResultIndex = resultIndex;
+    _picHasResult = hasResult;
+    _picIsLight = isLight;
+
+    // 2. 异步转换为 Image（GPU 纹理，按设备像素比光栅化，解决高分屏模糊）
+    _imageVersion++;
+    final version = _imageVersion;
+    final px = (320 * dpr).round().clamp(320, 960);
+    pic.toImage(px, px).then((image) {
+      if (version != _imageVersion || !mounted) {
+        image.dispose();
+        return;
+      }
+      _wheelImage?.dispose();
+      _wheelImage = image;
+      // 不调 setState：旋转期间不需要重建，下次 build 自然会用 Image
+      // 非旋转状态需要刷新一次以切换到 Image 渲染
+      if (!_isSpinning) setState(() {});
+    });
+  }
+
+  /// 按内容比较两个 WheelItem 列表：长度相同且每项 label+weight 一致
+  bool _sameWheelItems(List<WheelItem>? a, List<WheelItem>? b) {
+    if (identical(a, b)) return true;
+    if (a == null || b == null) return false;
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i].label != b[i].label || a[i].weight != b[i].weight) return false;
+    }
+    return true;
   }
 
   @override
@@ -155,153 +256,203 @@ class _WheelTabPageState extends State<WheelTabPage>
       return const Center(child: CircularProgressIndicator());
     }
     final cur = _current;
-    return Stack(
+    final displayItems = _displayItems;
+    final hasResult = _result != null && !_isSpinning;
+    // 重建转盘缓存（旋转动画不会触发），按设备像素比光栅化避免模糊
+    final dpr = MediaQuery.devicePixelRatioOf(context);
+    _rebuildWheelPicture(displayItems, _resultIndex, hasResult, c.isLight, dpr);
+    // 改用 Column 布局，避免 Stack+Center+Positioned 导致的视觉偏移
+    return Column(
       children: [
-        Center(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const SizedBox(height: 40),
-                // 转盘
-                SizedBox(
-                  width: 320,
-                  height: 320,
-                  child: Stack(alignment: Alignment.center, children: [
-                    Transform.rotate(
-                      angle: _rotation * math.pi / 180,
-                      child: CustomPaint(
-                        size: const Size(320, 320),
-                        painter: _WheelPainter(
-                          items: cur?.items ?? [],
-                          resultIndex: _resultIndex,
-                          hasResult: _result != null && !_isSpinning,
-                          isLight: c.isLight,
-                        ),
-                      ),
-                    ),
-                    // 指针（固定朝上）
-                    const _Pointer(),
-                  ]),
-                ),
-                const SizedBox(height: 24),
-                // 结果
-                SizedBox(
-                  height: 48,
-                  child: (_result != null && !_isSpinning)
-                      ? Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 24, vertical: 10),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFF6366F1),
-                            borderRadius: BorderRadius.circular(999),
-                          ),
-                          child: Text('结果：${_result!.label}',
-                              style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 18,
-                                  fontWeight: FontWeight.w800)),
-                        )
-                      : const SizedBox(),
-                ),
-                const SizedBox(height: 16),
-                // 底部双按钮（对齐参考项目：编辑项目 flex-1 + 暴力转 flex-2）
-                SizedBox(
-                  width: 320,
-                  child: Row(children: [
-                    // 编辑项目（flex-1，小字）
-                    Expanded(
-                      flex: 1,
-                      child: GestureDetector(
-                        onTap: _isSpinning ? null : _openSettings,
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(vertical: 16),
-                          decoration: BoxDecoration(
-                            color: c.isLight ? Colors.white : const Color(0xFF1F2937),
-                            borderRadius: BorderRadius.circular(16),
-                            border: Border.all(
-                                color: c.isLight
-                                    ? const Color(0xFFE5E7EB)
-                                    : const Color(0xFF374151),
-                                width: 2),
-                          ),
-                          child: const Center(
-                            child: Text('编辑项目',
-                                style: TextStyle(
-                                    fontSize: 14, fontWeight: FontWeight.w900)),
-                          ),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 16),
-                    // 暴力转（flex-2，大字）
-                    Expanded(
-                      flex: 2,
-                      child: GestureDetector(
-                        onTap: _isSpinning ? null : _spin,
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(vertical: 16),
-                          decoration: BoxDecoration(
-                            color: _isSpinning
-                                ? const Color(0xFF9CA3AF)
-                                : (c.isLight ? Colors.white : const Color(0xFF1F2937)),
-                            borderRadius: BorderRadius.circular(16),
-                            border: Border.all(
-                                color: _isSpinning
-                                    ? Colors.transparent
-                                    : (c.isLight
-                                        ? const Color(0xFFE5E7EB)
-                                        : const Color(0xFF374151)),
-                                width: 2),
-                            boxShadow: _isSpinning
-                                ? null
-                                : [
-                                    BoxShadow(
-                                        color: Colors.black.withValues(alpha: 0.08),
-                                        blurRadius: 8,
-                                        offset: const Offset(0, 2)),
-                                  ],
-                          ),
-                          child: Center(
-                            child: Text(
-                              _isSpinning ? '狂转中...' : '暴力转',
-                              style: TextStyle(
-                                  fontSize: 20,
-                                  fontWeight: FontWeight.w900,
-                                  color: _isSpinning
-                                      ? Colors.white.withValues(alpha: 0.7)
-                                      : (c.isLight
-                                          ? const Color(0xFF374151)
-                                          : const Color(0xFFE5E7EB))),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ]),
-                ),
-              ],
-            ),
-          ),
-        ),
-        // 场景切换胶囊（对齐参考项目：右上角悬浮 rounded-full 胶囊按钮）
-        Positioned(
-          top: 16,
-          left: 16,
-          right: 16,
+        // 顶部场景胶囊
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
               _ScenePillButton(
                 key: _pillKey,
                 sceneName: cur?.name ?? '—',
-                isGlass: widget.state.uiStyle == 'glass',
+                isGlass: widget.state.isGlassUI,
                 darkMode: !c.isLight,
                 menuOpen: _menuEntry != null,
                 onTap: _isSpinning ? null : _toggleMenu,
               ),
             ],
+          ),
+        ),
+        // 中间内容区（垂直居中）
+        Expanded(
+          child: Align(
+            alignment: Alignment.center,
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // 转盘
+                  // 性能优化：RepaintBoundary + SizedBox + Stack + _Pointer 都在
+                  // AnimatedBuilder 外面，动画期间不重建。
+                  // 旋转的转盘优先用 ui.Image（RawImage，GPU 纹理，1 次 drawImage）
+                  // 其次用 ui.Picture（CustomPaint，回放绘制命令）
+                  RepaintBoundary(
+                    child: SizedBox(
+                      width: 320,
+                      height: 320,
+                      child: Stack(alignment: Alignment.center, children: [
+                        // 画布背景圆（对齐参考项目 canvas backgroundColor）
+                        Container(
+                          width: 320,
+                          height: 320,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: c.isLight
+                                ? const Color(0xFFF3F4F6)
+                                : const Color(0xFF4B5563),
+                          ),
+                        ),
+                        // 旋转的转盘（AnimatedBuilder 只重建 Transform.rotate）
+                        if (_wheelImage != null)
+                          AnimatedBuilder(
+                            animation: _spinCtrl,
+                            child: RawImage(
+                              image: _wheelImage,
+                              width: 320,
+                              height: 320,
+                              fit: BoxFit.fill,
+                              filterQuality: FilterQuality.medium,
+                            ),
+                            builder: (context, child) {
+                              final curRotation = _isSpinning
+                                  ? _spinStart + (_spinTarget - _spinStart) * _easeOutCubic(_spinCtrl.value)
+                                  : _rotation;
+                              return Transform.rotate(
+                                angle: curRotation * math.pi / 180,
+                                child: child,
+                              );
+                            },
+                          )
+                        else if (_wheelPicture != null)
+                          AnimatedBuilder(
+                            animation: _spinCtrl,
+                            child: CustomPaint(
+                              size: const Size(320, 320),
+                              painter: _WheelPicturePainter(_wheelPicture!),
+                            ),
+                            builder: (context, child) {
+                              final curRotation = _isSpinning
+                                  ? _spinStart + (_spinTarget - _spinStart) * _easeOutCubic(_spinCtrl.value)
+                                  : _rotation;
+                              return Transform.rotate(
+                                angle: curRotation * math.pi / 180,
+                                child: child,
+                              );
+                            },
+                          ),
+                        // 指针（固定不动，不参与动画重建）
+                        const _Pointer(),
+                      ]),
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                  // 结果
+                  SizedBox(
+                    height: 48,
+                    child: (_result != null && !_isSpinning)
+                        ? Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 24, vertical: 10),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF6366F1),
+                              borderRadius: BorderRadius.circular(999),
+                            ),
+                            child: Text('结果：${_result!.label}',
+                                style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.w800)),
+                          )
+                        : const SizedBox(),
+                  ),
+                  const SizedBox(height: 16),
+                  // 底部双按钮（对齐参考项目：编辑项目 flex-1 + 暴力转 flex-2）
+                  SizedBox(
+                    width: 320,
+                    child: Row(children: [
+                      // 编辑项目（flex-1，小字）
+                      Expanded(
+                        flex: 1,
+                        child: GestureDetector(
+                          onTap: _isSpinning ? null : _openSettings,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(vertical: 16),
+                            decoration: BoxDecoration(
+                              color: c.isLight ? Colors.white : const Color(0xFF1F2937),
+                              borderRadius: BorderRadius.circular(16),
+                              border: Border.all(
+                                  color: c.isLight
+                                      ? const Color(0xFFE5E7EB)
+                                      : const Color(0xFF374151),
+                                  width: 2),
+                            ),
+                            child: const Center(
+                              child: Text('编辑项目',
+                                  style: TextStyle(
+                                      fontSize: 14, fontWeight: FontWeight.w900)),
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 16),
+                      // 暴力转（flex-2，大字）
+                      Expanded(
+                        flex: 2,
+                        child: GestureDetector(
+                          onTap: _isSpinning ? null : _spin,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(vertical: 16),
+                            decoration: BoxDecoration(
+                              color: _isSpinning
+                                  ? const Color(0xFF9CA3AF)
+                                  : (c.isLight ? Colors.white : const Color(0xFF1F2937)),
+                              borderRadius: BorderRadius.circular(16),
+                              border: Border.all(
+                                  color: _isSpinning
+                                      ? Colors.transparent
+                                      : (c.isLight
+                                          ? const Color(0xFFE5E7EB)
+                                          : const Color(0xFF374151)),
+                                  width: 2),
+                              boxShadow: _isSpinning
+                                  ? null
+                                  : [
+                                      BoxShadow(
+                                          color: Colors.black.withValues(alpha: 0.08),
+                                          blurRadius: 8,
+                                          offset: const Offset(0, 2)),
+                                    ],
+                            ),
+                            child: Center(
+                              child: Text(
+                                _isSpinning ? '狂转中...' : '暴力转',
+                                style: TextStyle(
+                                    fontSize: 20,
+                                    fontWeight: FontWeight.w900,
+                                    color: _isSpinning
+                                        ? Colors.white.withValues(alpha: 0.7)
+                                        : (c.isLight
+                                            ? const Color(0xFF374151)
+                                            : const Color(0xFFE5E7EB))),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ]),
+                  ),
+                ],
+              ),
+            ),
           ),
         ),
       ],
@@ -343,7 +494,7 @@ class _WheelTabPageState extends State<WheelTabPage>
             child: _SceneMenuCard(
               collections: _collections,
               activeId: _activeId,
-              isGlass: widget.state.uiStyle == 'glass',
+              isGlass: widget.state.isGlassUI,
               darkMode: !c.isLight,
               provinceExpanded: _provinceExpanded,
               canDelete: _collections.length > 1,
@@ -579,7 +730,7 @@ class _WheelTabPageState extends State<WheelTabPage>
       pageBuilder: (_, __, ___) => WheelSettingsPage(
         collection: cur,
         darkMode: !AppColors.of(context).isLight,
-        glassMode: widget.state.uiStyle == 'glass',
+        glassMode: widget.state.isGlassUI,
         canDelete: _collections.length > 1,
       ),
     ))
@@ -602,99 +753,130 @@ class _WheelTabPageState extends State<WheelTabPage>
   }
 }
 
-/// 转盘绘制器
-class _WheelPainter extends CustomPainter {
-  final List<WheelItem> items;
-  final int resultIndex;
-  final bool hasResult;
-  final bool isLight;
+/// 转盘绘制核心：仅被 _rebuildWheelPicture 走 Picture 预渲染时调用
+/// 完全复刻参考项目 WheelTab.jsx:169-228 的 Canvas 绘制逻辑
+void _drawWheel(Canvas canvas, Size size, List<WheelItem> items,
+    int resultIndex, bool hasResult, bool isLight) {
+  const double cx = 160.0;
+  const double cy = 160.0;
+  const double radius = 150.0;
+  if (items.isEmpty) return;
+  final total =
+      items.fold<double>(0, (s, i) => s + (i.weight <= 0 ? 1 : i.weight));
 
-  _WheelPainter({
-    required this.items,
-    required this.resultIndex,
-    required this.hasResult,
-    required this.isLight,
-  });
+  // 画布尺寸与 320 不一致时（兜底），按比例缩放
+  if (size.width != 320 || size.height != 320) {
+    final scaleX = size.width / 320;
+    final scaleY = size.height / 320;
+    canvas.save();
+    canvas.scale(scaleX, scaleY);
+    _drawWheelCore(canvas, items, resultIndex, hasResult, isLight, total, cx, cy, radius);
+    canvas.restore();
+    return;
+  }
+  _drawWheelCore(canvas, items, resultIndex, hasResult, isLight, total, cx, cy, radius);
+}
+
+/// 复刻参考项目 Canvas 绘制（WheelTab.jsx:189-228）
+void _drawWheelCore(
+  Canvas canvas,
+  List<WheelItem> items,
+  int resultIndex,
+  bool hasResult,
+  bool isLight,
+  double total,
+  double cx,
+  double cy,
+  double radius,
+) {
+  // 参考项目：curAngle = 0（从 3 点钟方向开始）
+  double curAngle = 0;
+  for (var i = 0; i < items.length; i++) {
+    final w = items[i].weight <= 0 ? 1.0 : items[i].weight;
+    final sweep = (w / total) * 2 * math.pi;
+    final color = Color(kSectorColors[i % kSectorColors.length]);
+
+    final path = Path()
+      ..moveTo(cx, cy)
+      ..arcTo(
+          Rect.fromCircle(center: Offset(cx, cy), radius: radius),
+          curAngle,
+          sweep,
+          false)
+      ..close();
+    // 填充扇区
+    canvas.drawPath(path, Paint()..color = color);
+
+    // 非中奖扇区柔化（轻量遮罩，保留扇区底色可辨，避免整盘发黑）
+    if (hasResult && i != resultIndex) {
+      canvas.drawPath(
+          path, Paint()..color = Colors.black.withValues(alpha: 0.30));
+    }
+
+    // 分割线：固定 1.5 宽度
+    // 参考项目：darkMode ? 'rgba(0,0,0,0.3)' : 'rgba(255,255,255,0.8)'
+    canvas.drawPath(
+      path,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.5
+        ..color = isLight
+            ? Colors.white.withValues(alpha: 0.8)
+            : Colors.black.withValues(alpha: 0.3),
+    );
+
+    // 文字：始终绘制，bold 11px，沿扇区角平分线靠外
+    // 参考项目：textAlign='right', fillText(item.label, radius - 18, 4)
+    canvas.save();
+    canvas.translate(cx, cy);
+    canvas.rotate(curAngle + sweep / 2);
+    // 非中奖扇区文字适当降透明度（比旧版提亮，保持可读）
+    final textAlpha = (hasResult && i != resultIndex) ? 0.55 : 1.0;
+    final tp = TextPainter(
+      text: TextSpan(
+        text: items[i].label,
+        style: TextStyle(
+          fontSize: 11,
+          fontWeight: FontWeight.bold,
+          color: isLight
+              ? Colors.white.withValues(alpha: textAlpha)
+              : Colors.white.withValues(alpha: textAlpha * 0.95),
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+      maxLines: 1,
+    )..layout();
+    // 对齐参考项目：textAlign='right'，绘制在 radius-18 处
+    tp.paint(canvas, Offset(radius - 18 - tp.width, -tp.height / 2 + 2));
+    canvas.restore();
+
+    curAngle += sweep;
+  }
+
+  // 不再叠加整体黑色遮罩：旧版 0.2 全盘压暗是"黑"的主因之一，
+  // 仅靠非中奖扇区柔化即可形成中奖扇区高亮对比。
+}
+
+/// 预渲染图片绘制器：只画一张缓存好的 [ui.Picture]，旋转动画不再触发任何绘制
+class _WheelPicturePainter extends CustomPainter {
+  final ui.Picture picture;
+  const _WheelPicturePainter(this.picture);
 
   @override
   void paint(Canvas canvas, Size size) {
-    const cx = 160.0, cy = 160.0, radius = 150.0;
-    if (items.isEmpty) return;
-    final total =
-        items.fold<double>(0, (s, i) => s + (i.weight <= 0 ? 1 : i.weight));
-
-    double curAngle = -math.pi / 2; // 从 12 点钟开始（参考 Canvas 0° 在 3 点，但整体旋转后由公式补偿；这里从顶部起画）
-    for (var i = 0; i < items.length; i++) {
-      final w = items[i].weight <= 0 ? 1.0 : items[i].weight;
-      final sweep = (w / total) * 2 * math.pi;
-      final color = Color(kSectorColors[i % kSectorColors.length]);
-
-      final path = Path()
-        ..moveTo(cx, cy)
-        ..arcTo(
-            Rect.fromCircle(center: const Offset(cx, cy), radius: radius),
-            curAngle,
-            sweep,
-            false)
-        ..close();
-      canvas.drawPath(path, Paint()..color = color);
-
-      // 非中奖扇区遮罩
-      if (hasResult && i != resultIndex) {
-        canvas.drawPath(path, Paint()..color = Colors.black.withValues(alpha: 0.55));
-      }
-      // 分割线
-      canvas.drawPath(
-        path,
-        Paint()
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 1.5
-          ..color = isLight
-              ? Colors.white.withValues(alpha: 0.8)
-              : Colors.black.withValues(alpha: 0.3),
-      );
-
-      // 文字（沿扇区角平分线，靠外）
-      canvas.save();
-      canvas.translate(cx, cy);
-      canvas.rotate(curAngle + sweep / 2);
-      final tp = TextPainter(
-        text: TextSpan(
-          text: items[i].label,
-          style: TextStyle(
-            fontSize: 11,
-            fontWeight: FontWeight.bold,
-            color: (hasResult && i != resultIndex)
-                ? Colors.white.withValues(alpha: 0.3)
-                : Colors.white,
-          ),
-        ),
-        textDirection: TextDirection.ltr,
-        maxLines: 1,
-        ellipsis: '…',
-      )..layout(maxWidth: radius - 26);
-      // 右对齐：画在 (radius-18) 处
-      tp.paint(canvas, Offset(radius - 18 - tp.width, -tp.height / 2));
-      canvas.restore();
-
-      curAngle += sweep;
+    canvas.save();
+    // 居中绘制：Picture 录制时基于 320×320 坐标
+    final double scaleX = size.width / 320;
+    final double scaleY = size.height / 320;
+    if (scaleX != 1.0 || scaleY != 1.0) {
+      canvas.scale(scaleX, scaleY);
     }
-
-    // 整体遮罩
-    if (hasResult) {
-      canvas.drawCircle(
-        const Offset(cx, cy),
-        radius,
-        Paint()..color = Colors.black.withValues(alpha: 0.2),
-      );
-    }
+    canvas.drawPicture(picture);
+    canvas.restore();
   }
 
   @override
-  bool shouldRepaint(covariant _WheelPainter old) =>
-      old.items != items ||
-      old.resultIndex != resultIndex ||
-      old.hasResult != hasResult;
+  bool shouldRepaint(covariant _WheelPicturePainter old) => !identical(old.picture, picture);
 }
 
 /// 水滴指针（固定朝上，位于转盘顶部中心）

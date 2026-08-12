@@ -244,11 +244,18 @@ class ApiService {
     void Function(String chunk)? onReasoning,
     void Function(String chunk)? onDelta,
     double? temperature,
-  }) =>
-      streamChatWithTools(messages, systemPrompt, config: config, onReasoning: onReasoning, onDelta: onDelta, temperature: temperature);
+    Map<String, dynamic>? extraParams,
+  }) async {
+    final resp = await streamChatWithTools(messages, systemPrompt,
+        config: config, onReasoning: onReasoning, onDelta: onDelta, temperature: temperature, extraParams: extraParams);
+    return resp.content ?? '';
+  }
 
-  /// 流式对话（SSE），支持 tools。与 streamChat 相同但可传入 tools 参数。
-  static Future<String> streamChatWithTools(
+  /// 复用静态 http.Client（流式请求），避免每次请求新建不关闭
+  static final http.Client _sharedClient = http.Client();
+
+  /// 流式对话（SSE），支持 tools。增量累积 tool_calls，返回 AIResponse。
+  static Future<AIResponse> streamChatWithTools(
     List<Map<String, dynamic>> messages,
     String systemPrompt, {
     ApiConfig? config,
@@ -256,10 +263,16 @@ class ApiService {
     void Function(String chunk)? onDelta,
     double? temperature,
     List<Map<String, dynamic>>? tools,
+    Map<String, dynamic>? extraParams,
   }) async {
     final cfg = config;
-    if (cfg == null || !cfg.ready) return '';
-    String full = '';
+    if (cfg == null || !cfg.ready) return const AIResponse(content: null, toolCalls: []);
+    final contentBuf = StringBuffer();
+    final reasoningBuf = StringBuffer();
+    // 按 index 增量累积 tool_calls
+    final tcId = <int, String>{};
+    final tcName = <int, String>{};
+    final tcArgs = <int, StringBuffer>{};
     try {
       final body = <String, dynamic>{
         'model': _realModel(cfg.model),
@@ -274,14 +287,17 @@ class ApiService {
         body['tools'] = tools;
         body['tool_choice'] = 'auto';
       }
+      if (extraParams != null && extraParams.isNotEmpty) {
+        body.addAll(extraParams);
+      }
       final req = http.Request('POST', Uri.parse(cfg.effectiveUrl));
       req.headers.addAll({
         'Content-Type': 'application/json',
         'Authorization': 'Bearer ${cfg.key}',
       });
       req.body = jsonEncode(body);
-      final streamed = await http.Client().send(req).timeout(const Duration(seconds: 120));
-      if (streamed.statusCode != 200) return '';
+      final streamed = await _sharedClient.send(req).timeout(const Duration(seconds: 120));
+      if (streamed.statusCode != 200) return const AIResponse(content: null, toolCalls: []);
       final lines = streamed.stream
           .transform(utf8.decoder)
           .transform(const LineSplitter());
@@ -296,23 +312,59 @@ class ApiService {
           final choices = obj['choices'] as List?;
           if (choices == null || choices.isEmpty) continue;
           final delta = (choices.first as Map<String, dynamic>)['delta'] as Map<String, dynamic>? ?? {};
+          // reasoning_content
           final reasoning = delta['reasoning_content'] as String?;
-          if (reasoning != null && reasoning.isNotEmpty && onReasoning != null) {
-            onReasoning(reasoning);
+          if (reasoning != null && reasoning.isNotEmpty) {
+            reasoningBuf.write(reasoning);
+            if (onReasoning != null) onReasoning(reasoning);
           }
+          // content
           final content = delta['content'] as String?;
           if (content != null && content.isNotEmpty) {
-            full += content;
+            contentBuf.write(content);
             if (onDelta != null) onDelta(content);
           }
+          // tool_calls 增量累积
+          final toolCallsDelta = delta['tool_calls'] as List?;
+          if (toolCallsDelta != null) {
+            for (final tcRaw in toolCallsDelta) {
+              final tc = tcRaw as Map<String, dynamic>;
+              final idx = (tc['index'] as num?)?.toInt() ?? 0;
+              final id = tc['id'] as String?;
+              if (id != null && id.isNotEmpty) tcId[idx] = id;
+              final fn = tc['function'] as Map<String, dynamic>?;
+              if (fn != null) {
+                final name = fn['name'] as String?;
+                if (name != null && name.isNotEmpty) tcName[idx] = name;
+                final args = fn['arguments'] as String?;
+                if (args != null) {
+                  tcArgs.putIfAbsent(idx, StringBuffer.new).write(args);
+                }
+              }
+            }
+          }
         } catch (_) {
-          // 忽略单行解析失败（可能为注释行等）
+          // 忽略单行解析失败
         }
       }
     } catch (_) {
       // 流中断
     }
-    return full;
+    // 组装 tool_calls
+    final toolCalls = <ToolCall>[];
+    final allIdx = <int>{...tcId.keys, ...tcName.keys, ...tcArgs.keys};
+    for (final idx in allIdx) {
+      toolCalls.add(ToolCall(
+        id: tcId[idx] ?? '',
+        name: tcName[idx] ?? '',
+        arguments: tcArgs[idx]?.toString() ?? '{}',
+      ));
+    }
+    return AIResponse(
+      content: contentBuf.toString(),
+      toolCalls: toolCalls,
+      reasoning: reasoningBuf.toString(),
+    );
   }
 
   /// 剥离任意位置的 markdown 代码块围栏（兼容截断时只有开头围栏的情况）
@@ -478,6 +530,44 @@ class ApiService {
     // Gemini 系列将 thinking budget 设为 0
     if (m.contains('gemini')) {
       p['thinking_config'] = {'thinking_budget': 0};
+    }
+    return p;
+  }
+
+  /// 开启模型深度思考的请求参数：与 [noThinkingParams] 相反。
+  /// 用于对话助手"思考模式"开启时显式请求思考过程。
+  static Map<String, dynamic> thinkingParams(String modelName) {
+    final m = _realModel(modelName).toLowerCase();
+    final p = <String, dynamic>{};
+    // enable_thinking: true 适用于多数国产模型
+    if (m.contains('deepseek') ||
+        m.contains('qwen') ||
+        m.contains('glm') ||
+        m.contains('kimi') ||
+        m.contains('moonshot') ||
+        m.contains('doubao') ||
+        m.contains('hunyuan') ||
+        m.contains('baichuan') ||
+        m.contains('spark') ||
+        m.contains('ernie') ||
+        m.contains('wenxin') ||
+        m.contains('step') ||
+        m.contains('yi-') ||
+        m.contains('minimax') ||
+        m.contains('grok')) {
+      p['enable_thinking'] = true;
+    }
+    // OpenAI o 系列使用 high 完全开启推理
+    if (m.startsWith('o1') || m.startsWith('o3') || m.startsWith('o4')) {
+      p['reasoning_effort'] = 'high';
+    }
+    // Claude 系列启用 extended thinking
+    if (m.contains('claude')) {
+      p['thinking'] = {'type': 'enabled', 'budget_tokens': 2048};
+    }
+    // Gemini 系列设置 thinking budget
+    if (m.contains('gemini')) {
+      p['thinking_config'] = {'thinking_budget': 16384};
     }
     return p;
   }

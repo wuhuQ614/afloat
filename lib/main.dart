@@ -2,8 +2,8 @@
 library;
 
 import 'dart:convert';
-import 'dart:io' show File, Platform;
-import 'dart:ui' show ImageFilter;
+import 'dart:io' show File, FileMode, Platform, Directory;
+import 'dart:ui' show ImageFilter, PlatformDispatcher;
 import 'package:cross_file/cross_file.dart';
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:file_picker/file_picker.dart';
@@ -30,6 +30,7 @@ import 'widgets/tools/wheel_page.dart';
 import 'widgets/tools/number_page.dart';
 import 'widgets/tools/gomoku_page.dart';
 import 'widgets/tools/chess_page.dart';
+import 'widgets/maimemo_wordbook_page.dart';
 
 final bool _isWindows = !kIsWeb && Platform.isWindows;
 
@@ -40,6 +41,7 @@ const _moreItemsData = [
   (Icons.star_outline_outlined, '生词本', '收藏的生词', 6),
   (Icons.bookmark_add_outlined, '答题记录', '记录已答单词', 7),
   (Icons.edit_note_outlined, '默写', '单词默写练习', 8),
+  (Icons.auto_stories_outlined, '墨墨', '同步墨墨词库', 18),
   (Icons.school_outlined, '语法学习', '从零学会专升本语法', 12),
   (Icons.brush_outlined, '画板', '自由绘画与涂鸦', 13),
   (Icons.explore_outlined, '暴力转盘', '命运转盘', 14),
@@ -185,12 +187,35 @@ class _SidebarNavPill extends StatelessWidget {
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // 全局异常日志：捕获未处理异常写入文件，便于定位运行时白屏/崩溃
+  FlutterError.onError = (details) {
+    _writeErrorLog(details.exceptionAsString(), details.stack?.toString() ?? '');
+    FlutterError.presentError(details);
+  };
+  PlatformDispatcher.instance.onError = (error, stack) {
+    _writeErrorLog(error.toString(), stack.toString());
+    return true;
+  };
   if (_isWindows) {
     await windowManager.ensureInitialized();
   }
   // 后台初始化 TTS（失败时自动降级为不可用）
   TtsService.instance.init();
   runApp(const SmartEnglishApp());
+}
+
+/// 追加写入运行时错误日志（Windows: %APPDATA%\AFloat\error_log.txt；其他: 应用目录）
+void _writeErrorLog(String err, String stack) {
+  try {
+    final dir = Platform.environment['APPDATA'];
+    final base = (dir != null && dir.isNotEmpty) ? '$dir\\AFloat' : '.';
+    final f = File('$base\\error_log.txt');
+    f.createSync(recursive: true);
+    f.writeAsStringSync(
+      '==== ${DateTime.now()} ====\n$err\n$stack\n',
+      mode: FileMode.append,
+    );
+  } catch (_) {}
 }
 
 class SmartEnglishApp extends StatefulWidget {
@@ -208,6 +233,18 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
   bool _lastFullscreen = false;
   /// 考试确认对话框是否正在显示
   bool _examDialogShowing = false;
+
+  // R5: Markdown 解析 RegExp 提升为 static final，避免每次重建新建
+  static final _reStrikethrough = RegExp(r'~~(.+?)~~');
+  static final _reBold = RegExp(r'\*\*(.+?)\*\*');
+  static final _reItalic = RegExp(r'\*(.+?)\*');
+  static final _reInlineCode = RegExp(r'`([^`]+)`');
+  static final _reLink = RegExp(r'\[([^\]]+)\]\(([^)]+)\)');
+  static final _reOrderedList = RegExp(r'^(\d+)\.\s+(.*)$');
+  // R5: Markdown 解析缓存（按内容+颜色哈希失效）
+  final Map<int, TextSpan> _markdownCache = {};
+  // R6: 滚动节流：记录上次滚动时间
+  int _lastScrollTime = 0;
 
   @override
   void initState() {
@@ -315,7 +352,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
           final c = AppColors.of(context);
           // 全局玻璃背景层（渐变 + 3 光斑）覆盖加载页/引导页/桌面/手机全部分支
           return Stack(children: [
-            Positioned.fill(child: RepaintBoundary(child: _AppGlassBackground(colors: c, isGlass: _state.uiStyle == 'glass'))),
+            Positioned.fill(child: RepaintBoundary(child: _AppGlassBackground(colors: c, isGlass: _state.isGlassUI))),
             Positioned.fill(
               child: Focus(
                 autofocus: true,
@@ -355,17 +392,26 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                               )
                             // 工具模式：独立外壳（自带桌面/手机响应式），不进入英语学习的侧边栏布局
                             : _state.appMode == 'tools'
-                                ? ToolsModePage(state: _state)
+                                ? KeyedSubtree(
+                                    key: const ValueKey('tools_mode'),
+                                    child: ToolsModePage(state: _state),
+                                  )
                                 : _state.uiMode == 'desktop'
-                                ? Scaffold(
+                                ? KeyedSubtree(
+                                    key: const ValueKey('english_desktop'),
+                                    child: Scaffold(
                                     body: (_state.page == 10 || _state.page == 11)
                                         ? ListenableBuilder(listenable: _state, builder: (ctx, _) => _buildMainContent())
                                         : Row(children: [
                                             _buildSidebar(),
                                             Expanded(child: ListenableBuilder(listenable: _state, builder: (ctx, _) => _buildMainContent())),
                                           ]),
+                                    ),
                                   )
-                                : _buildMobileLayout(),
+                                : KeyedSubtree(
+                                    key: const ValueKey('english_mobile'),
+                                    child: _buildMobileLayout(),
+                                  ),
               ),
             ),
           ]);
@@ -509,10 +555,10 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
         (Icons.search_outlined, '查询', 3),
       ];
       final inMore = page >= 4;
-      final inSubFeature = page >= 4 && (page <= 8 || (page >= 12 && page <= 17));
+      final inSubFeature = page >= 4 && (page <= 8 || (page >= 12 && page <= 17) || page == 18);
       final moreTitle = inSubFeature ? _moreItemsData.firstWhere((e) => e.$4 == page).$2 : '更多功能';
       final moreIcon = inSubFeature ? _moreItemsData.firstWhere((e) => e.$4 == page).$1 : Icons.grid_view_outlined;
-      final isGlass = _state.uiStyle == 'glass';
+      final isGlass = _state.isGlassUI;
       return RepaintBoundary(
         child: isGlass
           ? ClipRRect(
@@ -541,7 +587,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
   }
 
   Widget _buildSidebarContent(AppColors c, int page, List mainItems, bool inMore, bool inSubFeature, String moreTitle, IconData moreIcon, BuildContext context) {
-    final isGlass = _state.uiStyle == 'glass';
+    final isGlass = _state.isGlassUI;
     return Column(children: [
           const SizedBox(height: 24),
           // 应用名
@@ -626,7 +672,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
 
   // ===== 主内容区 =====
   Widget _buildMainContent() {
-    final isGlass = _state.uiStyle == 'glass';
+    final isGlass = _state.isGlassUI;
     final c = AppColors(!_state.darkMode);
     // 考场沉浸模式（page==10/11）：隐藏 AI 对话栏（右侧30%），卷面独占
     if (_state.page == 10 || _state.page == 11) {
@@ -681,9 +727,9 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
           (Icons.search_outlined, '查询', 3),
         ];
         final inMore = _state.page >= 4;
-        final inSubFeature = _state.page >= 4 && (_state.page <= 8 || (_state.page >= 12 && _state.page <= 17));
+        final inSubFeature = _state.page >= 4 && (_state.page <= 8 || (_state.page >= 12 && _state.page <= 17) || _state.page == 18);
         final navIndex = inMore ? 3 : (_state.page == 3 ? 4 : _state.page.clamp(0, 2));
-        final isGlass = _state.uiStyle == 'glass';
+        final isGlass = _state.isGlassUI;
         final glassBg = isGlass ? c.sidebar.withValues(alpha: _state.darkMode ? 0.5 : 0.55) : c.sidebar;
         return Scaffold(
           // 透明：让全局玻璃背景层透出
@@ -739,24 +785,11 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
           ),
           floatingActionButton: examMode
               ? null
-              : _state.uiStyle == 'glass'
-                  ? GlassFab(
-                      onPressed: () => _showMobileChatSheet(ctx),
-                      icon: const Icon(Icons.auto_awesome_rounded, color: Colors.white, size: 24),
-                    )
-                  : Container(
-            decoration: BoxDecoration(
-              gradient: c.primaryGradient,
-              shape: BoxShape.circle,
-              boxShadow: [BoxShadow(color: c.primary.withValues(alpha: 0.3), blurRadius: 10, offset: const Offset(0, 3))],
-            ),
-            child: FloatingActionButton(
-              onPressed: () => _showMobileChatSheet(ctx),
-              backgroundColor: Colors.transparent,
-              elevation: 0,
-              child: const Icon(Icons.auto_awesome_rounded, color: Colors.white, size: 22),
-            ),
-          ),
+              : GlassFab(
+                  isLight: !_state.darkMode,
+                  onPressed: () => _showMobileChatSheet(ctx),
+                  icon: const Icon(Icons.auto_awesome_rounded, color: Color(0xFF7C3AED), size: 24),
+                ),
         );
       },
     );
@@ -855,13 +888,22 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                       return _buildChatWelcome(c.isLight, cfg.model, levelName, typeName, localAiIconAsset);
                     }
                     final scrollCtrl = ScrollController();
+                    // R6: 手机端滚动同样节流
                     WidgetsBinding.instance.addPostFrameCallback((_) {
                       if (scrollCtrl.hasClients) {
-                        scrollCtrl.animateTo(
-                          scrollCtrl.position.maxScrollExtent,
-                          duration: const Duration(milliseconds: 200),
-                          curve: Curves.easeOut,
-                        );
+                        final pos = scrollCtrl.position;
+                        final distFromBottom = pos.maxScrollExtent - pos.pixels;
+                        if (distFromBottom <= 150) {
+                          final now = DateTime.now().millisecondsSinceEpoch;
+                          if (now - _lastScrollTime >= 300) {
+                            _lastScrollTime = now;
+                            scrollCtrl.animateTo(
+                              pos.maxScrollExtent,
+                              duration: const Duration(milliseconds: 200),
+                              curve: Curves.easeOut,
+                            );
+                          }
+                        }
                       }
                     });
                     return ListView.builder(
@@ -985,6 +1027,8 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
         return const GomokuPage();
       case 17:
         return const ChineseChessPage();
+      case 18:
+        return const _PageScaffold(title: '墨墨词库', child: MaimemoWordbookPage());
       case 10:
       case 11:
         // 沉浸考场或成绩解析页（外层已隐藏 AI 对话栏）
@@ -1037,7 +1081,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
     final levelName = {'cet4': '四级', 'zsb': '专升本', 'easy': '简单', 'medium': '中等', 'hard': '困难'}[s.selectedLevel] ?? s.selectedLevel;
     final typeName = {'translation': '翻译题', 'reading': '阅读理解', 'grammar': '语法填空', 'choice': '选择题', 'writing': '写作题', 'mixed': '综合套卷'}[s.selectedType] ?? s.selectedType;
     final aiIconAsset = _getAiIconAsset(modelName);
-    final isGlass = s.uiStyle == 'glass';
+    final isGlass = s.isGlassUI;
     // RepaintBoundary：聊天面板处于流式重建区，隔离重绘
     return RepaintBoundary(
       child: DropTarget(
@@ -1260,7 +1304,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                 ),
               ),
               const SizedBox(width: 8),
-              s.uiStyle == 'glass'
+              s.isGlassUI
                 ? GlassSendButton(
                     onPressed: s.chatSending ? null : () => _sendChat(s),
                     sending: s.chatSending,
@@ -1515,8 +1559,20 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
     ]);
   }
 
-  /// 简易 Markdown 解析：支持 **粗体**、*斜体*、~~删除线~~、`行内代码`、标题、列表、代码块、引用、链接
+  /// R5: 简易 Markdown 解析：支持 **粗体**、*斜体*、~~删除线~~、`行内代码`、标题、列表、代码块、引用、链接
+  /// 带缓存：相同内容+颜色组合直接返回缓存结果
   TextSpan _parseMarkdown(String text, Color textColor) {
+    final cacheKey = text.hashCode * 31 + textColor.value;
+    final cached = _markdownCache[cacheKey];
+    if (cached != null) return cached;
+    final result = _parseMarkdownImpl(text, textColor);
+    // 限制缓存大小，防止无限增长
+    if (_markdownCache.length > 200) _markdownCache.clear();
+    _markdownCache[cacheKey] = result;
+    return result;
+  }
+
+  TextSpan _parseMarkdownImpl(String text, Color textColor) {
     final spans = <InlineSpan>[];
     final lines = text.split('\n');
     var inCodeBlock = false;
@@ -1586,7 +1642,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
         continue;
       }
       // 有序列表
-      final orderedMatch = RegExp(r'^(\d+)\.\s+(.*)$').firstMatch(line);
+      final orderedMatch = _reOrderedList.firstMatch(line);
       if (orderedMatch != null) {
         spans.add(TextSpan(text: '${orderedMatch.group(1)}. ', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: const Color(0xFF7C3AED))));
         _parseInlineSpans(orderedMatch.group(2)!, textColor, spans);
@@ -1599,13 +1655,13 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
   }
 
   void _parseInlineSpans(String text, Color textColor, List<InlineSpan> spans) {
-    // 匹配顺序：~~删除线~~ > **粗体** > *斜体* > `代码` > [链接](url)
+    // R5: 使用 static final RegExp，避免每次新建
     final patterns = <RegExp>[
-      RegExp(r'~~(.+?)~~'),
-      RegExp(r'\*\*(.+?)\*\*'),
-      RegExp(r'\*(.+?)\*'),
-      RegExp(r'`([^`]+)`'),
-      RegExp(r'\[([^\]]+)\]\(([^)]+)\)'),
+      _reStrikethrough,
+      _reBold,
+      _reItalic,
+      _reInlineCode,
+      _reLink,
     ];
     var remaining = text;
     while (remaining.isNotEmpty) {
@@ -1672,14 +1728,21 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
   /// 待发送的图片（base64 data URL）；null 表示未选择
   String? _chatImageData;
 
+  /// R6: 滚动节流：仅贴近底部且距上次滚动 >300ms 时才执行
   void _scrollChatToBottom() {
-    if (_chatScrollCtrl.hasClients) {
-      _chatScrollCtrl.animateTo(
-        _chatScrollCtrl.position.maxScrollExtent,
-        duration: const Duration(milliseconds: 200),
-        curve: Curves.easeOut,
-      );
-    }
+    if (!_chatScrollCtrl.hasClients) return;
+    final pos = _chatScrollCtrl.position;
+    final distFromBottom = pos.maxScrollExtent - pos.pixels;
+    // 仅当距底部 <150px 时才自动滚动（用户已主动上滚则不打断）
+    if (distFromBottom > 150) return;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (now - _lastScrollTime < 300) return;
+    _lastScrollTime = now;
+    _chatScrollCtrl.animateTo(
+      pos.maxScrollExtent,
+      duration: const Duration(milliseconds: 200),
+      curve: Curves.easeOut,
+    );
   }
 
   /// 根据扩展名返回 MIME 类型
@@ -1867,6 +1930,35 @@ class _MoreSelectPageState extends State<_MoreSelectPage> {
     final crossCount = isMobile ? 2 : 3;
     final panelRadius = BorderRadius.circular(isMobile ? 20 : 28);
     final padAll = isMobile ? 18.0 : 28.0;
+    final isGlass = AppScope.of(context).isGlassUI;
+    // 英语模式更多功能：隐藏工具模式功能（画板/转盘/数字/五子棋/象棋）
+    const toolPageIds = {13, 14, 15, 16, 17};
+    final moreItems = _moreItemsData.where((e) => !toolPageIds.contains(e.$4)).toList();
+    // 功能网格（glass/classic 共用）
+    final moreGrid = GridView.builder(
+      physics: const BouncingScrollPhysics(),
+      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: crossCount,
+        mainAxisSpacing: isMobile ? 10 : 16,
+        crossAxisSpacing: isMobile ? 10 : 16,
+        childAspectRatio: isMobile ? 1.05 : 2.4,
+      ),
+      itemCount: moreItems.length,
+      itemBuilder: (ctx, i) {
+        final item = moreItems[i];
+        return _GlassFeatureCard(
+          icon: item.$1,
+          title: item.$2,
+          subtitle: item.$3,
+          selected: widget.currentIndex == item.$4,
+          hovered: _hoveredIdx == i,
+          c: c,
+          isMobile: isMobile,
+          onHover: (h) => setState(() => _hoveredIdx = h ? i : (_hoveredIdx == i ? null : _hoveredIdx)),
+          onTap: () => widget.onSelect(item.$4),
+        );
+      },
+    );
 
     return SafeArea(
       child: Padding(
@@ -1900,59 +1992,41 @@ class _MoreSelectPageState extends State<_MoreSelectPage> {
             }),
           ]),
           SizedBox(height: isMobile ? 14 : 22),
-          // 单一毛玻璃大面板
+          // 面板：glass 毛玻璃大面板 / classic 不透明实色（无毛玻璃）
           Expanded(
-            child: ClipRRect(
-              borderRadius: panelRadius,
-              child: BackdropFilter(
-                filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
-                child: Container(
+            child: isGlass
+              ? ClipRRect(
+                  borderRadius: panelRadius,
+                  child: BackdropFilter(
+                    filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
+                    child: Container(
+                      padding: EdgeInsets.all(padAll),
+                      decoration: BoxDecoration(
+                        color: (c.isLight ? Colors.white : const Color(0xFF1F1F26)).withValues(alpha: c.isLight ? 0.55 : 0.5),
+                        borderRadius: panelRadius,
+                        border: Border.all(color: c.isLight ? Colors.white.withValues(alpha: 0.7) : Colors.white.withValues(alpha: 0.12), width: 1.2),
+                        boxShadow: const [
+                          // 中性阴影：去掉 kPrimary 紫调
+                          BoxShadow(color: Colors.black26, blurRadius: 24, offset: Offset(0, 8)),
+                          BoxShadow(color: Colors.black12, blurRadius: 12, offset: Offset(0, 2)),
+                        ],
+                      ),
+                      child: moreGrid,
+                    ),
+                  ),
+                )
+              : Container(
                   padding: EdgeInsets.all(padAll),
                   decoration: BoxDecoration(
-                    color: (c.isLight ? Colors.white : const Color(0xFF1F1F26)).withValues(alpha: c.isLight ? 0.55 : 0.5),
+                    color: c.isLight ? Colors.white : const Color(0xFF1F1F26),
                     borderRadius: panelRadius,
-                    border: Border.all(color: c.isLight ? Colors.white.withValues(alpha: 0.7) : Colors.white.withValues(alpha: 0.12), width: 1.2),
-                    boxShadow: [
-                      // 中性阴影：去掉 kPrimary 紫调
-                      BoxShadow(
-                        color: Colors.black.withValues(alpha: c.isLight ? 0.05 : 0.22),
-                        blurRadius: 24,
-                        offset: const Offset(0, 8),
-                      ),
-                      BoxShadow(
-                        color: Colors.black.withValues(alpha: c.isLight ? 0.04 : 0.18),
-                        blurRadius: 12,
-                        offset: const Offset(0, 2),
-                      ),
+                    border: Border.all(color: c.divider, width: 1),
+                    boxShadow: const [
+                      BoxShadow(color: Colors.black12, blurRadius: 18, offset: Offset(0, 6)),
                     ],
                   ),
-                  child: GridView.builder(
-                    physics: const NeverScrollableScrollPhysics(),
-                    gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                      crossAxisCount: crossCount,
-                      mainAxisSpacing: isMobile ? 10 : 16,
-                      crossAxisSpacing: isMobile ? 10 : 16,
-                      childAspectRatio: isMobile ? 1.05 : 2.4,
-                    ),
-                    itemCount: _moreItemsData.length,
-                    itemBuilder: (ctx, i) {
-                      final item = _moreItemsData[i];
-                      return _GlassFeatureCard(
-                        icon: item.$1,
-                        title: item.$2,
-                        subtitle: item.$3,
-                        selected: widget.currentIndex == item.$4,
-                        hovered: _hoveredIdx == i,
-                        c: c,
-                        isMobile: isMobile,
-                        onHover: (h) => setState(() => _hoveredIdx = h ? i : (_hoveredIdx == i ? null : _hoveredIdx)),
-                        onTap: () => widget.onSelect(item.$4),
-                      );
-                    },
-                  ),
+                  child: moreGrid,
                 ),
-              ),
-            ),
           ),
         ]),
       ),

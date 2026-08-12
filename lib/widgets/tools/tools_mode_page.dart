@@ -41,6 +41,7 @@ class _ToolsModePageState extends State<ToolsModePage> with TickerProviderStateM
   String _activeTab = 'wheel'; // wheel | bomb | number | games
   /// 标签栏滑块动画（对齐 cubic-bezier(0.25,1,0.5,1) 0.35s）
   late final AnimationController _sliderCtrl;
+  late final CurvedAnimation _sliderCurve;
   int _prevTabIndex = 0;
 
   /// 页面切换方向感知动画（对齐参考项目 page-slide-left/right-enter）：
@@ -51,10 +52,15 @@ class _ToolsModePageState extends State<ToolsModePage> with TickerProviderStateM
 
   // "更多"页内部子导航：null = 入口卡片列表；否则为具体游戏
   String? _activeGame; // 'bmi' | 'gomoku' | 'chess' | 'drawing'
-  /// 当前悬停的入口卡片标题（用于箭头右移动画）
-  String? _hoveredEntryTitle;
 
   AppState get s => widget.state;
+
+  /// P0-1：缓存 AppState 中本页面实际使用的字段，仅当这些字段变化时才 setState
+  late String _prevUiStyle;
+  late bool _prevDarkMode;
+
+  /// P1-4：缓存游戏入口列表，仅在 initState 时创建一次
+  late final List<_GameEntry> _gameEntries;
 
   static const List<_TabDef> _tabs = [
     _TabDef(id: 'wheel', label: '暴力转盘', color: Color(0xFF8B5CF6)),
@@ -64,7 +70,7 @@ class _ToolsModePageState extends State<ToolsModePage> with TickerProviderStateM
   ];
 
   _ToolsTheme get _theme {
-    if (s.uiStyle == 'glass') return _ToolsTheme.glass;
+    if (s.isGlassUI) return _ToolsTheme.glass;
     return s.darkMode ? _ToolsTheme.dark : _ToolsTheme.white;
   }
 
@@ -75,22 +81,35 @@ class _ToolsModePageState extends State<ToolsModePage> with TickerProviderStateM
       vsync: this,
       duration: const Duration(milliseconds: 350),
     );
-    _sliderCtrl.addListener(() => setState(() {}));
+    // 预创建 CurvedAnimation，避免在 AnimatedBuilder.builder 内每帧创建新实例
+    _sliderCurve = CurvedAnimation(
+      parent: _sliderCtrl,
+      curve: const Cubic(0.25, 1, 0.5, 1),
+    );
     _pageCtrl = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 550), // 对齐 0.55s
+      duration: const Duration(milliseconds: 300),
     );
-    _pageCtrl.addListener(() => setState(() {}));
+    _prevUiStyle = s.uiStyle;
+    _prevDarkMode = s.darkMode;
     s.addListener(_onState);
+    _gameEntries = _buildGameEntries();
   }
 
+  /// P0-1：仅在 darkMode / uiStyle 实际变化时才 setState，避免 AppState 其他 93 处 notify 触发整页重建
   void _onState() {
-    if (mounted) setState(() {});
+    if (!mounted) return;
+    if (s.uiStyle != _prevUiStyle || s.darkMode != _prevDarkMode) {
+      _prevUiStyle = s.uiStyle;
+      _prevDarkMode = s.darkMode;
+      setState(() {});
+    }
   }
 
   @override
   void dispose() {
     s.removeListener(_onState);
+    _sliderCurve.dispose();
     _sliderCtrl.dispose();
     _pageCtrl.dispose();
     super.dispose();
@@ -186,9 +205,9 @@ class _ToolsModePageState extends State<ToolsModePage> with TickerProviderStateM
                   constraints: const BoxConstraints(maxWidth: 448), // max-w-md
                   child: Column(
                     children: [
-                      _buildTopBar(),
+                      RepaintBoundary(child: _buildTopBar()),
                       Expanded(child: _wrapPageTransition(_buildContent())),
-                      _buildTabBar(),
+                      RepaintBoundary(child: _buildTabBar()),
                     ],
                   ),
                 ),
@@ -215,6 +234,7 @@ class _ToolsModePageState extends State<ToolsModePage> with TickerProviderStateM
 
   /// 顶栏按钮胶囊容器（对齐参考项目 App.jsx:816-822）：
   /// rounded-full p-1 gap-0.5，glass 时毛玻璃+白边框+阴影，暗色时半透明灰
+  /// P0-2：顶栏玻璃容器添加 RepaintBoundary 隔离重绘
   Widget _buildTopButtonPill() {
     final Widget pillContent = Row(
       mainAxisSize: MainAxisSize.min,
@@ -247,19 +267,21 @@ class _ToolsModePageState extends State<ToolsModePage> with TickerProviderStateM
     if (_isGlass) {
       return ClipRRect(
         borderRadius: BorderRadius.circular(999),
-        child: BackdropFilter(
-          filter: ui.ImageFilter.blur(sigmaX: 30, sigmaY: 30),
-          child: Container(
-            padding: const EdgeInsets.all(4),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(999),
-              color: Colors.white.withValues(alpha: 0.18),
-              border: Border.all(color: Colors.white.withValues(alpha: 0.25)),
-              boxShadow: const [
-                BoxShadow(color: Color(0x0F1F2687), blurRadius: 32, offset: Offset(0, 8)),
-              ],
+        child: RepaintBoundary(
+          child: BackdropFilter(
+            filter: ui.ImageFilter.blur(sigmaX: 15, sigmaY: 15),
+            child: Container(
+              padding: const EdgeInsets.all(4),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(999),
+                color: Colors.white.withValues(alpha: 0.18),
+                border: Border.all(color: Colors.white.withValues(alpha: 0.25)),
+                boxShadow: const [
+                  BoxShadow(color: Color(0x0F1F2687), blurRadius: 32, offset: Offset(0, 8)),
+                ],
+              ),
+              child: pillContent,
             ),
-            child: pillContent,
           ),
         ),
       );
@@ -315,28 +337,35 @@ class _ToolsModePageState extends State<ToolsModePage> with TickerProviderStateM
   }
 
   /// 页面切换方向感知动画（对齐参考项目 slideLeftIn / slideRightIn）：
-  /// from { translateX(±30px) scale(0.95); opacity: 0.6 } → to { 复位 }
+  /// from { translateX(±24px) } → to { 复位 }
   /// 缓动 cubic-bezier(0.22, 1, 0.36, 1)，时长 0.55s
+  ///
+  /// 性能优化：
+  /// - 去掉 Opacity（saveLayer 是切换卡顿主因）
+  /// - 去掉 scale（移动端 GPU 负担）
+  /// - child 复用，builder 只创建 Transform
+  /// - 整页被 RepaintBoundary 隔离
   Widget _wrapPageTransition(Widget child) {
-    final t = const Cubic(0.22, 1, 0.36, 1).transform(_pageCtrl.value);
-    final dx = (1.0 - t) * 30.0 * (_slideFromRight ? 1.0 : -1.0);
-    final scale = 0.95 + 0.05 * t;
-    final opacity = 0.6 + 0.4 * t;
-    return Transform.translate(
-      offset: Offset(dx, 0),
-      child: Transform.scale(
-        scale: scale,
-        child: Opacity(
-          opacity: opacity.clamp(0.0, 1.0),
-          child: child,
-        ),
+    return RepaintBoundary(
+      child: AnimatedBuilder(
+        animation: _pageCtrl,
+        builder: (context, _) {
+          final t = const Cubic(0.22, 1, 0.36, 1).transform(_pageCtrl.value);
+          final dx = (1.0 - t) * 14.0 * (_slideFromRight ? 1.0 : -1.0);
+          return Transform.translate(
+            offset: Offset(dx, 0),
+            child: child,
+          );
+        },
+        child: child,
       ),
     );
   }
 
   /// 中间内容区
+  /// 使用 IndexedStack 保持所有页面 State 存活，切换时无需 dispose/recreate
   Widget _buildContent() {
-    // "更多"标签：内部子导航
+    // "更多"标签：内部子导航（不参与 IndexedStack）
     if (_activeTab == 'games') {
       if (_activeGame == null) return _buildGamesHub();
       return AnimatedSwitcher(
@@ -352,20 +381,22 @@ class _ToolsModePageState extends State<ToolsModePage> with TickerProviderStateM
       );
     }
 
-    switch (_activeTab) {
-      case 'bomb':
-        return const BombTabPage();
-      case 'number':
-        return const NumberTabPage();
-      case 'wheel':
-      default:
-        return WheelTabPage(state: s);
-    }
+    // 3 个主标签页用 IndexedStack 保持 State 存活
+    final idx = _tabs.indexWhere((t) => t.id == _activeTab);
+    return IndexedStack(
+      index: idx,
+      children: [
+        WheelTabPage(state: s),
+        const BombTabPage(),
+        const NumberTabPage(),
+        const SizedBox(), // games 占位（实际走上面的分支）
+      ],
+    );
   }
 
-  /// "更多"页：入口卡片列表（对齐 GamesTab：画板/BMI/五子棋/象棋）
-  Widget _buildGamesHub() {
-    final entries = [
+  /// P1-4：构建游戏入口列表（缓存为字段，仅初始化时调用一次）
+  List<_GameEntry> _buildGameEntries() {
+    return [
       _GameEntry(
         title: '画板',
         icon: const Icon(Icons.brush_rounded, color: Colors.white, size: 28),
@@ -397,88 +428,20 @@ class _ToolsModePageState extends State<ToolsModePage> with TickerProviderStateM
         onTap: () => setState(() => _activeGame = 'chess'),
       ),
     ];
-
-    return ListView.separated(
-      padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
-      itemCount: entries.length,
-      separatorBuilder: (_, __) => const SizedBox(height: 16),
-      itemBuilder: (context, i) => _buildGameEntryCard(entries[i]),
-    );
   }
 
-  Widget _buildGameEntryCard(_GameEntry e) {
-    final hovered = _hoveredEntryTitle == e.title;
-    return MouseRegion(
-      onEnter: (_) => setState(() => _hoveredEntryTitle = e.title),
-      onExit: (_) => setState(() => _hoveredEntryTitle = null),
-      child: GestureDetector(
-        onTap: e.onTap,
-        child: _glassSurface(
-          borderRadius: 16,
-          child: Stack(
-            children: [
-              // 右上角装饰渐变圆（对齐 from-*-400/20 to-transparent rounded-bl-full w-24 h-24）
-              Positioned(
-                top: 0,
-                right: 0,
-                child: Container(
-                  width: 96,
-                  height: 96,
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.topRight,
-                      end: Alignment.bottomLeft,
-                      colors: [e.decoColor, Colors.transparent],
-                    ),
-                    borderRadius: const BorderRadius.only(bottomLeft: Radius.circular(96)),
-                  ),
-                ),
-              ),
-              Padding(
-                padding: const EdgeInsets.all(20),
-                child: Row(
-                  children: [
-                    Container(
-                      width: 56,
-                      height: 56,
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(16),
-                        gradient: LinearGradient(
-                          begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
-                          colors: e.iconGradient,
-                        ),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withValues(alpha: 0.15),
-                            blurRadius: 8,
-                            offset: const Offset(0, 2),
-                          ),
-                        ],
-                      ),
-                      alignment: Alignment.center,
-                      child: e.icon,
-                    ),
-                    const SizedBox(width: 16),
-                    Expanded(
-                      child: Text(e.title,
-                          style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900, color: _textPrimary)),
-                    ),
-                    // hover 时箭头右移 4px（对齐参考项目 group-hover:translate-x-1）
-                    AnimatedContainer(
-                      duration: const Duration(milliseconds: 200),
-                      curve: Curves.easeOut,
-                      transform: hovered
-                          ? (Matrix4.identity()..translate(4.0, 0.0))
-                          : Matrix4.identity(),
-                      child: Icon(Icons.chevron_right_rounded, size: 20, color: _textSub),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
+  /// "更多"页：入口卡片列表（对齐 GamesTab：画板/BMI/五子棋/象棋）
+  Widget _buildGamesHub() {
+    return ListView.separated(
+      padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
+      itemCount: _gameEntries.length,
+      separatorBuilder: (_, __) => const SizedBox(height: 16),
+      itemBuilder: (context, i) => _GameEntryCard(
+        entry: _gameEntries[i],
+        textPrimary: _textPrimary,
+        textSub: _textSub,
+        isGlass: _isGlass,
+        isDark: _isDark,
       ),
     );
   }
@@ -498,41 +461,6 @@ class _ToolsModePageState extends State<ToolsModePage> with TickerProviderStateM
     }
   }
 
-  /// 毛玻璃/普通卡片表面容器（aurora-glass-card / bg-white / bg-gray-800）
-  Widget _glassSurface({required Widget child, double borderRadius = 16}) {
-    if (_isGlass) {
-      return ClipRRect(
-        borderRadius: BorderRadius.circular(borderRadius),
-        child: BackdropFilter(
-          filter: ui.ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-          child: Container(
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.72),
-              borderRadius: BorderRadius.circular(borderRadius),
-              border: Border.all(color: Colors.white.withValues(alpha: 0.6)),
-              boxShadow: [
-                BoxShadow(color: Colors.white.withValues(alpha: 0.6), blurRadius: 0, offset: const Offset(0, 1)),
-                BoxShadow(color: Colors.black.withValues(alpha: 0.07), blurRadius: 24, offset: const Offset(0, 6)),
-              ],
-            ),
-            child: child,
-          ),
-        ),
-      );
-    }
-    return Container(
-      decoration: BoxDecoration(
-        color: _isDark ? const Color(0xFF1F2937) : Colors.white,
-        borderRadius: BorderRadius.circular(borderRadius),
-        border: Border.all(color: _isDark ? const Color(0xFF374151) : const Color(0xFFE5E7EB)),
-        boxShadow: [
-          BoxShadow(color: Colors.black.withValues(alpha: 0.08), blurRadius: 16, offset: const Offset(0, 4)),
-        ],
-      ),
-      child: child,
-    );
-  }
-
   // ==================== 底部胶囊标签栏 ====================
 
   Widget _buildTabBar() {
@@ -544,42 +472,43 @@ class _ToolsModePageState extends State<ToolsModePage> with TickerProviderStateM
           builder: (context, constraints) {
             final w = constraints.maxWidth;
             final segW = w / _tabs.length;
-            // 滑块位置：动画期间在旧位置与新位置间插值
-            final animT = CurvedAnimation(
-              parent: _sliderCtrl,
-              curve: const Cubic(0.25, 1, 0.5, 1),
-            ).value;
-            final from = _prevTabIndex.toDouble();
-            final to = curIdx.toDouble();
-            final pos = from + (to - from) * animT;
             return SizedBox(
               height: 64,
               child: Stack(
                 children: [
-                  // 滑块（rounded-[22px]）
-                  Positioned(
-                    left: pos * segW + 4,
-                    top: 4,
-                    bottom: 4,
-                    width: segW - 8,
-                    child: Container(
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(22),
-                        // 对齐参考项目：glass 0.4 白 / 暗色 0.1 白 / 亮色 0.8 白
-                        color: _isGlass
-                            ? Colors.white.withValues(alpha: 0.4)
-                            : _isDark
-                                ? Colors.white.withValues(alpha: 0.1)
-                                : Colors.white.withValues(alpha: 0.8),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withValues(alpha: _isGlass ? 0.04 : 0.06),
-                            blurRadius: 3,
-                            offset: const Offset(0, 1),
+                  // 滑块动画（使用预创建的 _sliderCurve，避免每帧创建 CurvedAnimation）
+                  AnimatedBuilder(
+                    animation: _sliderCtrl,
+                    builder: (context, child) {
+                      final animT = _sliderCurve.value;
+                      final from = _prevTabIndex.toDouble();
+                      final to = curIdx.toDouble();
+                      final pos = from + (to - from) * animT;
+                      return Positioned(
+                        left: pos * segW + 4,
+                        top: 4,
+                        bottom: 4,
+                        width: segW - 8,
+                        child: Container(
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(22),
+                            // 对齐参考项目：glass 0.4 白 / 暗色 0.1 白 / 亮色 0.8 白
+                            color: _isGlass
+                                ? Colors.white.withValues(alpha: 0.4)
+                                : _isDark
+                                    ? Colors.white.withValues(alpha: 0.1)
+                                    : Colors.white.withValues(alpha: 0.8),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withValues(alpha: _isGlass ? 0.04 : 0.06),
+                                blurRadius: 3,
+                                offset: const Offset(0, 1),
+                              ),
+                            ],
                           ),
-                        ],
-                      ),
-                    ),
+                        ),
+                      );
+                    },
                   ),
                   // 标签项
                   Row(
@@ -603,18 +532,20 @@ class _ToolsModePageState extends State<ToolsModePage> with TickerProviderStateM
     if (_isGlass) {
       return ClipRRect(
         borderRadius: BorderRadius.circular(28),
-        child: BackdropFilter(
-          filter: ui.ImageFilter.blur(sigmaX: 30, sigmaY: 30),
-          child: Container(
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.18),
-              borderRadius: BorderRadius.circular(28),
-              border: Border.all(color: Colors.white.withValues(alpha: 0.25)),
-              boxShadow: [
-                BoxShadow(color: const Color(0x0F1F2687), blurRadius: 32, offset: const Offset(0, 8)),
-              ],
+        child: RepaintBoundary(
+          child: BackdropFilter(
+            filter: ui.ImageFilter.blur(sigmaX: 15, sigmaY: 15),
+            child: Container(
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.18),
+                borderRadius: BorderRadius.circular(28),
+                border: Border.all(color: Colors.white.withValues(alpha: 0.25)),
+                boxShadow: [
+                  BoxShadow(color: const Color(0x0F1F2687), blurRadius: 32, offset: const Offset(0, 8)),
+                ],
+              ),
+              child: child,
             ),
-            child: child,
           ),
         ),
       );
@@ -782,6 +713,149 @@ class _GameEntry {
     required this.decoColor,
     required this.onTap,
   });
+}
+
+/// P1-3：游戏入口卡片（StatefulWidget，hover 状态下沉到内部，避免整页 setState）
+class _GameEntryCard extends StatefulWidget {
+  final _GameEntry entry;
+  final Color textPrimary;
+  final Color textSub;
+  final bool isGlass;
+  final bool isDark;
+  const _GameEntryCard({
+    required this.entry,
+    required this.textPrimary,
+    required this.textSub,
+    required this.isGlass,
+    required this.isDark,
+  });
+
+  @override
+  State<_GameEntryCard> createState() => _GameEntryCardState();
+}
+
+class _GameEntryCardState extends State<_GameEntryCard> {
+  bool _hovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final e = widget.entry;
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() => _hovered = false),
+      child: GestureDetector(
+        onTap: e.onTap,
+        child: _buildGlassCard(
+          borderRadius: 16,
+          isGlass: widget.isGlass,
+          isDark: widget.isDark,
+          child: Stack(
+            children: [
+              Positioned(
+                top: 0,
+                right: 0,
+                child: Container(
+                  width: 96,
+                  height: 96,
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topRight,
+                      end: Alignment.bottomLeft,
+                      colors: [e.decoColor, Colors.transparent],
+                    ),
+                    borderRadius: const BorderRadius.only(bottomLeft: Radius.circular(96)),
+                  ),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.all(20),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 56,
+                      height: 56,
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(16),
+                        gradient: LinearGradient(
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                          colors: e.iconGradient,
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.15),
+                            blurRadius: 8,
+                            offset: const Offset(0, 2),
+                          ),
+                        ],
+                      ),
+                      alignment: Alignment.center,
+                      child: e.icon,
+                    ),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: Text(e.title,
+                          style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900, color: widget.textPrimary)),
+                    ),
+                    AnimatedContainer(
+                      duration: const Duration(milliseconds: 200),
+                      curve: Curves.easeOut,
+                      transform: _hovered
+                          ? (Matrix4.identity()..translate(4.0, 0.0))
+                          : Matrix4.identity(),
+                      child: Icon(Icons.chevron_right_rounded, size: 20, color: widget.textSub),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 毛玻璃/普通卡片表面容器（与 _glassSurface 视觉一致，但内联以避免依赖父 State）
+  static Widget _buildGlassCard({
+    required Widget child,
+    required double borderRadius,
+    required bool isGlass,
+    required bool isDark,
+  }) {
+    if (isGlass) {
+      return RepaintBoundary(
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(borderRadius),
+          child: BackdropFilter(
+            filter: ui.ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+            child: Container(
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.72),
+                borderRadius: BorderRadius.circular(borderRadius),
+                border: Border.all(color: Colors.white.withValues(alpha: 0.6)),
+                boxShadow: [
+                  BoxShadow(color: Colors.white.withValues(alpha: 0.6), blurRadius: 0, offset: const Offset(0, 1)),
+                  BoxShadow(color: Colors.black.withValues(alpha: 0.07), blurRadius: 24, offset: const Offset(0, 6)),
+                ],
+              ),
+              child: child,
+            ),
+          ),
+        ),
+      );
+    }
+    return Container(
+      decoration: BoxDecoration(
+        color: isDark ? const Color(0xFF1F2937) : Colors.white,
+        borderRadius: BorderRadius.circular(borderRadius),
+        border: Border.all(color: isDark ? const Color(0xFF374151) : const Color(0xFFE5E7EB)),
+        boxShadow: [
+          BoxShadow(color: Colors.black.withValues(alpha: 0.08), blurRadius: 16, offset: const Offset(0, 4)),
+        ],
+      ),
+      child: child,
+    );
+  }
 }
 
 /// 五子棋入口图标（四个渐变透明度的圆，对齐参考项目 SVG）

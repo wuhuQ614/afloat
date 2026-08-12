@@ -123,10 +123,13 @@ class ToolsAudio {
     }
   }
 
-  /// 转盘转动每格（1200Hz 0.02s）
+  /// 转盘转动每格（1200Hz 0.02s）— 不调用 stop()，减少平台通道开销
   Future<void> playWheelTick() async {
     _wheelTickWav ??= _toneWav(freq: 1200, duration: 0.02, volume: 0.03);
-    await _play(_wheelTickWav!);
+    try {
+      // tick 音只有 20ms，节流间隔 60ms，不会重叠，直接 play 即可
+      await _player.play(BytesSource(_wheelTickWav!));
+    } catch (_) {}
   }
 
   /// 随机数开始（800Hz 0.05s）

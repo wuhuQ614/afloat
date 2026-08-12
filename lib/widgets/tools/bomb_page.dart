@@ -53,6 +53,8 @@ class _BombTabPageState extends State<BombTabPage> {
   int _currentPlayer = 1;
   final Map<int, int> _selections = {}; // 卡牌索引 → 玩家编号
   final Set<int> _flippedCards = {};
+  /// P2-1：用 ValueNotifier 跟踪翻牌状态，仅卡牌区域重建，不重建整页
+  final ValueNotifier<Set<int>> _flippedNotifier = ValueNotifier(<int>{});
   String _resultMessage = '';
 
   // 人数转盘
@@ -119,18 +121,19 @@ class _BombTabPageState extends State<BombTabPage> {
   }
 
   /// 开牌：300ms 后翻炸弹卡，再 400ms 后其余卡逐张翻开（每张间隔 100ms，对齐参考项目 stagger）
+  /// P2-1：通过 ValueNotifier 隔离翻牌重建，仅卡牌区域重建，不重建整页
   void _revealCards() {
     setState(() => _gameState = 'revealed');
     final bombVictimId = _selections[_bombIndex];
 
     Future.delayed(const Duration(milliseconds: 300), () {
       if (!mounted) return;
-      setState(() => _flippedCards.add(_bombIndex));
+      _flippedCards.add(_bombIndex);
+      _flippedNotifier.value = Set.of(_flippedCards);
 
       // 炸弹卡翻开 400ms 后，其余卡逐张翻开（每张间隔 100ms）
       Future.delayed(const Duration(milliseconds: 400), () {
         if (!mounted) return;
-        // 收集除炸弹外的卡牌索引，按 stagger 依次翻开
         final others = <int>[];
         for (var i = 0; i < _totalCards; i++) {
           if (i != _bombIndex) others.add(i);
@@ -138,7 +141,8 @@ class _BombTabPageState extends State<BombTabPage> {
         for (var k = 0; k < others.length; k++) {
           Future.delayed(Duration(milliseconds: k * 100), () {
             if (!mounted) return;
-            setState(() => _flippedCards.add(others[k]));
+            _flippedCards.add(others[k]);
+            _flippedNotifier.value = Set.of(_flippedCards);
           });
         }
       });
@@ -230,6 +234,7 @@ class _BombTabPageState extends State<BombTabPage> {
   @override
   void dispose() {
     _removeWheelOverlay();
+    _flippedNotifier.dispose();
     super.dispose();
   }
 
@@ -248,7 +253,13 @@ class _BombTabPageState extends State<BombTabPage> {
               child: Column(
                 children: [
                   if (_gameState != 'setup') _buildStatusHeader(),
-                  Expanded(child: _buildCardGrid()),
+                  // P2-1：ValueListenableBuilder 隔离卡牌区域，翻牌时仅重建网格
+                  Expanded(
+                    child: ValueListenableBuilder<Set<int>>(
+                      valueListenable: _flippedNotifier,
+                      builder: (context, _, __) => _buildCardGrid(),
+                    ),
+                  ),
                   _buildBottomControls(),
                 ],
               ),

@@ -27,12 +27,15 @@ class _NumberTabPageState extends State<NumberTabPage> {
   int? _num;
   bool _isGenerating = false;
   Timer? _timer;
+  /// P1-2：用 ValueNotifier 隔离数字跳变，避免每 70ms 重建整个页面
+  final ValueNotifier<int?> _numNotifier = ValueNotifier(null);
 
   @override
   void dispose() {
     _timer?.cancel();
     _minCtrl.dispose();
     _maxCtrl.dispose();
+    _numNotifier.dispose();
     super.dispose();
   }
 
@@ -50,15 +53,17 @@ class _NumberTabPageState extends State<NumberTabPage> {
     var count = 0;
     _timer?.cancel();
     _timer = Timer.periodic(const Duration(milliseconds: 70), (timer) {
-      setState(() {
-        _num = minV + rng.nextInt(maxV - minV + 1);
-      });
+      // P1-2：只更新 ValueNotifier，不触发整页 setState
+      _numNotifier.value = minV + rng.nextInt(maxV - minV + 1);
       count++;
       if (count > 25) {
         timer.cancel();
         ToolsAudio.instance.playNumberDing(); // 对齐参考项目 playNumberDing
         HapticFeedback.heavyImpact(); // 对齐参考项目 vibrate([50,50])
-        setState(() => _isGenerating = false);
+        setState(() {
+          _isGenerating = false;
+          _num = _numNotifier.value;
+        });
       }
     });
   }
@@ -97,14 +102,21 @@ class _NumberTabPageState extends State<NumberTabPage> {
                 ],
               ),
               child: Center(
-                child: Text(
-                  _num == null ? '?' : '$_num',
-                  style: const TextStyle(
-                    fontSize: 72,
-                    fontWeight: FontWeight.w900,
-                    color: Color(0xFF9333EA),
-                    letterSpacing: -2,
-                  ),
+                // P1-2：ValueListenableBuilder 隔离数字显示区域，仅数字文本随跳变重建
+                child: ValueListenableBuilder<int?>(
+                  valueListenable: _numNotifier,
+                  builder: (context, notifierNum, _) {
+                    final displayNum = _isGenerating ? notifierNum : _num;
+                    return Text(
+                      displayNum == null ? '?' : '$displayNum',
+                      style: const TextStyle(
+                        fontSize: 72,
+                        fontWeight: FontWeight.w900,
+                        color: Color(0xFF9333EA),
+                        letterSpacing: -2,
+                      ),
+                    );
+                  },
                 ),
               ),
             ),

@@ -45,6 +45,20 @@ class Storage {
     } catch (_) {}
   }
 
+  static int _getInt(String key, int def) {
+    try {
+      return _p?.getInt(key) ?? def;
+    } catch (_) {
+      return def;
+    }
+  }
+
+  static void _setInt(String key, int v) {
+    try {
+      _p?.setInt(key, v);
+    } catch (_) {}
+  }
+
   // ===== API 配置 =====
   static ApiConfig loadApiConfig() => ApiConfig(
         url: _get('apiUrl', ''),
@@ -86,6 +100,33 @@ class Storage {
 
   static bool loadChatStream() => _getBool('chatStream', true);
   static void saveChatStream(bool v) => _setBool('chatStream', v);
+
+  static bool loadChatThinking() => _getBool('chatThinking', true);
+  static void saveChatThinking(bool v) => _setBool('chatThinking', v);
+
+  // ===== 墨墨背单词同步 =====
+  static String loadMaimemoToken() => _get('maimemoToken', '');
+  static void saveMaimemoToken(String v) => _set('maimemoToken', v);
+  static int loadMaimemoLastSync() => _getInt('maimemoLastSync', 0);
+  static void saveMaimemoLastSync(int v) => _setInt('maimemoLastSync', v);
+  static int loadMaimemoSyncedCount() => _getInt('maimemoSyncedCount', 0);
+  static void saveMaimemoSyncedCount(int v) => _setInt('maimemoSyncedCount', v);
+
+  // ===== 墨墨词库 =====
+  static List<WordBookItem> loadMaimemoWordbook() {
+    final s = _get('maimemoWordbook', '');
+    if (s.isEmpty) return [];
+    try {
+      final list = jsonDecode(s) as List;
+      return list.map((e) => WordBookItem.fromJson(e as Map<String, dynamic>)).toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
+  static void saveMaimemoWordbook(List<WordBookItem> list) {
+    _set('maimemoWordbook', jsonEncode(list.map((e) => e.toJson()).toList()));
+  }
 
   // ===== 多配置记忆（配置库） =====
   static List<ApiProfile> loadApiProfiles() {
@@ -247,6 +288,22 @@ class Storage {
 
   static void saveWordBook(List<WordBookItem> list) {
     _set('wordbook', jsonEncode(list.map((e) => e.toJson()).toList()));
+  }
+
+  // ===== 自定义词库（默写用，用户手动创建） =====
+  static List<WordBookItem> loadCustomWordbook() {
+    final s = _get('customWordbook', '');
+    if (s.isEmpty) return [];
+    try {
+      final list = jsonDecode(s) as List;
+      return list.map((e) => WordBookItem.fromJson(e as Map<String, dynamic>)).toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
+  static void saveCustomWordbook(List<WordBookItem> list) {
+    _set('customWordbook', jsonEncode(list.map((e) => e.toJson()).toList()));
   }
 
   // ===== 答题记录（单词记录本） =====

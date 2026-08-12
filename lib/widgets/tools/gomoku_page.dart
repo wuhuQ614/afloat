@@ -192,41 +192,78 @@ class _GomokuPageState extends State<GomokuPage> {
   }
 
   Widget _buildModeSelect(AppColors c) {
+    const diffs = ['easy', 'normal', 'hard'];
+    const tags = ['深度 2', '深度 3', '深度 4'];
     return Center(
-      child: Column(mainAxisSize: MainAxisSize.min, children: [
-        Text('五子棋',
-            style: TextStyle(
-                fontSize: 28, fontWeight: FontWeight.w900, color: c.text)),
-        const SizedBox(height: 8),
-        Text('选择对战模式',
-            style: TextStyle(fontSize: 13, color: c.textTertiary)),
-        const SizedBox(height: 32),
-        _ModeButton(
-          label: '人人对战',
-          color: const Color(0xFF22C55E),
-          onTap: () => setState(() => _gameMode = 'pvp'),
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 400),
+          child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                // 眉标 + 大标题（简约高级：无图标无 emoji）
+                const SizedBox(height: 8),
+                Text('GOMOKU',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                        fontSize: 11,
+                        letterSpacing: 3,
+                        fontWeight: FontWeight.w600,
+                        color: c.textTertiary)),
+                const SizedBox(height: 10),
+                Text('五子棋',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                        fontSize: 30,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: 1,
+                        color: c.text)),
+                const SizedBox(height: 8),
+                Text('本地对弈 · 无需网络',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontSize: 13, color: c.textTertiary)),
+                const SizedBox(height: 40),
+                // 双人游戏
+                _ModeCard(
+                  c: c,
+                  title: '双人游戏',
+                  subtitle: '两人轮流落子，本地对弈',
+                  onTap: () => setState(() => _gameMode = 'pvp'),
+                ),
+                const SizedBox(height: 24),
+                Text('人机对战',
+                    style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w700,
+                        color: c.textSecondary)),
+                const SizedBox(height: 10),
+                // 三档难度卡片
+                Row(children: [
+                  for (var i = 0; i < 3; i++)
+                    Expanded(
+                      child: Padding(
+                        padding: EdgeInsets.only(
+                            left: i == 0 ? 0 : 4, right: i == 2 ? 0 : 4),
+                        child: _DifficultyCard(
+                          c: c,
+                          title: kDifficultyConfig[diffs[i]]!.label,
+                          tag: tags[i],
+                          selected: _difficulty == diffs[i],
+                          onTap: () {
+                            setState(() {
+                              _difficulty = diffs[i];
+                              _gameMode = 'pve';
+                            });
+                          },
+                        ),
+                      ),
+                    ),
+                ]),
+              ]),
         ),
-        const SizedBox(height: 16),
-        Text('人机对战（你执黑）',
-            style: TextStyle(fontSize: 13, color: c.textSecondary)),
-        const SizedBox(height: 12),
-        Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-          for (final d in ['easy', 'normal', 'hard'])
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 6),
-              child: _ModeButton(
-                label: kDifficultyConfig[d]!.label,
-                color: const Color(0xFF6366F1),
-                onTap: () {
-                  setState(() {
-                    _difficulty = d;
-                    _gameMode = 'pve';
-                  });
-                },
-              ),
-            ),
-        ]),
-      ]),
+      ),
     );
   }
 
@@ -330,24 +367,104 @@ class _GomokuPageState extends State<GomokuPage> {
   }
 }
 
-class _ModeButton extends StatelessWidget {
-  final String label;
-  final Color color;
+/// 简约高级模式卡片（五子棋模式选择：纯文字 + 箭头，无图标无 emoji）
+class _ModeCard extends StatelessWidget {
+  final AppColors c;
+  final String title;
+  final String subtitle;
   final VoidCallback onTap;
 
-  const _ModeButton(
-      {required this.label, required this.color, required this.onTap});
+  const _ModeCard({
+    required this.c,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
-    return FilledButton(
-      style: FilledButton.styleFrom(
-        backgroundColor: color,
-        padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 14),
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(16),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 22),
+          decoration: BoxDecoration(
+            color: c.chatBubbleAi,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: c.border),
+          ),
+          child: Row(children: [
+            Expanded(
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(title,
+                        style: TextStyle(
+                            fontSize: 17,
+                            fontWeight: FontWeight.w700,
+                            color: c.text)),
+                    const SizedBox(height: 4),
+                    Text(subtitle,
+                        style: TextStyle(
+                            fontSize: 12.5, color: c.textTertiary)),
+                  ]),
+            ),
+            Icon(Icons.chevron_right, color: c.textTertiary, size: 22),
+          ]),
+        ),
       ),
-      onPressed: onTap,
-      child: Text(label,
-          style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
+    );
+  }
+}
+
+/// 难度小卡片（五子棋，横排三选一：纯文字 + 主题色选中态）
+class _DifficultyCard extends StatelessWidget {
+  final AppColors c;
+  final String title;
+  final String tag;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _DifficultyCard({
+    required this.c,
+    required this.title,
+    required this.tag,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final accent = c.primary;
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 8),
+        decoration: BoxDecoration(
+          color: selected ? accent.withValues(alpha: 0.08) : c.chatBubbleAi,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: selected ? accent : c.border,
+            width: selected ? 2 : 1,
+          ),
+        ),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Text(title,
+              style: TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w700,
+                  color: selected ? accent : c.text)),
+          const SizedBox(height: 3),
+          Text(tag,
+              style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w600,
+                  color: selected ? accent : c.textTertiary)),
+        ]),
+      ),
     );
   }
 }

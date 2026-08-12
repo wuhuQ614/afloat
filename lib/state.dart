@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle, SystemChrome, SystemUiMode, SystemUiOverlayStyle;
 import 'models.dart';
 import 'services/api_service.dart';
+import 'services/maimemo_service.dart';
 import 'services/storage.dart';
 import 'services/dict_service.dart';
 import 'services/agent_service.dart';
@@ -95,6 +96,21 @@ class AppState extends ChangeNotifier {
   int chatProfileIdx = -1;
   bool chatShowReasoning = false;
   bool chatStream = true;
+  /// 对话助手"思考模式"：true 时显式开启模型深度思考（Agent 链路不再强制关闭）
+  bool chatThinking = true;
+  // ===== 墨墨背单词同步 =====
+  /// 墨墨开放 API Token（墨墨 App「实验功能 → 开放 API」获取）
+  String maimemoToken = '';
+  /// 上次同步完成时间戳（毫秒，0 表示从未同步）
+  int maimemoLastSync = 0;
+  /// 累计成功同步的单词数
+  int maimemoSyncedCount = 0;
+  /// 同步进行中标志
+  bool maimemoSyncing = false;
+  /// 最近一次同步错误信息（null 表示成功）
+  String? maimemoSyncError;
+  /// 最近一次同步拉取到的今日学习进度（可空）
+  MaimemoProgress? maimemoProgress;
   /// 剖析模式：'fast' = 快速(纯词典), 'normal' = 正常(词典+AI), 'deep' = 深度(仅AI+语境释义)
   String analysisMode = 'normal';
   /// 深色模式开关
@@ -109,6 +125,9 @@ class AppState extends ChangeNotifier {
   String appMode = '';
   /// UI 风格：'classic' = 经典(不透明), 'glass' = 毛玻璃(半透明模糊)
   String uiStyle = 'classic';
+  /// 是否为毛玻璃样式。深色模式是独立第三主题，
+  /// 无论 uiStyle 为何都渲染为统一深色主题（不使用毛玻璃模糊），故深色下恒为 false。
+  bool get isGlassUI => uiStyle == 'glass' && !darkMode;
   /// 导航指示器：'underline' = 灰色下划线 | 'pill' = 紫色渐变胶囊
   String navIndicator = 'underline';
   String selectedType = 'translation';
@@ -174,6 +193,8 @@ class AppState extends ChangeNotifier {
   List<WordToken> dictationQueue = [];
   int dictationIdx = 0;
   String dictationMode = 'zh2en';
+  /// 默写词库来源：'custom' = 自定义词库 | 'zsb' = 专升本词库 | 'maimemo' = 墨墨词库
+  String dictationSource = 'zsb';
   int dictationTotal = 0;
   int dictationCorrect = 0;
 
@@ -185,6 +206,10 @@ class AppState extends ChangeNotifier {
     chatApiConfig = Storage.loadChatConfig();
     chatShowReasoning = Storage.loadChatShowReasoning();
     chatStream = Storage.loadChatStream();
+    chatThinking = Storage.loadChatThinking();
+    maimemoToken = Storage.loadMaimemoToken();
+    maimemoLastSync = Storage.loadMaimemoLastSync();
+    maimemoSyncedCount = Storage.loadMaimemoSyncedCount();
     // 深色模式：直接读取布尔值
     darkMode = Storage.loadDarkMode();
     analysisMode = Storage.loadAnalysisMode();
@@ -254,9 +279,13 @@ class AppState extends ChangeNotifier {
       );
     }
     questionStartTime = DateTime.now().millisecondsSinceEpoch;
-    // 延迟加载词库，不阻塞启动
+    // 延迟加载词典，不阻塞启动
     DictService.loadExternalDict();
     DictService.loadZsbDict();
+    // 启动时恢复词库数据（生词本/自定义词库/墨墨词库），否则重启后显示为空
+    loadWordBook();
+    loadCustomWordbook();
+    loadMaimemoWordbook();
     notifyListeners();
   }
 
@@ -1625,6 +1654,9 @@ class AppState extends ChangeNotifier {
 
     String reply = '';
     final showReasoning = chatShowReasoning;
+    final thinkingParams = chatThinking
+        ? ApiService.thinkingParams(effectiveChatConfig.model)
+        : ApiService.noThinkingParams(effectiveChatConfig.model);
     if (chatStream && effectiveChatConfig.ready) {
       final msg = ChatMessage(role: 'ai', content: '', showReasoning: showReasoning, reasoning: '');
       chatHistory.add(msg);
@@ -1635,6 +1667,7 @@ class AppState extends ChangeNotifier {
         history,
         prompt,
         config: effectiveChatConfig,
+        extraParams: thinkingParams,
         onReasoning: (chunk) {
           rawReasoning += chunk;
           msg.reasoning = rawReasoning;
@@ -1655,7 +1688,8 @@ class AppState extends ChangeNotifier {
       }
       _notifyChatUpdate();
     } else {
-      final r = await ApiService.callAI(history, prompt, config: effectiveChatConfig);
+      final r = await ApiService.callAI(history, prompt,
+          config: effectiveChatConfig, extraParams: thinkingParams);
       reply = (r == null || r.isEmpty) ? fallbackReply(trimmed) : r;
       chatHistory.add(ChatMessage(role: 'ai', content: reply));
       _notifyChatUpdate();
@@ -2081,20 +2115,20 @@ class AppState extends ChangeNotifier {
 
   /// Agent 循环：发送用户消息 → AI 返回 tool_calls → 执行工具 → 把结果喂回 AI → 直到 AI 返回纯文本
   /// 返回最终回复内容；如果 agent 不可用或失败，返回 null，调用方回退到原流程。
-  /// 带 UI 实时反馈：占位消息显示"正在思考→正在出题→流式输出回复"。
+  /// 带 UI 实时反馈：占位消息显示“正在思考→正在出题→流式输出回复”。
   Future<({String reply, List<String> actions})?> _runAgentLoop(String text, {String? imageData}) async {
     final cfg = effectiveChatConfig;
     if (!cfg.ready) return null;
     if (!AgentService.modelSupportsTools(cfg.model)) return null;
-
+  
     // 创建占位 AI 消息，实时更新（让用户看到 Agent 在做什么）
     final placeholder = ChatMessage(role: 'ai', content: '正在思考…', showReasoning: true, reasoning: '');
     chatHistory.add(placeholder);
     _notifyChatUpdate();
-
+  
     final tools = AgentService.toolDefinitions();
     final actions = <String>[];
-
+  
     // 动态 system prompt：注入当前题目上下文
     final q = currentQuestion;
     final dirDesc = isZh2En ? '中译英' : '英译中';
@@ -2104,19 +2138,29 @@ class AppState extends ChangeNotifier {
       qText: q.text,
       dirDesc: dirDesc,
     );
-
+  
     // 构建 messages：从 chatHistory 读历史，但排除最后一条（刚加的 user 消息，避免重复）
+    // R4 请求体瘦身：只保留最近约 16 条历史，较早消息剥离 imageData
     final historyLen = chatHistory.length;
-    final baseHistory = chatHistory
+    const maxHistory = 16;
+    final allHistory = chatHistory
         .getRange(0, historyLen - 1)
         .where((m) => m.role != 'system')
-        .map((m) => {
-              'role': m.role == 'ai' ? 'assistant' : 'user',
-              'content': (m.role == 'user' && m.imageData != null && m.imageData!.isNotEmpty)
-                  ? ApiService.buildContent(m.content, m.imageData)
-                  : m.content,
-            })
         .toList();
+    final trimmedStart = allHistory.length > maxHistory ? allHistory.length - maxHistory : 0;
+    final baseHistory = <Map<String, dynamic>>[];
+    for (var i = trimmedStart; i < allHistory.length; i++) {
+      final m = allHistory[i];
+      // 较早的消息（非最后4条）剥离 imageData，替换为纯文本 + 占位
+      final isRecent = i >= allHistory.length - 4;
+      if (m.role == 'user' && !isRecent && m.imageData != null && m.imageData!.isNotEmpty) {
+        baseHistory.add({'role': 'user', 'content': '[图片] ${m.content}'});
+      } else if (m.role == 'user' && isRecent && m.imageData != null && m.imageData!.isNotEmpty) {
+        baseHistory.add({'role': 'user', 'content': ApiService.buildContent(m.content, m.imageData)});
+      } else {
+        baseHistory.add({'role': m.role == 'ai' ? 'assistant' : 'user', 'content': m.content});
+      }
+    }
     // 追加当前用户消息
     baseHistory.add({
       'role': 'user',
@@ -2124,9 +2168,9 @@ class AppState extends ChangeNotifier {
           ? ApiService.buildContent(text, imageData)
           : text,
     });
-
+  
     final messages = List<Map<String, dynamic>>.from(baseHistory);
-
+  
     try {
       // 最多循环 5 轮（防止死循环）
       for (var round = 0; round < 5; round++) {
@@ -2137,52 +2181,46 @@ class AppState extends ChangeNotifier {
           placeholder.content = '🔧 ${actions.join("\n ")}\n\n正在思考…';
         }
         _notifyChatUpdate();
-
-        // 最后一轮用流式调用（真实推理过程可见），前几轮用非流式（需要解析 tool_calls）
-        if (round == 4) {
-          // 最后一轮：流式输出，带思考过程（不用 noThinking，让 AI 有思考能力）
-          String rawReasoning = '';
-          String fullContent = '';
-          final reply = await ApiService.streamChatWithTools(
-            messages,
-            sysPrompt,
-            config: cfg,
-            tools: tools,
-            onReasoning: (chunk) {
-              rawReasoning += chunk;
-              placeholder.reasoning = rawReasoning;
-              _notifyChatUpdate();
-            },
-            onDelta: (chunk) {
-              fullContent += chunk;
-              placeholder.content = fullContent;
-              _notifyChatUpdate();
-            },
-          );
-          return (reply: fullContent.isNotEmpty ? fullContent : reply, actions: actions);
-        }
-
-        final resp = await ApiService.callAIWithTools(
+  
+        // R1: 所有轮次全部用流式调用（streamChatWithTools 现在返回 AIResponse 含 tool_calls）
+        // R2: 决策轮关闭思考以加速
+        String rawReasoning = '';
+        String streamContent = '';
+        final resp = await ApiService.streamChatWithTools(
           messages,
           sysPrompt,
           config: cfg,
           tools: tools,
-          // 注意：agent 循环中不用 noThinkingParams，让 AI 有思考能力来选择工具
+          // 思考模式开关：开启时显式请求思考过程，关闭时强制关闭以加速
+          extraParams: chatThinking
+              ? ApiService.thinkingParams(cfg.model)
+              : ApiService.noThinkingParams(cfg.model),
+          onReasoning: (chunk) {
+            rawReasoning += chunk;
+            placeholder.reasoning = rawReasoning;
+            _notifyChatUpdate();
+          },
+          onDelta: (chunk) {
+            streamContent += chunk;
+            placeholder.content = streamContent;
+            _notifyChatUpdate();
+          },
         );
-        if (resp.content == null) {
+  
+        if (resp.content == null && resp.toolCalls.isEmpty) {
           // API 失败，移除占位消息，回退
           chatHistory.remove(placeholder);
           _notifyChatUpdate();
           return null;
         }
-        // 显示思考过程（如果非流式响应中包含 reasoning_content）
+        // 显示思考过程
         if (resp.reasoning.isNotEmpty) {
           placeholder.reasoning = resp.reasoning;
           _notifyChatUpdate();
         }
         if (resp.toolCalls.isEmpty) {
-          // 纯文本回复，结束循环 → 模拟流式输出
-          final reply = resp.content!;
+          // 纯文本回复，直接赋最终文本（R3: 删除假流式）
+          final reply = resp.content ?? '';
           await _simulateStreamOutput(placeholder, reply, actions);
           return (reply: reply, actions: actions);
         }
@@ -2201,7 +2239,7 @@ class AppState extends ChangeNotifier {
         // 执行每个工具调用，实时更新占位消息
         for (final tc in resp.toolCalls) {
           final args = AgentService.parseArgs(tc.arguments);
-          // 工具执行前：显示"正在xxx"
+          // 工具执行前：显示“正在xxx”
           final runningLabel = _toolRunningLabel(tc.name, args);
           if (runningLabel.isNotEmpty) {
             placeholder.content = actions.isEmpty
@@ -2260,37 +2298,39 @@ class AppState extends ChangeNotifier {
     }
   }
 
-  /// 模拟流式输出：把完整回复逐字显示到占位消息，给用户流式体验
+  /// R3: 直接赋最终文本 + 一次通知（删除假流式，消除 O(n²) substring + 人为延迟）
   Future<void> _simulateStreamOutput(ChatMessage msg, String reply, List<String> actions) async {
     final prefix = actions.isEmpty ? '' : '🔧 ${actions.join("\n🔧 ")}\n\n';
-    // 分块输出（每块 2-4 个字符），模拟流式效果
-    final chunkSize = reply.length > 200 ? 4 : 2;
-    var displayed = '';
-    for (var i = 0; i < reply.length; i += chunkSize) {
-      final end = (i + chunkSize).clamp(0, reply.length);
-      displayed = reply.substring(0, end);
-      msg.content = '$prefix$displayed';
-      _notifyChatUpdate();
-      // 短暂延迟（让用户看到"打字"效果），但不影响总时长太多
-      if (i % (chunkSize * 10) == 0) {
-        await Future.delayed(const Duration(milliseconds: 16));
-      }
-    }
     msg.content = '$prefix$reply';
     _notifyChatUpdate();
   }
 
   // ===== 默写 =====
-  void startDictation(String mode, int count) {
+  /// [source]：'custom' = 自定义词库 | 'zsb' = 专升本词库 | 'maimemo' = 墨墨词库
+  void startDictation(String mode, int count, {String source = 'zsb'}) {
     dictationMode = mode;
-    final words = DictService.zsbWords();
-    if (words.isEmpty) return;
-    words.shuffle(Random());
-    final picked = words.take(count).toList();
-    dictationQueue = picked.map((w) {
-      final e = DictService.zsbLookup(w);
-      return WordToken(text: w, type: 'word', word: w, pos: e?.pos ?? '', translation: e?.translation ?? '', other: e?.other ?? '');
-    }).toList();
+    dictationSource = source;
+    List<WordToken> all;
+    if (source == 'custom') {
+      all = customWordbook
+          .map((e) => WordToken(text: e.word, type: 'word', word: e.word, pos: '', translation: e.translation, other: ''))
+          .toList();
+    } else if (source == 'maimemo') {
+      all = maimemoWordbook
+          .map((e) => WordToken(text: e.word, type: 'word', word: e.word, pos: '', translation: e.translation, other: ''))
+          .toList();
+    } else {
+      all = DictService.zsbWords()
+          .map((w) {
+            final e = DictService.zsbLookup(w);
+            return WordToken(text: w, type: 'word', word: w, pos: e?.pos ?? '', translation: e?.translation ?? '', other: e?.other ?? '');
+          })
+          .toList();
+    }
+    if (all.isEmpty) return;
+    all.shuffle(Random());
+    final picked = all.take(count).toList();
+    dictationQueue = picked;
     dictationIdx = 0;
     dictationTotal = 0;
     dictationCorrect = 0;
@@ -2304,20 +2344,29 @@ class AppState extends ChangeNotifier {
 
   bool get dictationFinished => dictationQueue.isNotEmpty && dictationIdx >= dictationQueue.length;
 
-  /// 批改默写答案，返回是否答对
+  /// 本地批改默写答案，返回是否答对
   /// [advance] 为 false 时只批改不推进索引（由调用方控制何时下一题）
   bool checkDictationAnswer(String answer, {bool advance = true}) {
     final w = currentDictationWord;
     if (w == null) return false;
     final ans = answer.trim();
-    bool correct;
+    final correct = _judgeDictationLocal(w, ans);
+    _commitDictationResult(w, ans, correct, advance: advance);
+    return correct;
+  }
+
+  /// 本地判定：中文→英文要求拼写完全一致；英文→中文要求释义包含匹配
+  bool _judgeDictationLocal(WordToken w, String ans) {
     if (dictationMode == 'zh2en') {
-      correct = ans.toLowerCase() == w.word.toLowerCase();
-    } else {
-      final ref = w.translation.replaceAll(RegExp(r'[；;，,。.、/]'), ' ').split(' ').where((s) => s.length >= 2).toList();
-      final keyRef = ref.isEmpty ? w.translation : ref.join(' ');
-      correct = keyRef.contains(ans) || ans.isNotEmpty && ref.any((r) => ans.contains(r) || r.contains(ans));
+      return ans.toLowerCase() == w.word.toLowerCase();
     }
+    final ref = w.translation.replaceAll(RegExp(r'[；;，,。.、/]'), ' ').split(' ').where((s) => s.length >= 2).toList();
+    final keyRef = ref.isEmpty ? w.translation : ref.join(' ');
+    return keyRef.contains(ans) || ans.isNotEmpty && ref.any((r) => ans.contains(r) || r.contains(ans));
+  }
+
+  /// 记录一次默写批改结果（计数 + 错题本 + 推进索引）
+  void _commitDictationResult(WordToken w, String ans, bool correct, {bool advance = true}) {
     dictationTotal++;
     if (correct) dictationCorrect++;
     if (!correct) {
@@ -2348,7 +2397,63 @@ class AppState extends ChangeNotifier {
       dictationIdx++;
       notifyListeners();
     }
-    return correct;
+  }
+
+  /// AI 批改默写答案，返回 (是否答对, AI 点评)。
+  /// 未配置 API 或 AI 调用失败时回退本地批改，并在点评中说明。
+  Future<({bool correct, String comment})> checkDictationAnswerAI(String answer, {bool advance = true}) async {
+    final w = currentDictationWord;
+    if (w == null) return (correct: false, comment: '');
+    final ans = answer.trim();
+    if (!apiConfig.ready) {
+      final correct = _judgeDictationLocal(w, ans);
+      _commitDictationResult(w, ans, correct, advance: advance);
+      return (correct: correct, comment: '未配置 API，已用本地批改');
+    }
+    final isZh2En = dictationMode == 'zh2en';
+    final systemPrompt = '你是英语单词默写批改老师，请批改用户的默写答案。\n'
+        '题目（${isZh2En ? '中文 → 英文' : '英文 → 中文'}）：${isZh2En ? w.translation : w.word}\n'
+        '标准答案：${isZh2En ? w.word : w.translation}\n'
+        '用户答案：$ans\n'
+        '批改规则：\n'
+        '- 中文→英文：拼写必须完全正确才算对（大小写不敏感，不允许拼写错误）；\n'
+        '- 英文→中文：意思准确即可，同义词、近义表达都算对；\n'
+        '只返回一个 JSON 对象，不要返回其他内容：{"correct": true或false, "comment": "一句话中文点评，点评用户答案与标准答案的差异"}';
+    try {
+      final reply = await ApiService.callAI(
+        [
+          {'role': 'user', 'content': '请批改'}
+        ],
+        systemPrompt,
+        config: apiConfig,
+        maxTokens: 256,
+        extraParams: ApiService.noThinkingParams(apiConfig.model),
+      );
+      final obj = _extractDictationAiJson(reply);
+      if (obj != null && obj['correct'] is bool) {
+        final correct = obj['correct'] as bool;
+        final comment = (obj['comment'] as String?)?.trim() ?? '';
+        _commitDictationResult(w, ans, correct, advance: advance);
+        return (correct: correct, comment: comment);
+      }
+    } catch (_) {}
+    final correct = _judgeDictationLocal(w, ans);
+    _commitDictationResult(w, ans, correct, advance: advance);
+    return (correct: correct, comment: 'AI 批改失败，已用本地批改');
+  }
+
+  /// 从 AI 回复中提取 {"correct": bool, "comment": "..."} JSON 对象
+  Map<String, dynamic>? _extractDictationAiJson(String? text) {
+    if (text == null || text.isEmpty) return null;
+    try {
+      final start = text.indexOf('{');
+      final end = text.lastIndexOf('}');
+      if (start < 0 || end <= start) return null;
+      final obj = jsonDecode(text.substring(start, end + 1));
+      return obj is Map<String, dynamic> ? obj : null;
+    } catch (_) {
+      return null;
+    }
   }
 
   /// 推进到下一道默写题
@@ -2417,6 +2522,159 @@ class AppState extends ChangeNotifier {
     wordbook = [];
     Storage.saveWordBook(wordbook);
     notifyListeners();
+  }
+
+  // ===== 自定义词库（默写用，用户手动创建） =====
+  List<WordBookItem> customWordbook = [];
+
+  void loadCustomWordbook() {
+    customWordbook = Storage.loadCustomWordbook();
+    notifyListeners();
+  }
+
+  void addToCustomWordbook(String word, String translation) {
+    final key = word.trim().toLowerCase();
+    if (key.isEmpty) return;
+    if (customWordbook.any((e) => e.word.toLowerCase() == key)) return;
+    customWordbook.insert(0, WordBookItem(
+          word: word.trim(),
+          translation: translation.trim(),
+          addedAt: DateTime.now().millisecondsSinceEpoch,
+        ));
+    Storage.saveCustomWordbook(customWordbook);
+    notifyListeners();
+  }
+
+  void removeFromCustomWordbook(String word) {
+    customWordbook.removeWhere((e) => e.word.toLowerCase() == word.toLowerCase());
+    Storage.saveCustomWordbook(customWordbook);
+    notifyListeners();
+  }
+
+  void clearCustomWordbook() {
+    customWordbook = [];
+    Storage.saveCustomWordbook(customWordbook);
+    notifyListeners();
+  }
+
+  // ===== 墨墨词库 =====
+  List<WordBookItem> maimemoWordbook = [];
+
+  void loadMaimemoWordbook() {
+    maimemoWordbook = Storage.loadMaimemoWordbook();
+    notifyListeners();
+  }
+
+  void addToMaimemoWordbook(String word, String translation) {
+    final idx = maimemoWordbook.indexWhere((e) => e.word == word);
+    if (idx >= 0) return;
+    maimemoWordbook.insert(0, WordBookItem(
+          word: word,
+          translation: translation,
+          addedAt: DateTime.now().millisecondsSinceEpoch,
+        ));
+    Storage.saveMaimemoWordbook(maimemoWordbook);
+    notifyListeners();
+  }
+
+  void removeFromMaimemoWordbook(String word) {
+    maimemoWordbook.removeWhere((e) => e.word == word);
+    Storage.saveMaimemoWordbook(maimemoWordbook);
+    notifyListeners();
+  }
+
+  void updateMaimemoWordbookItem(int index, WordBookItem item) {
+    if (index < 0 || index >= maimemoWordbook.length) return;
+    maimemoWordbook[index] = item;
+    Storage.saveMaimemoWordbook(maimemoWordbook);
+    notifyListeners();
+  }
+
+  void clearMaimemoWordbook() {
+    maimemoWordbook = [];
+    Storage.saveMaimemoWordbook(maimemoWordbook);
+    notifyListeners();
+  }
+
+  // ===== 墨墨背单词同步 =====
+  /// 保存墨墨 Token（空串表示清除）
+  void setMaimemoToken(String token) {
+    maimemoToken = token.trim();
+    Storage.saveMaimemoToken(maimemoToken);
+    if (maimemoToken.isEmpty) {
+      maimemoLastSync = 0;
+      maimemoSyncedCount = 0;
+      maimemoSyncError = null;
+      maimemoProgress = null;
+      Storage.saveMaimemoLastSync(0);
+      Storage.saveMaimemoSyncedCount(0);
+    }
+    notifyListeners();
+  }
+
+  /// 从墨墨拉取今日已学习单词并累加入墨墨词库。
+  /// 词库是累计词汇库：已存在的单词保留（含用户编辑），
+  /// 今日已学习的新单词追加到词库，历史数据不会清空。
+  /// 返回本次新增的单词数；失败抛 MaimemoException。
+  Future<int> syncMaimemoWords() async {
+    if (maimemoSyncing) return 0;
+    if (maimemoToken.trim().isEmpty) {
+      throw const MaimemoException('尚未配置墨墨 API Token');
+    }
+    maimemoSyncing = true;
+    maimemoSyncError = null;
+    notifyListeners();
+    try {
+      // 1. 今日学习进度
+      final progress = await MaimemoService.getStudyProgress(maimemoToken);
+      // 2. 今日全部学习单词（含新词与复习；超 1000 时自动拆分去重合并）
+      final allWords = await MaimemoService.fetchAllTodayWords(maimemoToken);
+      // 3. 仅保留今日已学习（已点过认识/不认识）的单词，过滤掉仅规划未学习的
+      final words = allWords.where((w) => w.isFinished).toList();
+      // 4. 分批校验 token 与词条有效性（vocabulary/query 每次一批，避免超限）
+      final spellings = words.map((w) => w.spelling).toList();
+      for (var i = 0; i < spellings.length; i += 100) {
+        final end = (i + 100) < spellings.length ? i + 100 : spellings.length;
+        await MaimemoService.queryVocabulary(
+          maimemoToken,
+          spellings: spellings.sublist(i, end),
+        );
+      }
+      // 5. 词库累积：已存在的单词保留，今日已学习的新单词追加到顶部
+      final existing = {
+        for (final e in maimemoWordbook) e.word.toLowerCase(): true,
+      };
+      var added = 0;
+      final now = DateTime.now().millisecondsSinceEpoch;
+      for (final w in words) {
+        final key = w.spelling.toLowerCase();
+        if (existing[key] == true) continue;
+        existing[key] = true;
+        final entry = DictService.lookup(key);
+        maimemoWordbook.insert(
+          0,
+          WordBookItem(
+            word: w.spelling,
+            translation: entry?.translation ?? '',
+            addedAt: now,
+          ),
+        );
+        added++;
+      }
+      Storage.saveMaimemoWordbook(maimemoWordbook);
+      maimemoLastSync = DateTime.now().millisecondsSinceEpoch;
+      maimemoSyncedCount += added;
+      maimemoProgress = progress;
+      Storage.saveMaimemoLastSync(maimemoLastSync);
+      Storage.saveMaimemoSyncedCount(maimemoSyncedCount);
+      return added;
+    } catch (e) {
+      maimemoSyncError = e.toString();
+      rethrow;
+    } finally {
+      maimemoSyncing = false;
+      notifyListeners();
+    }
   }
 
   // ===== 学习报告数据 =====
@@ -2536,15 +2794,17 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  void saveChatSettings({required bool independent, required ApiConfig config, required bool showReasoning, required bool stream}) {
+  void saveChatSettings({required bool independent, required ApiConfig config, required bool showReasoning, required bool stream, required bool thinking}) {
     chatApiIndependent = independent;
     chatApiConfig = config;
     chatShowReasoning = showReasoning;
     chatStream = stream;
+    chatThinking = thinking;
     Storage.saveChatIndependent(independent);
     Storage.saveChatConfig(config);
     Storage.saveChatShowReasoning(showReasoning);
     Storage.saveChatStream(stream);
+    Storage.saveChatThinking(thinking);
     notifyListeners();
   }
 
@@ -2580,6 +2840,8 @@ class AppState extends ChangeNotifier {
   void setAppMode(String mode) {
     if (appMode == mode) return;
     appMode = mode;
+    // 切换模式时重置页面索引，确保旧模式不残留状态
+    page = 0;
     Storage.saveAppMode(mode);
     notifyListeners();
   }
@@ -2589,6 +2851,16 @@ class AppState extends ChangeNotifier {
     uiStyle = style;
     Storage.saveUiStyle(style);
     notifyListeners();
+  }
+
+  /// 设置主题（第三大主题）：'classic' = 经典(浅色) | 'glass' = 毛玻璃(浅色) | 'dark' = 深色独立主题
+  void setThemeStyle(String t) {
+    if (t == 'dark') {
+      toggleDarkMode(true);
+    } else {
+      toggleDarkMode(false);
+      setUiStyle(t);
+    }
   }
 
   void setNavIndicator(String type) {
@@ -2643,6 +2915,8 @@ class AppState extends ChangeNotifier {
       loadWrongQuestions();
       loadStudyRecords();
       loadWordBook();
+      loadCustomWordbook();
+      loadMaimemoWordbook();
       loadRecordedWords();
       loadRecordsSelected();
       loadAnsweredBankIndices();

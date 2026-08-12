@@ -165,7 +165,8 @@ class ExamRoomPage extends StatelessWidget {
                 gradient: LinearGradient(
                   begin: Alignment.topLeft,
                   end: Alignment.bottomRight,
-                  colors: [Color(0xFFEFF4FB), Color(0xFFF7F5FB), Color(0xFFF9F7F2)],
+                  // 中性色渐变（去掉粉紫色调）
+                  colors: [Color(0xFFF0F2F6), Color(0xFFF5F6F9), Color(0xFFFAFAF8)],
                 ),
               ),
               constraints: const BoxConstraints.expand(),
@@ -214,7 +215,8 @@ class ExamRoomPage extends StatelessWidget {
             gradient: LinearGradient(
               begin: Alignment.topLeft,
               end: Alignment.bottomRight,
-              colors: [Color(0xFFEFF4FB), Color(0xFFF7F5FB), Color(0xFFF9F7F2)],
+              // 中性色渐变（去掉粉紫色调）
+              colors: [Color(0xFFF0F2F6), Color(0xFFF5F6F9), Color(0xFFFAFAF8)],
             ),
           ),
           child: Column(

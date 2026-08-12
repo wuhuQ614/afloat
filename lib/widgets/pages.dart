@@ -240,9 +240,13 @@ class ReportPage extends StatelessWidget {
     final wkday = ['一', '二', '三', '四', '五', '六', '日'][now.weekday - 1];
     final dateSubtitle = '${now.year}年${now.month}月${now.day}日 星期$wkday';
 
+    // 检测小屏（手机端）
+    final screenWidth = MediaQuery.of(context).size.width;
+    final isMobile = screenWidth < 500;
+
     return SafeArea(
       child: SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(20, 20, 20, 40),
+        padding: EdgeInsets.fromLTRB(isMobile ? 14 : 20, isMobile ? 14 : 20, isMobile ? 14 : 20, 40),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -257,7 +261,7 @@ class ReportPage extends StatelessWidget {
                     children: [
                       Text('学习报告',
                           style: TextStyle(
-                              fontSize: 24,
+                              fontSize: isMobile ? 20 : 24,
                               fontWeight: FontWeight.w700,
                               color: c.text,
                               height: 1.2,
@@ -273,46 +277,89 @@ class ReportPage extends StatelessWidget {
                 _DotsMenu(onClear: s.studyRecords.isNotEmpty ? () => s.clearStudyRecords() : null),
               ],
             ),
-            const SizedBox(height: 20),
+            SizedBox(height: isMobile ? 14 : 20),
 
-            // ========== 2. 4 个统计卡 ==========
-            Row(
-              children: [
-                Expanded(
-                    child: _KpiCard(
-                  c: c,
-                  icon: Icons.edit_note_rounded, // 累计练习：铅笔
-                  value: '$total',
-                  label: '累计练习',
-                  isActive: true, // 第一张带底部紫色指示条
-                )),
-                const SizedBox(width: 14),
-                Expanded(
-                    child: _KpiCard(
-                  c: c,
-                  icon: Icons.star_rounded, // 平均得分：填充星星
-                  value: total == 0 ? '-' : avg.toStringAsFixed(1),
-                  label: '平均得分',
-                )),
-                const SizedBox(width: 14),
-                Expanded(
-                    child: _KpiCard(
-                  c: c,
-                  icon: Icons.gps_fixed_rounded, // 达标率：靶心/定位点
-                  value: total == 0 ? '-' : '$rate%',
-                  label: '达标率(≥70分)',
-                )),
-                const SizedBox(width: 14),
-                Expanded(
-                    child: _KpiCard(
-                  c: c,
-                  icon: Icons.schedule_rounded, // 学习时长：时钟
-                  value: totalMin,
-                  label: '学习时长',
-                )),
-              ],
-            ),
-            const SizedBox(height: 16),
+            // ========== 2. 4 个统计卡（手机端 2x2 网格，桌面端一行 4 列）==========
+            if (isMobile) ...[
+              Row(
+                children: [
+                  Expanded(
+                      child: _KpiCard(
+                    c: c,
+                    icon: Icons.edit_note_rounded,
+                    value: '$total',
+                    label: '累计练习',
+                    isActive: true,
+                  )),
+                  const SizedBox(width: 10),
+                  Expanded(
+                      child: _KpiCard(
+                    c: c,
+                    icon: Icons.star_rounded,
+                    value: total == 0 ? '-' : avg.toStringAsFixed(1),
+                    label: '平均得分',
+                  )),
+                ],
+              ),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  Expanded(
+                      child: _KpiCard(
+                    c: c,
+                    icon: Icons.gps_fixed_rounded,
+                    value: total == 0 ? '-' : '$rate%',
+                    label: '达标率(≥70分)',
+                  )),
+                  const SizedBox(width: 10),
+                  Expanded(
+                      child: _KpiCard(
+                    c: c,
+                    icon: Icons.schedule_rounded,
+                    value: totalMin,
+                    label: '学习时长',
+                  )),
+                ],
+              ),
+            ] else ...[
+              Row(
+                children: [
+                  Expanded(
+                      child: _KpiCard(
+                    c: c,
+                    icon: Icons.edit_note_rounded,
+                    value: '$total',
+                    label: '累计练习',
+                    isActive: true,
+                  )),
+                  const SizedBox(width: 14),
+                  Expanded(
+                      child: _KpiCard(
+                    c: c,
+                    icon: Icons.star_rounded,
+                    value: total == 0 ? '-' : avg.toStringAsFixed(1),
+                    label: '平均得分',
+                  )),
+                  const SizedBox(width: 14),
+                  Expanded(
+                      child: _KpiCard(
+                    c: c,
+                    icon: Icons.gps_fixed_rounded,
+                    value: total == 0 ? '-' : '$rate%',
+                    label: '达标率(≥70分)',
+                  )),
+                  const SizedBox(width: 14),
+                  Expanded(
+                      child: _KpiCard(
+                    c: c,
+                    icon: Icons.schedule_rounded,
+                    value: totalMin,
+                    label: '学习时长',
+                  )),
+                ],
+              ),
+            ],
+            SizedBox(height: isMobile ? 12 : 16),
 
             // ========== 3. 最近一次模拟考试 ==========
             _PaperCard(c: c, s: s),
@@ -500,6 +547,10 @@ class _PaperCard extends StatelessWidget {
     final isLight = c.isLight;
     final bg = isLight ? Colors.white : const Color(0xFF2A2A32);
 
+    // 检测小屏
+    final screenWidth = MediaQuery.of(context).size.width;
+    final isMobile = screenWidth < 500;
+
     // 取"最近一次"：优先 currentExamResult，否则 examHistory 最近一条
     final cur = s.currentExamResult;
     final lastHist = s.examHistory.isEmpty ? null : s.examHistory.first;
@@ -517,7 +568,7 @@ class _PaperCard extends StatelessWidget {
 
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.fromLTRB(22, 20, 16, 20),
+      padding: EdgeInsets.fromLTRB(isMobile ? 16 : 22, isMobile ? 16 : 20, isMobile ? 12 : 16, isMobile ? 16 : 20),
       decoration: BoxDecoration(
         color: bg,
         borderRadius: BorderRadius.circular(22),
@@ -539,186 +590,258 @@ class _PaperCard extends StatelessWidget {
                   fontWeight: FontWeight.w600,
                   color: c.textSecondary,
                   height: 1.2)),
-          const SizedBox(height: 16),
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // 左：分数 + 信息
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+          SizedBox(height: isMobile ? 12 : 16),
+          // 手机端：垂直布局；桌面端：左右布局
+          if (isMobile) ...[
+            // 分数
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.baseline,
+              textBaseline: TextBaseline.alphabetic,
+              children: [
+                Text(hasExam ? '$totalScore' : '--',
+                    style: TextStyle(
+                        fontSize: 42,
+                        fontWeight: FontWeight.w800,
+                        color: c.primaryText,
+                        height: 0.95,
+                        letterSpacing: -1)),
+                const SizedBox(width: 4),
+                Text('/$maxScore 分',
+                    style: TextStyle(
+                        fontSize: 13,
+                        color: c.textTertiary,
+                        height: 1.2)),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(hasExam ? title : '暂无，考完一次即可在这里查看',
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: c.text,
+                    height: 1.3)),
+            const SizedBox(height: 10),
+            // 用时 + 正确率
+            Row(children: [
+              Icon(Icons.schedule_rounded,
+                  size: 14, color: c.textTertiary),
+              const SizedBox(width: 4),
+              Text(hasExam ? '用时 ${_fmtDuration(durationSec)}' : '用时 --:--',
+                  style: TextStyle(
+                      fontSize: 12, color: c.textTertiary)),
+              const SizedBox(width: 14),
+              Icon(Icons.check_circle_outline_rounded,
+                  size: 14, color: c.textTertiary),
+              const SizedBox(width: 4),
+              Text('正确率 $correctRate',
+                  style: TextStyle(
+                      fontSize: 12, color: c.textTertiary)),
+            ]),
+            // 查看成绩分析
+            if (hasCur) ...[
+              const SizedBox(height: 12),
+              GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: () => s.setPage(11),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
                   children: [
-                    Row(
-                      crossAxisAlignment: CrossAxisAlignment.baseline,
-                      textBaseline: TextBaseline.alphabetic,
-                      children: [
-                        Text(hasExam ? '$totalScore' : '--',
-                            style: TextStyle(
-                                fontSize: 56,
-                                fontWeight: FontWeight.w800,
-                                color: c.primaryText,
-                                height: 0.95,
-                                letterSpacing: -1)),
-                        const SizedBox(width: 4),
-                        Text('/$maxScore 分',
-                            style: TextStyle(
-                                fontSize: 13,
-                                color: c.textTertiary,
-                                height: 1.2)),
-                      ],
-                    ),
-                    const SizedBox(height: 12),
-                    Text(hasExam ? title : '暂无，考完一次即可在这里查看',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
+                    Text('查看成绩分析',
                         style: TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w600,
-                            color: c.text,
-                            height: 1.3)),
-                    const SizedBox(height: 14),
-                    // 用时 + 正确率
-                    Row(children: [
-                      Icon(Icons.schedule_rounded,
-                          size: 14, color: c.textTertiary),
-                      const SizedBox(width: 4),
-                      Text(hasExam ? '用时 ${_fmtDuration(durationSec)}' : '用时 --:--',
-                          style: TextStyle(
-                              fontSize: 12, color: c.textTertiary)),
-                      const SizedBox(width: 14),
-                      Icon(Icons.check_circle_outline_rounded,
-                          size: 14, color: c.textTertiary),
-                      const SizedBox(width: 4),
-                      Text('正确率 $correctRate',
-                          style: TextStyle(
-                              fontSize: 12, color: c.textTertiary)),
-                    ]),
-                  ],
-                ),
-              ),
-              // 右：3D E 字图标 + 查看成绩分析
-              SizedBox(
-                width: 146,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: [
-                    // 3D E 字（紫色渐变玻璃方块 + 光晕）
-                    SizedBox(
-                      height: 110,
-                      child: Stack(
-                        alignment: Alignment.center,
-                        children: [
-                          // 外层光环
-                          Container(
-                            width: 100,
-                            height: 100,
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
-                              gradient: RadialGradient(
-                                colors: [
-                                  c.primary.withValues(alpha: 0.22),
-                                  c.primary.withValues(alpha: 0.0),
-                                ],
-                                stops: const [0.3, 1.0],
-                              ),
-                            ),
-                          ),
-                          // 玻璃方块
-                          Transform.rotate(
-                            angle: -0.18,
-                            child: Container(
-                              width: 84,
-                              height: 84,
-                              decoration: BoxDecoration(
-                                borderRadius: BorderRadius.circular(22),
-                                gradient: LinearGradient(
-                                  begin: Alignment.topLeft,
-                                  end: Alignment.bottomRight,
-                                  colors: [
-                                    (c.isLight
-                                            ? const Color(0xFFE9DFFF)
-                                            : const Color(0xFF58477A))
-                                        .withValues(alpha: 0.85),
-                                    (c.isLight
-                                            ? const Color(0xFFC8B8FA)
-                                            : const Color(0xFF7D66B3))
-                                        .withValues(alpha: 0.82),
-                                  ],
-                                ),
-                                border: Border.all(
-                                    color: (c.isLight
-                                            ? Colors.white
-                                            : Colors.white.withValues(
-                                                alpha: 0.3))
-                                        .withValues(alpha: 0.85),
-                                    width: 1.5),
-                                boxShadow: [
-                                  BoxShadow(
-                                      color: c.primary.withValues(alpha: 0.28),
-                                      blurRadius: 22,
-                                      offset: const Offset(2, 8)),
-                                ],
-                              ),
-                              alignment: Alignment.center,
-                              child: Text('E',
-                                  style: TextStyle(
-                                      fontSize: 48,
-                                      fontWeight: FontWeight.w800,
-                                      color: (c.isLight
-                                              ? const Color(0xFF7E5CE8)
-                                              : const Color(0xFFD9CEFF))
-                                          .withValues(alpha: 0.92),
-                                      letterSpacing: -1)),
-                            ),
-                          ),
-                          // 右下侧环
-                          Positioned(
-                            right: 6,
-                            bottom: 8,
-                            child: Container(
-                              width: 86,
-                              height: 6,
-                              decoration: BoxDecoration(
-                                borderRadius: BorderRadius.circular(3),
-                                gradient: LinearGradient(
-                                  colors: [
-                                    c.primary.withValues(alpha: 0.0),
-                                    c.primary.withValues(alpha: 0.55),
-                                    c.primary.withValues(alpha: 0.0),
-                                  ],
-                                ),
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    // 查看成绩分析
-                    if (hasCur) ...[
-                      const SizedBox(height: 4),
-                      GestureDetector(
-                        behavior: HitTestBehavior.opaque,
-                        onTap: () => s.setPage(11),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Text('查看成绩分析',
-                                style: TextStyle(
-                                    fontSize: 12.5,
-                                    color: c.primaryText,
-                                    fontWeight: FontWeight.w600)),
-                            const SizedBox(width: 2),
-                            Icon(Icons.arrow_forward_rounded,
-                                size: 14, color: c.primaryText),
-                          ],
-                        ),
-                      ),
-                    ]
+                            fontSize: 12.5,
+                            color: c.primaryText,
+                            fontWeight: FontWeight.w600)),
+                    const SizedBox(width: 2),
+                    Icon(Icons.arrow_forward_rounded,
+                        size: 14, color: c.primaryText),
                   ],
                 ),
               ),
             ],
-          ),
+          ] else ...[
+            // 桌面端：左右布局
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // 左：分数 + 信息
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.baseline,
+                        textBaseline: TextBaseline.alphabetic,
+                        children: [
+                          Text(hasExam ? '$totalScore' : '--',
+                              style: TextStyle(
+                                  fontSize: 56,
+                                  fontWeight: FontWeight.w800,
+                                  color: c.primaryText,
+                                  height: 0.95,
+                                  letterSpacing: -1)),
+                          const SizedBox(width: 4),
+                          Text('/$maxScore 分',
+                              style: TextStyle(
+                                  fontSize: 13,
+                                  color: c.textTertiary,
+                                  height: 1.2)),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      Text(hasExam ? title : '暂无，考完一次即可在这里查看',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w600,
+                              color: c.text,
+                              height: 1.3)),
+                      const SizedBox(height: 14),
+                      // 用时 + 正确率
+                      Row(children: [
+                        Icon(Icons.schedule_rounded,
+                            size: 14, color: c.textTertiary),
+                        const SizedBox(width: 4),
+                        Text(hasExam ? '用时 ${_fmtDuration(durationSec)}' : '用时 --:--',
+                            style: TextStyle(
+                                fontSize: 12, color: c.textTertiary)),
+                        const SizedBox(width: 14),
+                        Icon(Icons.check_circle_outline_rounded,
+                            size: 14, color: c.textTertiary),
+                        const SizedBox(width: 4),
+                        Text('正确率 $correctRate',
+                            style: TextStyle(
+                                fontSize: 12, color: c.textTertiary)),
+                      ]),
+                    ],
+                  ),
+                ),
+                // 右：3D E 字图标 + 查看成绩分析
+                SizedBox(
+                  width: 146,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      // 3D E 字（紫色渐变玻璃方块 + 光晕）
+                      SizedBox(
+                        height: 110,
+                        child: Stack(
+                          alignment: Alignment.center,
+                          children: [
+                            // 外层光环
+                            Container(
+                              width: 100,
+                              height: 100,
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                gradient: RadialGradient(
+                                  colors: [
+                                    c.primary.withValues(alpha: 0.22),
+                                    c.primary.withValues(alpha: 0.0),
+                                  ],
+                                  stops: const [0.3, 1.0],
+                                ),
+                              ),
+                            ),
+                            // 玻璃方块
+                            Transform.rotate(
+                              angle: -0.18,
+                              child: Container(
+                                width: 84,
+                                height: 84,
+                                decoration: BoxDecoration(
+                                  borderRadius: BorderRadius.circular(22),
+                                  gradient: LinearGradient(
+                                    begin: Alignment.topLeft,
+                                    end: Alignment.bottomRight,
+                                    colors: [
+                                      (c.isLight
+                                              ? const Color(0xFFE9DFFF)
+                                              : const Color(0xFF58477A))
+                                          .withValues(alpha: 0.85),
+                                      (c.isLight
+                                              ? const Color(0xFFC8B8FA)
+                                              : const Color(0xFF7D66B3))
+                                          .withValues(alpha: 0.82),
+                                    ],
+                                  ),
+                                  border: Border.all(
+                                      color: (c.isLight
+                                              ? Colors.white
+                                              : Colors.white.withValues(
+                                                  alpha: 0.3))
+                                          .withValues(alpha: 0.85),
+                                      width: 1.5),
+                                  boxShadow: [
+                                    BoxShadow(
+                                        color: c.primary.withValues(alpha: 0.28),
+                                        blurRadius: 22,
+                                        offset: const Offset(2, 8)),
+                                  ],
+                                ),
+                                alignment: Alignment.center,
+                                child: Text('E',
+                                    style: TextStyle(
+                                        fontSize: 48,
+                                        fontWeight: FontWeight.w800,
+                                        color: (c.isLight
+                                                ? const Color(0xFF7E5CE8)
+                                                : const Color(0xFFD9CEFF))
+                                            .withValues(alpha: 0.92),
+                                        letterSpacing: -1)),
+                              ),
+                            ),
+                            // 右下侧环
+                            Positioned(
+                              right: 6,
+                              bottom: 8,
+                              child: Container(
+                                width: 86,
+                                height: 6,
+                                decoration: BoxDecoration(
+                                  borderRadius: BorderRadius.circular(3),
+                                  gradient: LinearGradient(
+                                    colors: [
+                                      c.primary.withValues(alpha: 0.0),
+                                      c.primary.withValues(alpha: 0.55),
+                                      c.primary.withValues(alpha: 0.0),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      // 查看成绩分析
+                      if (hasCur) ...[
+                        const SizedBox(height: 4),
+                        GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onTap: () => s.setPage(11),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text('查看成绩分析',
+                                  style: TextStyle(
+                                      fontSize: 12.5,
+                                      color: c.primaryText,
+                                      fontWeight: FontWeight.w600)),
+                              const SizedBox(width: 2),
+                              Icon(Icons.arrow_forward_rounded,
+                                  size: 14, color: c.primaryText),
+                            ],
+                          ),
+                        ),
+                      ]
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ],
         ],
       ),
     );
@@ -2112,11 +2235,16 @@ class QuestionListPanel extends StatelessWidget {
 class _DictationPageState extends State<DictationPage> {
   String _mode = 'zh2en';
   int _count = 10;
+  /// 词库来源：'custom' = 自定义词库 | 'zsb' = 专升本词库 | 'maimemo' = 墨墨词库
+  String _source = 'custom';
+  late final int _zsbCount;
   final TextEditingController _ansCtrl = TextEditingController();
   String? _feedback;
   bool _isCorrect = false;
   bool _showAnswer = false;
   bool _autoAdvance = true;
+  bool _aiGrading = false; // AI 批改中
+  String _aiComment = ''; // AI 点评
   int? _autoAdvanceTimer;
   final FocusNode _focusNode = FocusNode();
   final List<WordToken> _wrongWords = [];
@@ -2124,6 +2252,7 @@ class _DictationPageState extends State<DictationPage> {
   @override
   void initState() {
     super.initState();
+    _zsbCount = DictService.zsbWords().length;
     _focusNode.addListener(() {
       if (_focusNode.hasFocus) {}
     });
@@ -2142,6 +2271,8 @@ class _DictationPageState extends State<DictationPage> {
     _feedback = null;
     _isCorrect = false;
     _showAnswer = false;
+    _aiGrading = false;
+    _aiComment = '';
     _autoAdvanceTimer = null;
   }
 
@@ -2155,12 +2286,21 @@ class _DictationPageState extends State<DictationPage> {
     if (s.dictationFinished) {
       return _buildFinishPage(s);
     }
-    return _buildAnsweringPage(s, w!);
+    // 兜底：队列非空但当前词取不到时回到开始页，避免 w! 空崩溃
+    if (w == null) {
+      return _buildStartPage(s);
+    }
+    return _buildAnsweringPage(s, w);
   }
 
-  // ===== 开始页面 =====
+  // ===== 开始页面：选择词库 + 默写设置 =====
   Widget _buildStartPage(AppState s) {
     final c = AppColors.of(context);
+    final sources = <({String key, IconData icon, String name, int count, String desc})>[
+      (key: 'custom', icon: Icons.create_new_folder_outlined, name: '自定义词库', count: s.customWordbook.length, desc: '手动添加自己整理的单词'),
+      (key: 'zsb', icon: Icons.school_outlined, name: '专升本词库', count: _zsbCount, desc: '覆盖专升本考纲核心词汇'),
+      (key: 'maimemo', icon: Icons.auto_stories_outlined, name: '墨墨词库', count: s.maimemoWordbook.length, desc: '同步自墨墨今日已学习单词'),
+    ];
     return Center(
       child: SingleChildScrollView(
         padding: const EdgeInsets.all(30),
@@ -2180,10 +2320,18 @@ class _DictationPageState extends State<DictationPage> {
               const SizedBox(width: 14),
               Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                 Text('单词默写', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: c.text)),
-                Text('从专升本词库随机抽词，系统自动批改', style: TextStyle(fontSize: 12, color: c.textTertiary)),
+                Text('选择词库开始默写，AI 智能批改', style: TextStyle(fontSize: 12, color: c.textTertiary)),
               ]),
             ]),
-            const SizedBox(height: 28),
+            const SizedBox(height: 24),
+            // 词库选择
+            Text('选择词库', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: c.text)),
+            const SizedBox(height: 10),
+            for (final src in sources) ...[
+              _sourceCard(s, c, src),
+              const SizedBox(height: 10),
+            ],
+            const SizedBox(height: 10),
             // 模式选择
             Text('默写模式', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: c.text)),
             const SizedBox(height: 10),
@@ -2231,7 +2379,7 @@ class _DictationPageState extends State<DictationPage> {
               child: FilledButton(
                 style: FilledButton.styleFrom(backgroundColor: kPrimary, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
                 onPressed: () {
-                  s.startDictation(_mode, _count);
+                  s.startDictation(_mode, _count, source: _source);
                   _resetDictationState();
                   WidgetsBinding.instance.addPostFrameCallback((_) => _focusNode.requestFocus());
                   setState(() {});
@@ -2245,11 +2393,161 @@ class _DictationPageState extends State<DictationPage> {
     );
   }
 
+  // ===== 词库来源显示名 =====
+  String _sourceName(AppState s) {
+    return switch (s.dictationSource) {
+      'custom' => '自定义',
+      'maimemo' => '墨墨词库',
+      _ => '专升本',
+    };
+  }
+
+  // ===== 词库选择卡片 =====
+  Widget _sourceCard(AppState s, AppColors c, ({String key, IconData icon, String name, int count, String desc}) src) {
+    final selected = _source == src.key;
+    return GestureDetector(
+      onTap: () => setState(() => _source = src.key),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        decoration: BoxDecoration(
+          color: selected ? c.primaryBg : c.card,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: selected ? c.primaryBorder : c.border, width: selected ? 1.6 : 1),
+        ),
+        child: Row(children: [
+          Container(
+            width: 40, height: 40,
+            decoration: BoxDecoration(
+              color: selected ? kPrimary.withValues(alpha: 0.15) : c.primaryBg,
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Icon(src.icon, size: 20, color: selected ? kPrimary : c.primaryText),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Row(children: [
+                Text(src.name, style: TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600, color: c.text)),
+                const SizedBox(width: 8),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
+                  decoration: BoxDecoration(
+                    color: selected ? kPrimary.withValues(alpha: 0.12) : c.primaryBg,
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text('${src.count} 词', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: selected ? kPrimary : c.primaryText)),
+                ),
+              ]),
+              const SizedBox(height: 3),
+              Text(src.desc, style: TextStyle(fontSize: 11.5, color: c.textTertiary)),
+            ]),
+          ),
+          if (src.key == 'custom')
+            IconButton(
+              icon: Icon(Icons.tune, size: 18, color: c.textTertiary),
+              tooltip: '管理自定义词库',
+              onPressed: () => _showCustomWordbookDialog(s),
+            ),
+          const SizedBox(width: 2),
+          Icon(selected ? Icons.radio_button_checked : Icons.radio_button_off, size: 18, color: selected ? kPrimary : c.textTertiary),
+        ]),
+      ),
+    );
+  }
+
+  // ===== 自定义词库管理弹窗 =====
+  void _showCustomWordbookDialog(AppState s) {
+    final wordCtrl = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(builder: (ctx, setDialogState) {
+        final c = AppColors.of(ctx);
+        void add() {
+          final w = wordCtrl.text.trim();
+          if (w.isEmpty) return;
+          final entry = DictService.lookup(w.toLowerCase());
+          s.addToCustomWordbook(w, entry?.translation ?? '');
+          wordCtrl.clear();
+          setDialogState(() {});
+        }
+
+        return AlertDialog(
+          title: Row(children: [
+            const Icon(Icons.create_new_folder_outlined, size: 20),
+            const SizedBox(width: 8),
+            const Text('自定义词库', style: TextStyle(fontSize: 17)),
+            const Spacer(),
+            Text('${s.customWordbook.length} 词', style: TextStyle(fontSize: 12, color: c.textTertiary)),
+          ]),
+          content: SizedBox(
+            width: 380, height: 360,
+            child: Column(children: [
+              // 添加
+              Row(children: [
+                Expanded(
+                  child: TextField(
+                    controller: wordCtrl,
+                    autofocus: true,
+                    decoration: InputDecoration(
+                      hintText: '输入英文单词，回车添加',
+                      isDense: true,
+                      filled: true,
+                      fillColor: c.inputFill,
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
+                    ),
+                    onSubmitted: (_) => add(),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                FilledButton(
+                  style: FilledButton.styleFrom(backgroundColor: kPrimary),
+                  onPressed: add,
+                  child: const Text('添加'),
+                ),
+              ]),
+              const SizedBox(height: 12),
+              // 列表
+              Expanded(
+                child: s.customWordbook.isEmpty
+                    ? Center(child: Text('词库为空，先添加单词吧', style: TextStyle(fontSize: 13, color: c.textTertiary)))
+                    : ListView.builder(
+                        itemCount: s.customWordbook.length,
+                        itemBuilder: (ctx, i) {
+                          final item = s.customWordbook[i];
+                          return ListTile(
+                            dense: true,
+                            contentPadding: EdgeInsets.zero,
+                            leading: Icon(Icons.menu_book_outlined, size: 18, color: c.primaryText),
+                            title: Text(item.word, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: c.text)),
+                            subtitle: Text(item.translation.isEmpty ? '（无释义）' : item.translation, style: TextStyle(fontSize: 12, color: c.textTertiary)),
+                            trailing: IconButton(
+                              icon: Icon(Icons.delete_outline, size: 18, color: c.textTertiary),
+                              onPressed: () {
+                                s.removeFromCustomWordbook(item.word);
+                                setDialogState(() {});
+                              },
+                            ),
+                          );
+                        },
+                      ),
+              ),
+            ]),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('完成')),
+          ],
+        );
+      }),
+    );
+  }
+
   // ===== 答题页面 =====
   Widget _buildAnsweringPage(AppState s, WordToken w) {
     final c = AppColors.of(context);
     final progress = s.dictationQueue.isEmpty ? 0.0 : (s.dictationIdx / s.dictationQueue.length);
-    final isZh2En = _mode == 'zh2en';
+    // 使用 s.dictationMode（切页回来 State 重建后 _mode 可能过期）
+    final isZh2En = s.dictationMode == 'zh2en';
     final promptText = isZh2En ? '请翻译成英文' : '请写出中文释义';
     final hintText = isZh2En ? '输入英文单词...' : '输入中文释义...';
 
@@ -2258,7 +2556,7 @@ class _DictationPageState extends State<DictationPage> {
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         // 进度条
         Row(children: [
-          Text('${s.dictationIdx + 1} / ${s.dictationQueue.length}', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: c.primaryText)),
+          Text('${_sourceName(s)} · ${s.dictationIdx + 1} / ${s.dictationQueue.length}', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: c.primaryText)),
           const SizedBox(width: 12),
           Expanded(
             child: ClipRRect(
@@ -2304,6 +2602,7 @@ class _DictationPageState extends State<DictationPage> {
           controller: _ansCtrl,
           focusNode: _focusNode,
           autofocus: true,
+          enabled: !_aiGrading,
           style: TextStyle(fontSize: 16, color: c.text),
           decoration: InputDecoration(
             hintText: hintText,
@@ -2313,12 +2612,15 @@ class _DictationPageState extends State<DictationPage> {
               borderRadius: BorderRadius.circular(12),
               borderSide: BorderSide(color: _feedback != null ? (_isCorrect ? c.scoreHigh : c.scoreLow) : kPrimary, width: 2),
             ),
-            suffixIcon: _feedback == null
-                ? IconButton(onPressed: () => _submit(s), icon: const Icon(Icons.check_circle_outline, size: 22))
-                : null,
+            suffixIcon: _aiGrading
+                ? const Padding(padding: EdgeInsets.all(12), child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)))
+                : _feedback == null
+                    ? IconButton(onPressed: () => _submit(s), icon: const Icon(Icons.check_circle_outline, size: 22))
+                    : null,
             contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
           ),
           onSubmitted: (_) {
+            if (_aiGrading) return;
             if (_feedback != null) {
               _nextQuestion(s);
             } else {
@@ -2326,6 +2628,15 @@ class _DictationPageState extends State<DictationPage> {
             }
           },
         ),
+        // AI 批改中
+        if (_aiGrading) ...[
+          const SizedBox(height: 12),
+          Row(children: [
+            const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)),
+            const SizedBox(width: 10),
+            Text('AI 批改中...', style: TextStyle(fontSize: 13, color: c.primaryText)),
+          ]),
+        ],
         // 反馈区
         if (_feedback != null) ...[
           const SizedBox(height: 14),
@@ -2346,6 +2657,10 @@ class _DictationPageState extends State<DictationPage> {
                     _isCorrect ? '回答正确！' : '回答错误',
                     style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: _isCorrect ? c.scoreHigh : c.scoreLow),
                   ),
+                  if (_aiComment.isNotEmpty) ...[
+                    const SizedBox(height: 4),
+                    Text(_aiComment, style: TextStyle(fontSize: 12.5, color: c.textSecondary, height: 1.5)),
+                  ],
                   if (!_isCorrect || _showAnswer) ...[
                     const SizedBox(height: 4),
                     Text('正确答案：${w.word}  ${w.translation}', style: TextStyle(fontSize: 13, color: c.textSecondary)),
@@ -2369,12 +2684,12 @@ class _DictationPageState extends State<DictationPage> {
           else
             FilledButton(
               style: FilledButton.styleFrom(backgroundColor: kPrimary),
-              onPressed: () => _submit(s),
-              child: const Text('提交'),
+              onPressed: _aiGrading ? null : () => _submit(s),
+              child: Text(_aiGrading ? '批改中...' : '提交'),
             ),
           const SizedBox(width: 10),
           OutlinedButton(
-            onPressed: () => _skip(s),
+            onPressed: _aiGrading ? null : () => _skip(s),
             child: const Text('跳过'),
           ),
           const Spacer(),
@@ -2452,26 +2767,44 @@ class _DictationPageState extends State<DictationPage> {
     );
   }
 
-  void _submit(AppState s) {
+  Future<void> _submit(AppState s) async {
     final ans = _ansCtrl.text.trim();
-    if (ans.isEmpty) return;
+    if (ans.isEmpty || _aiGrading) return;
     // 先取当前词，再批改（advance=false 不推进索引，避免 UI 刷新后显示错位）
     final w = s.currentDictationWord;
-    final correct = s.checkDictationAnswer(ans, advance: false);
-    setState(() {
-      _isCorrect = correct;
-      _feedback = correct ? '回答正确！' : '回答错误';
-      _showAnswer = !correct;
-      if (!correct && w != null) {
-        _wrongWords.add(w);
-      }
-    });
-    if (_autoAdvance && correct) {
-      _autoAdvanceTimer = DateTime.now().millisecondsSinceEpoch;
-      Future.delayed(const Duration(milliseconds: 1000), () {
-        if (mounted && _feedback != null && _isCorrect) {
-          _nextQuestion(s);
+    setState(() => _aiGrading = true);
+    try {
+      final result = await s.checkDictationAnswerAI(ans, advance: false);
+      if (!mounted) return;
+      setState(() {
+        _aiGrading = false;
+        _isCorrect = result.correct;
+        _feedback = result.correct ? '回答正确！' : '回答错误';
+        _aiComment = result.comment;
+        _showAnswer = !result.correct;
+        if (!result.correct && w != null) {
+          _wrongWords.add(w);
         }
+      });
+      if (_autoAdvance && result.correct) {
+        _autoAdvanceTimer = DateTime.now().millisecondsSinceEpoch;
+        Future.delayed(const Duration(milliseconds: 1000), () {
+          if (mounted && _feedback != null && _isCorrect) {
+            _nextQuestion(s);
+          }
+        });
+      }
+    } catch (_) {
+      // 兜底：AI 调用异常时回退本地批改
+      if (!mounted) return;
+      final correct = s.checkDictationAnswer(ans, advance: false);
+      setState(() {
+        _aiGrading = false;
+        _isCorrect = correct;
+        _feedback = correct ? '回答正确！' : '回答错误';
+        _aiComment = 'AI 批改失败，已用本地批改';
+        _showAnswer = !correct;
+        if (!correct && w != null) _wrongWords.add(w);
       });
     }
   }

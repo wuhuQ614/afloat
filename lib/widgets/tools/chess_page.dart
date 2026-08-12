@@ -67,11 +67,11 @@ class _ChineseChessPageState extends State<ChineseChessPage>
   @override
   void initState() {
     super.initState();
+    // P1-1：移除 addListener+setState，改用 AnimatedBuilder 隔离动画重建范围
     _animCtrl = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: _kAnimDurationMs),
     );
-    _animCtrl.addListener(() => setState(() {}));
   }
 
   @override
@@ -82,8 +82,6 @@ class _ChineseChessPageState extends State<ChineseChessPage>
     _animCtrl.dispose();
     super.dispose();
   }
-
-  int get _winRateRed => getWinRate(_board);
 
   Color get _statusColor {
     if (_statusMsg.contains('胜利')) return const Color(0xFFE74C3C);
@@ -268,84 +266,57 @@ class _ChineseChessPageState extends State<ChineseChessPage>
   Widget _buildModeScreen(AppColors c) {
     return Center(
       child: SingleChildScrollView(
-        padding: const EdgeInsets.all(24),
-        child: Container(
-          constraints: const BoxConstraints(maxWidth: 420),
-          padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 40),
-          decoration: BoxDecoration(
-            color: c.card,
-            borderRadius: BorderRadius.circular(24),
-            border: Border.all(color: c.border),
-            boxShadow: [
-              BoxShadow(
-                color: c.shadowMedium,
-                blurRadius: 40,
-                offset: const Offset(0, 12),
-              ),
-            ],
-          ),
-          child: Column(mainAxisSize: MainAxisSize.min, children: [
-            // 标题徽标
-            Container(
-              width: 64,
-              height: 64,
-              decoration: BoxDecoration(
-                gradient: const LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [Color(0xFFC0392B), Color(0xFFE74C3C)],
-                ),
-                borderRadius: BorderRadius.circular(18),
-                boxShadow: [
-                  BoxShadow(
-                    color: const Color(0xFFC0392B).withValues(alpha: 0.35),
-                    blurRadius: 16,
-                    offset: const Offset(0, 6),
-                  ),
-                ],
-              ),
-              child: const Center(
-                child: Text('象',
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 400),
+          child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                // 眉标 + 大标题（简约高级：无彩色图标块）
+                const SizedBox(height: 8),
+                Text('CHINESE CHESS',
+                    textAlign: TextAlign.center,
                     style: TextStyle(
-                        fontSize: 34, fontWeight: FontWeight.w900, color: Colors.white)),
-              ),
-            ),
-            const SizedBox(height: 18),
-            const Text('中国象棋',
-                style: TextStyle(
-                    fontSize: 30, fontWeight: FontWeight.w900, color: Color(0xFFC0392B))),
-            const SizedBox(height: 6),
-            Text('Chinese Chess',
-                style: TextStyle(fontSize: 13, color: c.textTertiary)),
-            const SizedBox(height: 32),
-            _modeCard(
-              c: c,
-              icon: Icons.people_alt_outlined,
-              iconColor: const Color(0xFF3498DB),
-              title: '人人对战',
-              subtitle: '双人轮流走子，本地对弈',
-              onTap: () => _startGame('pvp'),
-            ),
-            const SizedBox(height: 14),
-            _modeCard(
-              c: c,
-              icon: Icons.smart_toy_outlined,
-              iconColor: const Color(0xFF8E44AD),
-              title: '人机对战',
-              subtitle: '与 AI 对战，选择合适难度',
-              onTap: () => setState(() => _screen = 'difficulty'),
-            ),
-          ]),
+                        fontSize: 11,
+                        letterSpacing: 3,
+                        fontWeight: FontWeight.w600,
+                        color: c.textTertiary)),
+                const SizedBox(height: 10),
+                Text('中国象棋',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                        fontSize: 30,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: 1,
+                        color: c.text)),
+                const SizedBox(height: 8),
+                Text('本地对弈 · 无需网络',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontSize: 13, color: c.textTertiary)),
+                const SizedBox(height: 40),
+                _modeCard(
+                  c: c,
+                  title: '双人游戏',
+                  subtitle: '两人轮流走子，本地对弈',
+                  onTap: () => _startGame('pvp'),
+                ),
+                const SizedBox(height: 12),
+                _modeCard(
+                  c: c,
+                  title: '人机对战',
+                  subtitle: '与本地 AI 对战，选择合适难度',
+                  onTap: () => setState(() => _screen = 'difficulty'),
+                ),
+              ]),
         ),
       ),
     );
   }
 
-  /// 大厂风格模式卡片按钮
+  /// 简约高级模式卡片：纯文字 + 箭头（无图标无 emoji）
   Widget _modeCard({
     required AppColors c,
-    required IconData icon,
-    required Color iconColor,
     required String title,
     required String subtitle,
     required VoidCallback onTap,
@@ -357,23 +328,13 @@ class _ChineseChessPageState extends State<ChineseChessPage>
         borderRadius: BorderRadius.circular(16),
         child: Container(
           width: double.infinity,
-          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 18),
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 22),
           decoration: BoxDecoration(
             color: c.chatBubbleAi,
             borderRadius: BorderRadius.circular(16),
             border: Border.all(color: c.border),
           ),
           child: Row(children: [
-            Container(
-              width: 46,
-              height: 46,
-              decoration: BoxDecoration(
-                color: iconColor.withValues(alpha: 0.12),
-                borderRadius: BorderRadius.circular(13),
-              ),
-              child: Icon(icon, color: iconColor, size: 24),
-            ),
-            const SizedBox(width: 16),
             Expanded(
               child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -383,9 +344,10 @@ class _ChineseChessPageState extends State<ChineseChessPage>
                             fontSize: 17,
                             fontWeight: FontWeight.w700,
                             color: c.text)),
-                    const SizedBox(height: 3),
+                    const SizedBox(height: 4),
                     Text(subtitle,
-                        style: TextStyle(fontSize: 12, color: c.textTertiary)),
+                        style: TextStyle(
+                            fontSize: 12.5, color: c.textTertiary)),
                   ]),
             ),
             Icon(Icons.chevron_right, color: c.textTertiary, size: 22),
@@ -398,132 +360,106 @@ class _ChineseChessPageState extends State<ChineseChessPage>
   Widget _buildDifficultyScreen(AppColors c) {
     return Center(
       child: SingleChildScrollView(
-        padding: const EdgeInsets.all(24),
-        child: Container(
-          constraints: const BoxConstraints(maxWidth: 420),
-          padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 40),
-          decoration: BoxDecoration(
-            color: c.card,
-            borderRadius: BorderRadius.circular(24),
-            border: Border.all(color: c.border),
-            boxShadow: [
-              BoxShadow(
-                color: c.shadowMedium,
-                blurRadius: 40,
-                offset: const Offset(0, 12),
-              ),
-            ],
-          ),
-          child: Column(mainAxisSize: MainAxisSize.min, children: [
-            // 返回 + 标题
-            Row(children: [
-              IconButton(
-                onPressed: () => setState(() => _screen = 'mode'),
-                style: IconButton.styleFrom(
-                    backgroundColor: c.inputFill,
-                    foregroundColor: c.text),
-                icon: const Icon(Icons.arrow_back, size: 20),
-              ),
-              const SizedBox(width: 12),
-              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text('选择难度',
-                    style: TextStyle(
-                        fontSize: 22,
-                        fontWeight: FontWeight.w800,
-                        color: c.text)),
-                const SizedBox(height: 2),
-                Text('选择 AI 的强度，越难思考越深入',
-                    style: TextStyle(fontSize: 12, color: c.textTertiary)),
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 400),
+          child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                // 返回 + 标题
+                Row(children: [
+                  IconButton(
+                    onPressed: () => setState(() => _screen = 'mode'),
+                    style: IconButton.styleFrom(
+                        backgroundColor: c.inputFill,
+                        foregroundColor: c.text),
+                    icon: const Icon(Icons.arrow_back, size: 20),
+                  ),
+                  const SizedBox(width: 12),
+                  Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Text('选择难度',
+                        style: TextStyle(
+                            fontSize: 22,
+                            fontWeight: FontWeight.w800,
+                            color: c.text)),
+                    const SizedBox(height: 2),
+                    Text('选择 AI 的强度，越难思考越深入',
+                        style: TextStyle(fontSize: 12, color: c.textTertiary)),
+                  ]),
+                ]),
+                const SizedBox(height: 28),
+                _difficultyCard(
+                  c: c,
+                  title: '简单',
+                  subtitle: '基础走法，适合新手',
+                  tag: '深度 2',
+                  selected: _difficulty == 'easy',
+                  onTap: () {
+                    _difficulty = 'easy';
+                    _startGame('pve');
+                  },
+                ),
+                const SizedBox(height: 12),
+                _difficultyCard(
+                  c: c,
+                  title: '正常',
+                  subtitle: '均衡思考，稳定发挥',
+                  tag: '深度 3',
+                  selected: _difficulty == 'normal',
+                  onTap: () {
+                    _difficulty = 'normal';
+                    _startGame('pve');
+                  },
+                ),
+                const SizedBox(height: 12),
+                _difficultyCard(
+                  c: c,
+                  title: '困难',
+                  subtitle: '深度推演，颇具挑战',
+                  tag: '深度 4',
+                  selected: _difficulty == 'hard',
+                  onTap: () {
+                    _difficulty = 'hard';
+                    _startGame('pve');
+                  },
+                ),
+                const SizedBox(height: 20),
+                Text('你将执红先行，AI 执黑',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontSize: 11, color: c.textTertiary)),
               ]),
-            ]),
-            const SizedBox(height: 28),
-            _difficultyCard(
-              c: c,
-              icon: Icons.speed,
-              color: const Color(0xFF27AE60),
-              title: '简单',
-              subtitle: '基础走法，适合新手',
-              tag: '深度 2',
-              selected: _difficulty == 'easy',
-              onTap: () {
-                _difficulty = 'easy';
-                _startGame('pve');
-              },
-            ),
-            const SizedBox(height: 12),
-            _difficultyCard(
-              c: c,
-              icon: Icons.balance,
-              color: const Color(0xFFE67E22),
-              title: '正常',
-              subtitle: '均衡思考，稳定发挥',
-              tag: '深度 3',
-              selected: _difficulty == 'normal',
-              onTap: () {
-                _difficulty = 'normal';
-                _startGame('pve');
-              },
-            ),
-            const SizedBox(height: 12),
-            _difficultyCard(
-              c: c,
-              icon: Icons.psychology,
-              color: const Color(0xFF8E44AD),
-              title: '困难',
-              subtitle: '深度推演，颇具挑战',
-              tag: '深度 4',
-              selected: _difficulty == 'hard',
-              onTap: () {
-                _difficulty = 'hard';
-                _startGame('pve');
-              },
-            ),
-            const SizedBox(height: 20),
-            Text('你将执红先行，AI 执黑',
-                style: TextStyle(fontSize: 11, color: c.textTertiary)),
-          ]),
         ),
       ),
     );
   }
 
-  /// 难度选择卡片
+  /// 难度选择卡片（简约：纯文字 + 主题色选中态）
   Widget _difficultyCard({
     required AppColors c,
-    required IconData icon,
-    required Color color,
     required String title,
     required String subtitle,
     required String tag,
     required bool selected,
     required VoidCallback onTap,
   }) {
+    final accent = c.primary;
     return InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(16),
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 150),
         width: double.infinity,
-        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
         decoration: BoxDecoration(
-          color: selected ? color.withValues(alpha: 0.1) : c.chatBubbleAi,
+          color: selected ? accent.withValues(alpha: 0.08) : c.chatBubbleAi,
           borderRadius: BorderRadius.circular(16),
           border: Border.all(
-            color: selected ? color : c.border,
+            color: selected ? accent : c.border,
             width: selected ? 2 : 1,
           ),
         ),
         child: Row(children: [
-          Container(
-            width: 44,
-            height: 44,
-            decoration: BoxDecoration(
-              color: color.withValues(alpha: 0.14),
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Icon(icon, color: color, size: 24),
-          ),
-          const SizedBox(width: 14),
           Expanded(
             child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -539,25 +475,23 @@ class _ChineseChessPageState extends State<ChineseChessPage>
                       padding: const EdgeInsets.symmetric(
                           horizontal: 6, vertical: 2),
                       decoration: BoxDecoration(
-                        color: color.withValues(alpha: 0.12),
+                        color: accent.withValues(alpha: 0.12),
                         borderRadius: BorderRadius.circular(6),
                       ),
                       child: Text(tag,
                           style: TextStyle(
                               fontSize: 10,
                               fontWeight: FontWeight.w600,
-                              color: color)),
+                              color: accent)),
                     ),
-                    const Spacer(),
-                    if (selected)
-                      Icon(Icons.check_circle, color: color, size: 20),
                   ]),
-                  const SizedBox(height: 3),
+                  const SizedBox(height: 4),
                   Text(subtitle,
                       style:
                           TextStyle(fontSize: 12, color: c.textTertiary)),
                 ]),
           ),
+          if (selected) Icon(Icons.check_circle, color: accent, size: 20),
         ]),
       ),
     );
@@ -635,43 +569,6 @@ class _ChineseChessPageState extends State<ChineseChessPage>
                 ),
               ]),
               const SizedBox(height: 12),
-              // 胜率条
-              Builder(builder: (ctx) {
-                final red = _winRateRed;
-                final black = 100 - red;
-                return Column(children: [
-                  Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                    Text('红方 $red%',
-                        style: const TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.bold,
-                            color: Color(0xFFC0392B))),
-                    Text('黑方 $black%',
-                        style: const TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.bold,
-                            color: Color(0xFF2C3E50))),
-                  ]),
-                  const SizedBox(height: 4),
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(4),
-                    child: SizedBox(
-                      height: 8,
-                      child: Row(children: [
-                        Expanded(
-                          flex: red,
-                          child: Container(color: const Color(0xFFC0392B)),
-                        ),
-                        Expanded(
-                          flex: black,
-                          child: Container(color: const Color(0xFF2C3E50)),
-                        ),
-                      ]),
-                    ),
-                  ),
-                ]);
-              }),
-              const SizedBox(height: 12),
               // 棋盘
               LayoutBuilder(builder: (ctx, cons) {
                 // 可用宽度取容器宽度，高度按 9:10 比例
@@ -688,16 +585,20 @@ class _ChineseChessPageState extends State<ChineseChessPage>
                       _onBoardTap(rr, cc);
                     }
                   },
-                  child: CustomPaint(
-                    size: Size(boardW, boardH),
-                    painter: _ChessBoardPainter(
-                      board: _board,
-                      cell: cell,
-                      selected: _selected,
-                      validMoves: _validMoves,
-                      lastMove: _lastMove,
-                      moving: _moving,
-                      animProgress: _animCtrl.value,
+                  // P1-1：AnimatedBuilder 隔离动画重建，仅棋盘区域随帧重绘
+                  child: AnimatedBuilder(
+                    animation: _animCtrl,
+                    builder: (context, _) => CustomPaint(
+                      size: Size(boardW, boardH),
+                      painter: _ChessBoardPainter(
+                        board: _board,
+                        cell: cell,
+                        selected: _selected,
+                        validMoves: _validMoves,
+                        lastMove: _lastMove,
+                        moving: _moving,
+                        animProgress: _animCtrl.value,
+                      ),
                     ),
                   ),
                 );

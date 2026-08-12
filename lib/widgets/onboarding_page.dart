@@ -45,7 +45,7 @@ class OnboardingPage extends StatefulWidget {
 }
 
 class _OnboardingPageState extends State<OnboardingPage> {
-  static const _totalSteps = 5;
+  static const _totalSteps = 6;
   final PageController _pageCtrl = PageController();
   /// 翻页过渡层的全局 key：滚动时只局部重建这四层，不重建 PageView 本体
   final List<GlobalKey> _pageKeys = List.generate(_totalSteps, (_) => GlobalKey());
@@ -102,7 +102,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
 
   void _goTo(int idx) {
     if (idx < 0 || idx >= _totalSteps) return;
-    if (_step == 2) _saveApiIfFilled(); // 离开 API 页（任意方向）均尝试保存
+    if (_step == 3) _saveApiIfFilled(); // 离开 API 页（任意方向）均尝试保存
     _pageCtrl.animateToPage(idx, duration: const Duration(milliseconds: 260), curve: Curves.easeOutCubic);
   }
 
@@ -117,14 +117,20 @@ class _OnboardingPageState extends State<OnboardingPage> {
   }
 
   void _skipAll() {
-    if (_step == 2) _saveApiIfFilled();
+    if (_step == 3) _saveApiIfFilled();
     _ensureAppMode();
+    _ensureUiMode();
     s.completeOnboarding();
   }
 
   /// 未选择应用模式时兜底为英语模式（与模式选择页默认选中一致）
   void _ensureAppMode() {
     if (s.appMode.isEmpty) s.setAppMode('english');
+  }
+
+  /// 未选择使用端时兜底为电脑端（与平台选择页默认一致）
+  void _ensureUiMode() {
+    if (s.uiMode.isEmpty) s.setUiMode('desktop');
   }
 
   void _showApiKeyHelp(_Pal pal) {
@@ -218,21 +224,25 @@ class _OnboardingPageState extends State<OnboardingPage> {
   // 不在 build 期间访问 controller.page（未 attach 前读会崩）
   Widget _buildPages(_Pal pal) {
     final pages = [
-      _buildStepAppMode(pal),
-      _buildStepTheme(pal),
-      _buildStepApi(pal),
-      _buildStepMode(pal),
-      _buildStepWelcome(pal),
+      _buildStepPlatform(pal), // 0 使用端
+      _buildStepTheme(pal),    // 1 外观模式
+      _buildStepAppMode(pal),  // 2 应用模式
+      _buildStepApi(pal),      // 3 API
+      _buildStepMode(pal),     // 4 词汇剖析强度
+      _buildStepWelcome(pal),  // 5 欢迎
     ];
     return PageView(
       controller: _pageCtrl,
       physics: const ClampingScrollPhysics(),
+      // 启用隐式滚动：PageView 会完整预构建相邻步骤页（默认只缓存 250px，不足一页），
+      // 翻页时不再首帧同步构建页面，避免"卡死一下"
+      allowImplicitScrolling: true,
       onPageChanged: (i) {
-        if (_step == 2) _saveApiIfFilled();
+        if (_step == 3) _saveApiIfFilled();
         setState(() => _step = i);
       },
       children: [
-        for (var i = 0; i < _totalSteps; i++) _PageFx(key: _pageKeys[i], index: i, child: pages[i]),
+        for (var i = 0; i < _totalSteps; i++) _PageFx(key: _pageKeys[i], index: i, pos: _pos, child: pages[i]),
       ],
     );
   }
@@ -259,72 +269,131 @@ class _OnboardingPageState extends State<OnboardingPage> {
     ]);
   }
 
-  // ===== 第 1 页：选择应用模式（英语学习模式 / 工具模式） — 大厂风格 =====
-  Widget _buildStepAppMode(_Pal pal) {
-    final mode = s.appMode.isEmpty ? 'english' : s.appMode;
-    return _pageShell(_StaggeredFadeIn(children: [
-      _pageHead(pal, '选择应用模式', '选择你想怎么使用本应用，之后可随时在设置中切换。'),
-      _AppModeCard(
-        icon: Icons.school_outlined,
-        iconBg: const Color(0xFF4F6BF6),
-        title: '英语学习模式',
-        desc: '专升本英语学习：题库答题、学习报告、沉浸考场、词汇剖析',
-        subtitle: '推荐 · 默认',
-        feature: '学习',
-        selected: mode == 'english',
-        pal: pal,
-        onTap: () => s.setAppMode('english'),
-      ),
-      const SizedBox(height: 14),
-      _AppModeCard(
-        icon: Icons.grid_view_rounded,
-        iconBg: const Color(0xFF10B981),
-        title: '工具模式',
-        desc: '暴力转盘、暴力翻牌、暴力数字、画板、BMI 计算、五子棋、中国象棋',
-        subtitle: '轻量工具集合',
-        feature: '工具',
-        selected: mode == 'tools',
-        pal: pal,
-        onTap: () => s.setAppMode('tools'),
-      ),
+  // ===== 第 1 页：选择使用端（电脑端 / 手机端）— 与外观模式同款卡片 =====
+  Widget _buildStepPlatform(_Pal pal) {
+    final mode = s.uiMode.isEmpty ? 'desktop' : s.uiMode;
+    return _pageShell(_StaggeredFadeIn(active: _step == 0, children: [
+      _pageHead(pal, '选择使用端', '选择你使用的设备，之后可随时在设置中切换。'),
+      Row(children: [
+        Expanded(
+          child: SizedBox(
+            height: 220,
+            child: _SelectCard(
+              title: '电脑端',
+              subtitle: 'Desktop',
+              selected: mode == 'desktop',
+              pal: pal,
+              preview: _buildDevicePreview(pal, isDesktop: true),
+              onTap: () => s.setUiMode('desktop'),
+            ),
+          ),
+        ),
+        const SizedBox(width: 16),
+        Expanded(
+          child: SizedBox(
+            height: 220,
+            child: _SelectCard(
+              title: '手机端',
+              subtitle: 'Mobile',
+              selected: mode == 'mobile',
+              pal: pal,
+              preview: _buildDevicePreview(pal, isDesktop: false),
+              onTap: () => s.setUiMode('mobile'),
+            ),
+          ),
+        ),
+      ]),
     ]));
   }
 
-  // ===== 第 2 页：选择外观模式（参考 Trae 引导页风格：带 UI 预览缩略图） =====
+  // ===== 第 3 页：选择应用模式（英语学习模式 / 工具模式）— 与外观模式同款卡片 =====
+  Widget _buildStepAppMode(_Pal pal) {
+    final mode = s.appMode.isEmpty ? 'english' : s.appMode;
+    return _pageShell(_StaggeredFadeIn(active: _step == 2, children: [
+      _pageHead(pal, '选择应用模式', '选择你想怎么使用本应用，之后可随时在设置中切换。'),
+      Row(children: [
+        Expanded(
+          child: SizedBox(
+            height: 220,
+            child: _SelectCard(
+              title: '英语学习模式',
+              subtitle: '题库 · 考场 · 剖析',
+              selected: mode == 'english',
+              pal: pal,
+              preview: _buildAppPreview(pal, isEnglish: true),
+              onTap: () => s.setAppMode('english'),
+            ),
+          ),
+        ),
+        const SizedBox(width: 16),
+        Expanded(
+          child: SizedBox(
+            height: 220,
+            child: _SelectCard(
+              title: '工具模式',
+              subtitle: '转盘 · 翻牌 · 棋类',
+              selected: mode == 'tools',
+              pal: pal,
+              preview: _buildAppPreview(pal, isEnglish: false),
+              onTap: () => s.setAppMode('tools'),
+            ),
+          ),
+        ),
+      ]),
+    ]));
+  }
+
+  // ===== 第 2 页：选择主题（第三大主题：经典 / 毛玻璃 / 深色） =====
   Widget _buildStepTheme(_Pal pal) {
-    return _pageShell(_StaggeredFadeIn(children: [
-      _pageHead(pal, '选择外观模式'),
+    return _pageShell(_StaggeredFadeIn(active: _step == 1, children: [
+      _pageHead(pal, '选择主题'),
       Row(children: [
         Expanded(child: SizedBox(
-          height: 220,
-          child: _ModeCard(
-            title: '白色模式',
-            subtitle: 'Light',
-            selected: !s.darkMode,
+          height: 200,
+          child: _SelectCard(
+            title: '经典',
+            subtitle: 'Classic',
+            selected: !s.darkMode && s.uiStyle == 'classic',
             pal: pal,
-            isDark: false,
-            onTap: () => s.toggleDarkMode(false),
+            preview: _buildThemePreview(pal, style: 'classic'),
+            onTap: () => s.setThemeStyle('classic'),
           ),
         )),
         const SizedBox(width: 16),
         Expanded(child: SizedBox(
-          height: 220,
-          child: _ModeCard(
+          height: 200,
+          child: _SelectCard(
+            title: '毛玻璃',
+            subtitle: 'Glass',
+            selected: !s.darkMode && s.uiStyle == 'glass',
+            pal: pal,
+            preview: _buildThemePreview(pal, style: 'glass'),
+            onTap: () => s.setThemeStyle('glass'),
+          ),
+        )),
+      ]),
+      const SizedBox(height: 16),
+      Row(children: [
+        Expanded(child: SizedBox(
+          height: 200,
+          child: _SelectCard(
             title: '深色模式',
             subtitle: 'Dark',
             selected: s.darkMode,
             pal: pal,
-            isDark: true,
-            onTap: () => s.toggleDarkMode(true),
+            preview: _buildThemePreview(pal, style: 'dark'),
+            onTap: () => s.setThemeStyle('dark'),
           ),
         )),
+        const SizedBox(width: 16),
+        Expanded(child: const SizedBox(height: 200)),
       ]),
     ]));
   }
 
   // ===== 第 2 页：设置 API（可跳过） =====
   Widget _buildStepApi(_Pal pal) {
-    return _pageShell(_StaggeredFadeIn(children: [
+    return _pageShell(_StaggeredFadeIn(active: _step == 3, children: [
       _pageHead(pal, '设置 API', '连接 AI 服务，获取更智能的学习体验。此步骤可跳过。'),
       // API Key
       _fieldLabel(pal, 'API Key'),
@@ -380,7 +449,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
           onPressed: () {
             // 与“下一步”保存行为一致：已填完整的配置不因跳过而丢失
             _saveApiIfFilled();
-            _goTo(3);
+            _goTo(4);
           },
           style: TextButton.styleFrom(padding: EdgeInsets.zero, minimumSize: const Size(0, 28)),
           child: Text('跳过此步骤', style: TextStyle(fontSize: 12, color: pal.dim)),
@@ -423,7 +492,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
 
   // ===== 第 3 页：选择词汇剖析强度（三张结构相同的选项卡） =====
   Widget _buildStepMode(_Pal pal) {
-    return _pageShell(_StaggeredFadeIn(children: [
+    return _pageShell(_StaggeredFadeIn(active: _step == 4, children: [
       _pageHead(pal, '选择词汇剖析强度', 'AI 将根据你的选择提供不同深度的解析，之后可随时更换。'),
       _OptionCard(
         title: '快速模式',
@@ -455,7 +524,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
 
   // ===== 第 4 页：欢迎语 =====
   Widget _buildStepWelcome(_Pal pal) {
-    return _pageShell(_StaggeredFadeIn(children: [
+    return _pageShell(_StaggeredFadeIn(active: _step == 5, children: [
       const SizedBox(height: 56),
       Text('欢迎使用', style: TextStyle(fontSize: 34, fontWeight: FontWeight.w600, color: pal.h1, letterSpacing: 2)),
       const SizedBox(height: 16),
@@ -492,7 +561,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
               padding: const EdgeInsets.symmetric(horizontal: 24),
             ),
-            onPressed: isLast ? () { _ensureAppMode(); s.completeOnboarding(); } : () => _goTo(_step + 1),
+            onPressed: isLast ? () { _ensureAppMode(); _ensureUiMode(); s.completeOnboarding(); } : () => _goTo(_step + 1),
             child: Text(isLast ? '开始使用' : '下一步'),
           ),
         ),
@@ -504,8 +573,11 @@ class _OnboardingPageState extends State<OnboardingPage> {
 // ===== 翻页过渡层：淡入淡出 + 24px 水平位移（由滚动监听驱动局部 setState） =====
 class _PageFx extends StatefulWidget {
   final int index;
+
+  /// 父级当前连续翻页位置（构建/重建时同步给页面，避免晚构建的页面停留在初始透明度导致白屏）
+  final double pos;
   final Widget child;
-  const _PageFx({super.key, required this.index, required this.child});
+  const _PageFx({super.key, required this.index, required this.pos, required this.child});
 
   @override
   State<_PageFx> createState() => _PageFxState();
@@ -513,6 +585,19 @@ class _PageFx extends StatefulWidget {
 
 class _PageFxState extends State<_PageFx> {
   double _pos = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _pos = widget.pos; // 页面无论何时构建，都从父级当前翻页位置起步
+  }
+
+  @override
+  void didUpdateWidget(covariant _PageFx oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // 父级因翻页/状态变化重建时，把最新翻页位置同步进来
+    if (widget.pos != oldWidget.pos) _pos = widget.pos;
+  }
 
   /// 由父级滚动监听调用：pos 为 PageView 当前连续页位置
   void apply(double pos) {
@@ -534,24 +619,18 @@ class _PageFxState extends State<_PageFx> {
   }
 }
 
-// ===== 外观模式卡（参考 Trae 引导页：带迷你 UI 预览缩略图） =====
-class _ModeCard extends StatelessWidget {
+// ===== 通用选择卡（使用端 / 外观模式 / 应用模式共用：预览区 + 标签行 + 选中态） =====
+class _SelectCard extends StatelessWidget {
   final String title;
   final String subtitle;
   final bool selected;
   final _Pal pal;
-  final bool isDark;
+  final Widget preview;
   final VoidCallback onTap;
-  const _ModeCard({required this.title, required this.subtitle, required this.selected, required this.pal, required this.isDark, required this.onTap});
+  const _SelectCard({required this.title, required this.subtitle, required this.selected, required this.pal, required this.preview, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
-    final cardBg = isDark ? const Color(0xFF1E1E2E) : const Color(0xFFF0F0F5);
-    final sidebarBg = isDark ? const Color(0xFF252538) : const Color(0xFFE8E8F0);
-    final lineColor = isDark ? const Color(0xFF3A3A55) : const Color(0xFFD8D8E2);
-    final textColor = isDark ? const Color(0xFFC8C8D8) : const Color(0xFF4A4A5A);
-    final accentColor = isDark ? const Color(0xFF7B7BFF) : const Color(0xFF6B6BFF);
-
     return GestureDetector(
       onTap: onTap,
       child: AnimatedContainer(
@@ -562,85 +641,11 @@ class _ModeCard extends StatelessWidget {
           border: Border.all(color: selected ? _kAccent : pal.border, width: selected ? 2 : 1),
         ),
         child: Column(children: [
-          // 迷你 UI 预览缩略图
+          // 预览缩略图
           Expanded(
             child: ClipRRect(
               borderRadius: const BorderRadius.vertical(top: Radius.circular(11)),
-              child: Container(
-                color: cardBg,
-                padding: const EdgeInsets.all(8),
-                child: Column(children: [
-                  // 顶部标题栏
-                  Container(
-                    height: 14,
-                    decoration: BoxDecoration(
-                      color: sidebarBg,
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                    padding: const EdgeInsets.symmetric(horizontal: 6),
-                    child: Row(children: [
-                      Container(width: 5, height: 5, decoration: BoxDecoration(color: const Color(0xFFFF5F57), shape: BoxShape.circle)),
-                      const SizedBox(width: 3),
-                      Container(width: 5, height: 5, decoration: BoxDecoration(color: const Color(0xFFFFBD2E), shape: BoxShape.circle)),
-                      const SizedBox(width: 3),
-                      Container(width: 5, height: 5, decoration: BoxDecoration(color: const Color(0xFF28C840), shape: BoxShape.circle)),
-                      const Spacer(),
-                      Container(width: 24, height: 6, decoration: BoxDecoration(color: lineColor, borderRadius: BorderRadius.circular(2))),
-                    ]),
-                  ),
-                  const SizedBox(height: 6),
-                  Expanded(
-                    child: Row(children: [
-                      // 左侧导航栏
-                      Container(
-                        width: 28,
-                        decoration: BoxDecoration(
-                          color: sidebarBg,
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                        padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 4),
-                        child: Column(children: [
-                          for (var i = 0; i < 5; i++) ...[
-                            Container(
-                              height: 4,
-                              width: double.infinity,
-                              decoration: BoxDecoration(
-                                color: i == 0 ? accentColor : lineColor,
-                                borderRadius: BorderRadius.circular(2),
-                              ),
-                            ),
-                            const SizedBox(height: 5),
-                          ],
-                        ]),
-                      ),
-                      const SizedBox(width: 6),
-                      // 右侧内容区
-                      Expanded(
-                        child: Container(
-                          decoration: BoxDecoration(
-                            color: cardBg,
-                            borderRadius: BorderRadius.circular(4),
-                          ),
-                          padding: const EdgeInsets.all(6),
-                          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                            Container(height: 6, width: 40, decoration: BoxDecoration(color: textColor.withOpacity(0.6), borderRadius: BorderRadius.circular(2))),
-                            const SizedBox(height: 5),
-                            Container(height: 4, width: double.infinity, decoration: BoxDecoration(color: lineColor, borderRadius: BorderRadius.circular(2))),
-                            const SizedBox(height: 3),
-                            Container(height: 4, width: double.infinity, decoration: BoxDecoration(color: lineColor, borderRadius: BorderRadius.circular(2))),
-                            const SizedBox(height: 3),
-                            Container(height: 4, width: 80, decoration: BoxDecoration(color: lineColor, borderRadius: BorderRadius.circular(2))),
-                            const SizedBox(height: 6),
-                            Container(height: 4, width: double.infinity, decoration: BoxDecoration(color: lineColor, borderRadius: BorderRadius.circular(2))),
-                            const SizedBox(height: 3),
-                            Container(height: 4, width: 60, decoration: BoxDecoration(color: lineColor, borderRadius: BorderRadius.circular(2))),
-                          ]),
-                        ),
-                      ),
-                    ]),
-                  ),
-                ]),
-              ),
+              child: preview,
             ),
           ),
           // 底部标签
@@ -673,151 +678,203 @@ class _ModeCard extends StatelessWidget {
   }
 }
 
-// ===== 应用模式卡（第 1 页，大厂风格：图标 + 标题 + 描述 + 功能标签） =====
-class _AppModeCard extends StatelessWidget {
-  final IconData icon;
-  final Color iconBg;
-  final String title;
-  final String desc;
-  final String? subtitle;
-  final String feature;
-  final bool selected;
-  final _Pal pal;
-  final VoidCallback onTap;
-  const _AppModeCard({
-    required this.icon,
-    required this.iconBg,
-    required this.title,
-    required this.desc,
-    this.subtitle,
-    required this.feature,
-    required this.selected,
-    required this.pal,
-    required this.onTap,
-  });
+// ===== 迷你预览构件（外观 / 使用端 / 应用模式共用） =====
 
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 160),
-        curve: Curves.easeOutCubic,
-        width: double.infinity,
-        padding: const EdgeInsets.all(18),
-        decoration: BoxDecoration(
-          color: selected ? pal.cardSelected : pal.card,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(
-            color: selected ? _kAccent : pal.border,
-            width: selected ? 2 : 1,
-          ),
-          boxShadow: selected
-              ? [
-                  BoxShadow(
-                    color: _kAccent.withValues(alpha: 0.18),
-                    blurRadius: 20,
-                    offset: const Offset(0, 6),
-                  ),
-                ]
-              : null,
-        ),
+/// 迷你窗口外壳：标题栏（红黄绿点 + 标题线）+ 主体区
+Widget _miniFrame({
+  required Color cardBg,
+  required Color sidebarBg,
+  required Color lineColor,
+  required Widget body,
+}) {
+  return Container(
+    color: cardBg,
+    padding: const EdgeInsets.all(8),
+    child: Column(children: [
+      Container(
+        height: 14,
+        decoration: BoxDecoration(color: sidebarBg, borderRadius: BorderRadius.circular(4)),
+        padding: const EdgeInsets.symmetric(horizontal: 6),
         child: Row(children: [
-          // 图标
-          Container(
-            width: 52,
-            height: 52,
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [iconBg, iconBg.withValues(alpha: 0.75)],
-              ),
-              borderRadius: BorderRadius.circular(15),
-              boxShadow: [
-                BoxShadow(
-                  color: iconBg.withValues(alpha: 0.35),
-                  blurRadius: 12,
-                  offset: const Offset(0, 4),
-                ),
-              ],
-            ),
-            child: Icon(icon, color: Colors.white, size: 26),
-          ),
-          const SizedBox(width: 16),
-          // 文字区
-          Expanded(
-            child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(children: [
-                    Flexible(
-                      child: Text(title,
-                          style: TextStyle(
-                              fontSize: 16,
-                              fontWeight: FontWeight.w700,
-                              color: pal.body)),
-                    ),
-                    if (subtitle != null) ...[
-                      const SizedBox(width: 8),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 7, vertical: 2),
-                        decoration: BoxDecoration(
-                          color: _kAccent.withValues(alpha: 0.14),
-                          borderRadius: BorderRadius.circular(6),
-                        ),
-                        child: Text(subtitle!,
-                            style: TextStyle(
-                                fontSize: 10,
-                                fontWeight: FontWeight.w600,
-                                color: _kAccent)),
-                      ),
-                    ],
-                  ]),
-                  const SizedBox(height: 5),
-                  Text(desc,
-                      style:
-                          TextStyle(fontSize: 12, color: pal.dim, height: 1.5)),
-                  const SizedBox(height: 8),
-                  // 功能标签行
-                  Row(children: [
-                    Icon(Icons.auto_awesome,
-                        size: 11, color: _kAccent.withValues(alpha: 0.8)),
-                    const SizedBox(width: 4),
-                    Text(feature,
-                        style: TextStyle(
-                            fontSize: 10.5,
-                            fontWeight: FontWeight.w500,
-                            color: pal.dim)),
-                  ]),
-                ]),
-          ),
-          const SizedBox(width: 12),
-          // 选中态圆点
-          AnimatedContainer(
-            duration: const Duration(milliseconds: 160),
-            width: 26,
-            height: 26,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: selected ? _kAccent : Colors.transparent,
-              border: Border.all(
-                color: selected ? _kAccent : pal.border,
-                width: 1.5,
-              ),
-            ),
-            child: selected
-                ? const Icon(Icons.check_rounded, size: 16, color: Colors.white)
-                : null,
-          ),
+          Container(width: 5, height: 5, decoration: const BoxDecoration(color: Color(0xFFFF5F57), shape: BoxShape.circle)),
+          const SizedBox(width: 3),
+          Container(width: 5, height: 5, decoration: const BoxDecoration(color: Color(0xFFFFBD2E), shape: BoxShape.circle)),
+          const SizedBox(width: 3),
+          Container(width: 5, height: 5, decoration: const BoxDecoration(color: Color(0xFF28C840), shape: BoxShape.circle)),
+          const Spacer(),
+          Container(width: 24, height: 6, decoration: BoxDecoration(color: lineColor, borderRadius: BorderRadius.circular(2))),
         ]),
       ),
-    );
-  }
+      const SizedBox(height: 6),
+      Expanded(child: body),
+    ]),
+  );
 }
 
-// ===== 选项卡（第 3 页：标题 + 一行 dim 说明，形态与主题卡一致） =====
+/// 左侧导航栏（5 条导航线，首条高亮）
+Widget _navRail(Color sidebarBg, Color lineColor, Color accentColor) {
+  return Container(
+    width: 28,
+    decoration: BoxDecoration(color: sidebarBg, borderRadius: BorderRadius.circular(4)),
+    padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 4),
+    child: Column(children: [
+      for (var i = 0; i < 5; i++) ...[
+        Container(height: 4, width: double.infinity, decoration: BoxDecoration(color: i == 0 ? accentColor : lineColor, borderRadius: BorderRadius.circular(2))),
+        const SizedBox(height: 5),
+      ],
+    ]),
+  );
+}
+
+/// 内容线条区：顶部标题线 + 若干正文线；highlight 加一条强调色块，tall 增加行数
+Widget _lineContent(Color cardBg, Color lineColor, Color accentColor, {required bool tall, bool highlight = false}) {
+  return Container(
+    decoration: BoxDecoration(color: cardBg, borderRadius: BorderRadius.circular(4)),
+    padding: const EdgeInsets.all(6),
+    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Container(height: tall ? 6 : 5, width: 40, decoration: BoxDecoration(color: accentColor, borderRadius: BorderRadius.circular(2))),
+      const SizedBox(height: 5),
+      Container(height: 4, width: double.infinity, decoration: BoxDecoration(color: lineColor, borderRadius: BorderRadius.circular(2))),
+      const SizedBox(height: 3),
+      Container(height: 4, width: double.infinity, decoration: BoxDecoration(color: lineColor, borderRadius: BorderRadius.circular(2))),
+      const SizedBox(height: 3),
+      Container(height: 4, width: 80, decoration: BoxDecoration(color: lineColor, borderRadius: BorderRadius.circular(2))),
+      if (highlight) ...[
+        const SizedBox(height: 6),
+        Container(height: 4, width: double.infinity, decoration: BoxDecoration(color: accentColor.withValues(alpha: 0.55), borderRadius: BorderRadius.circular(2))),
+      ],
+      if (tall) ...[
+        const SizedBox(height: 6),
+        Container(height: 4, width: double.infinity, decoration: BoxDecoration(color: lineColor, borderRadius: BorderRadius.circular(2))),
+        const SizedBox(height: 3),
+        Container(height: 4, width: 60, decoration: BoxDecoration(color: lineColor, borderRadius: BorderRadius.circular(2))),
+      ],
+    ]),
+  );
+}
+
+/// 工具内容区：中央转盘圆 + 底部色块
+Widget _toolContent(Color cardBg, Color lineColor, Color accentColor) {
+  return Container(
+    decoration: BoxDecoration(color: cardBg, borderRadius: BorderRadius.circular(4)),
+    padding: const EdgeInsets.all(6),
+    child: Column(children: [
+      Expanded(
+        child: Center(
+          child: Container(
+            width: 34,
+            height: 34,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              border: Border.all(color: accentColor, width: 2),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(4),
+              child: ClipOval(
+                child: Row(children: [
+                  Expanded(child: Container(color: accentColor.withValues(alpha: 0.5))),
+                  Expanded(child: Container(color: lineColor)),
+                ]),
+              ),
+            ),
+          ),
+        ),
+      ),
+      const SizedBox(height: 4),
+      Row(children: [
+        for (var i = 0; i < 3; i++) ...[
+          Expanded(child: Container(height: 5, decoration: BoxDecoration(color: i == 1 ? accentColor.withValues(alpha: 0.6) : lineColor, borderRadius: BorderRadius.circular(2)))),
+          if (i < 2) const SizedBox(width: 4),
+        ],
+      ]),
+    ]),
+  );
+}
+
+/// 主题预览（经典浅色 / 毛玻璃浅色 / 深色）
+Widget _buildThemePreview(_Pal pal, {required String style}) {
+  final isDark = style == 'dark';
+  final isGlass = style == 'glass';
+  final cardBg = isDark ? const Color(0xFF1E1E2E) : const Color(0xFFF0F0F5);
+  final sidebarBg = isDark ? const Color(0xFF252538) : const Color(0xFFE8E8F0);
+  final lineColor = isDark ? const Color(0xFF3A3A55) : const Color(0xFFD8D8E2);
+  final textColor = isDark ? const Color(0xFFC8C8D8) : const Color(0xFF4A4A5A);
+  final accentColor = isDark ? const Color(0xFF7B7BFF) : const Color(0xFF6B6BFF);
+  return _miniFrame(
+    cardBg: cardBg,
+    sidebarBg: sidebarBg,
+    lineColor: lineColor,
+    body: Row(children: [
+      _navRail(sidebarBg, lineColor, accentColor),
+      const SizedBox(width: 6),
+      Expanded(
+        child: isGlass
+            // 毛玻璃预览：半透明白玻璃卡片 + 内侧高亮描边
+            ? Container(
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.45),
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(color: Colors.white.withValues(alpha: 0.6)),
+                ),
+                padding: const EdgeInsets.all(6),
+                child: _lineContent(cardBg, lineColor, textColor, tall: true),
+              )
+            : _lineContent(cardBg, lineColor, textColor, tall: true),
+      ),
+    ]),
+  );
+}
+
+/// 使用端预览（电脑端宽窗口 / 手机端窄竖屏）
+Widget _buildDevicePreview(_Pal pal, {required bool isDesktop}) {
+  final isDark = pal.dark;
+  final cardBg = isDark ? const Color(0xFF1E1E2E) : const Color(0xFFF0F0F5);
+  final sidebarBg = isDark ? const Color(0xFF252538) : const Color(0xFFE8E8F0);
+  final lineColor = isDark ? const Color(0xFF3A3A55) : const Color(0xFFD8D8E2);
+  final accentColor = isDark ? const Color(0xFF7B7BFF) : const Color(0xFF6B6BFF);
+  final frame = _miniFrame(
+    cardBg: cardBg,
+    sidebarBg: sidebarBg,
+    lineColor: lineColor,
+    body: Row(children: [
+      if (isDesktop) ...[
+        _navRail(sidebarBg, lineColor, accentColor),
+        const SizedBox(width: 6),
+      ],
+      Expanded(child: _lineContent(cardBg, lineColor, accentColor, tall: false)),
+    ]),
+  );
+  return Container(
+    color: cardBg,
+    padding: const EdgeInsets.all(8),
+    child: isDesktop ? frame : Center(child: SizedBox(width: 88, child: frame)),
+  );
+}
+
+/// 应用模式预览（英语学习 = 侧栏 + 内容含强调块；工具 = 侧栏 + 转盘圆）
+Widget _buildAppPreview(_Pal pal, {required bool isEnglish}) {
+  final isDark = pal.dark;
+  final cardBg = isDark ? const Color(0xFF1E1E2E) : const Color(0xFFF0F0F5);
+  final sidebarBg = isDark ? const Color(0xFF252538) : const Color(0xFFE8E8F0);
+  final lineColor = isDark ? const Color(0xFF3A3A55) : const Color(0xFFD8D8E2);
+  final accentColor = isEnglish ? const Color(0xFF4F6BF6) : const Color(0xFF10B981);
+  return _miniFrame(
+    cardBg: cardBg,
+    sidebarBg: sidebarBg,
+    lineColor: lineColor,
+    body: Row(children: [
+      _navRail(sidebarBg, lineColor, accentColor),
+      const SizedBox(width: 6),
+      Expanded(
+        child: isEnglish
+            ? _lineContent(cardBg, lineColor, accentColor, tall: false, highlight: true)
+            : _toolContent(cardBg, lineColor, accentColor),
+      ),
+    ]),
+  );
+}
+
+// ===== 选项卡（第 4 页：标题 + 一行 dim 说明，形态与选择卡一致） =====
 class _OptionCard extends StatelessWidget {
   final String title;
   final String desc;
@@ -872,7 +929,11 @@ class _OptionCard extends StatelessWidget {
 /// - 隔离：每个子元素包 RepaintBoundary，防止动画期间重绘扩散到兄弟节点
 class _StaggeredFadeIn extends StatefulWidget {
   final List<Widget> children;
-  const _StaggeredFadeIn({required this.children});
+
+  /// 当前是否为可见页：预构建且未翻到时直接显示最终态（不播放动画），
+  /// 翻到该页时再从零播放渐显动画，避免"首帧构建 + 动画叠加"导致的卡顿
+  final bool active;
+  const _StaggeredFadeIn({required this.children, this.active = true});
 
   @override
   State<_StaggeredFadeIn> createState() => _StaggeredFadeInState();
@@ -903,7 +964,25 @@ class _StaggeredFadeInState extends State<_StaggeredFadeIn> with SingleTickerPro
       );
     });
 
-    _controller.forward();
+    if (widget.active) {
+      _controller.forward();
+    } else {
+      // 非可见页（PageView 预构建）：直接停在最终态，避免隐藏页面空跑动画
+      _controller.value = 1.0;
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant _StaggeredFadeIn oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.active && !oldWidget.active) {
+      // 翻到该页：从头播放渐显动画
+      _controller.value = 0;
+      _controller.forward();
+    } else if (!widget.active && oldWidget.active) {
+      // 离开该页：回到最终态，下次进入再重播
+      _controller.value = 1.0;
+    }
   }
 
   @override
