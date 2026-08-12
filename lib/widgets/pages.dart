@@ -1721,13 +1721,12 @@ class _DictionaryPageState extends State<DictionaryPage> {
     final maimemo = _maimemoLookup;
     final phonetic = entry?.phonetic.isNotEmpty == true ? entry!.phonetic : '';
     final maimemoDefs = (maimemo != null && maimemo.definitions.isNotEmpty) ? maimemo.definitions : null;
-    final maimemoExamples = (maimemo != null && maimemo.examples.isNotEmpty) ? maimemo.examples : null;
-    // 例句：墨墨优先（含中英），否则用 AI 补充结果
-    final exampleList = maimemoExamples != null
-        ? maimemoExamples.map((e) => {'en': e.content, 'zh': e.translation}).toList()
+    // 例句：墨墨模式只取墨墨 API 数据；AI 模式用 AI 生成结果
+    final exampleList = maimemo != null
+        ? maimemo.examples.map((e) => {'en': e.content, 'zh': e.translation}).toList()
         : _examples;
-    // 助记：墨墨优先，否则用 AI 生成结果
-    final noteList = maimemo != null && maimemo.notes.isNotEmpty
+    // 助记：墨墨模式只取墨墨 API 数据；AI 模式用 AI 生成结果
+    final noteList = maimemo != null
         ? maimemo.notes.map((n) => n.content).toList()
         : _mnemonics;
 
@@ -2064,10 +2063,7 @@ class _DictionaryPageState extends State<DictionaryPage> {
           _foundWord = lookup.word;
           _foundEntry = entry;
           setState(() => _searching = false);
-          // 搭配/同义词墨墨未提供，仍用 AI 补充（若已配置 API）
-          if (s.apiConfig.ready) {
-            _fetchWordExtras(s, lookup.word);
-          }
+          // 墨墨模式：释义/例句/助记全部来自墨墨 API，不再混入 AI 生成内容
           return;
         }
       } catch (_) {
