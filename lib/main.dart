@@ -322,7 +322,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
   static const _frameRateChannel = MethodChannel('com.smartenglish/framerate');
 
   void _updateFrameRate() {
-    // 省电模式锁60帧，否则120帧
+    // 省电模式锁60帧；高性能模式不锁帧（解锁），其余锁定120帧
     final targetFps = _state.powerSavingMode ? 60 : 120;
     if (!_isWindows) {
       _frameRateChannel.invokeMethod('setFrameRate', {'fps': targetFps});
@@ -590,27 +590,10 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
     final isGlass = _state.isGlassUI;
     return Column(children: [
           const SizedBox(height: 24),
-          // 应用名
+          // 主题胶囊（经典 / 毛玻璃 / 深色，滑块跟随所选）
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 20),
-            child: Row(children: [
-              const Spacer(),
-              Tooltip(
-                message: _state.darkMode ? '切换浅色模式' : '切换深色模式',
-                child: InkWell(
-                  onTap: () => _state.toggleDarkMode(!_state.darkMode),
-                  borderRadius: BorderRadius.circular(8),
-                  child: Padding(
-                    padding: const EdgeInsets.all(6),
-                    child: Icon(
-                      _state.darkMode ? Icons.light_mode_rounded : Icons.dark_mode_rounded,
-                      size: 16,
-                      color: c.textTertiary,
-                    ),
-                  ),
-                ),
-              ),
-            ]),
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: _buildThemeCapsule(c),
           ),
           const SizedBox(height: 28),
           // 主导航项
@@ -668,6 +651,94 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
           ),
           const SizedBox(height: 16),
     ]);
+  }
+
+  /// 侧边栏顶部主题胶囊：经典 / 毛玻璃 / 深色 三选一，滑块滑到所选主题。
+  Widget _buildThemeCapsule(AppColors c) {
+    const themes = [
+      ('classic', '经典', Icons.light_mode_outlined),
+      ('glass', '毛玻璃', Icons.blur_on_outlined),
+      ('dark', '深色', Icons.dark_mode_outlined),
+    ];
+    // 当前激活的主题 key
+    final active = _state.darkMode ? 'dark' : _state.uiStyle;
+    final activeIndex = themes.indexWhere((t) => t.$1 == active);
+    final idx = activeIndex < 0 ? 0 : activeIndex;
+    return LayoutBuilder(builder: (context, box) {
+      // 滑块宽度 = (总宽 - 两侧内边距) / 3，位置随 idx 平移
+      const pad = 4.0;
+      final segW = (box.maxWidth - pad * 2) / 3;
+      return Container(
+        height: 40,
+        padding: const EdgeInsets.all(pad),
+        decoration: BoxDecoration(
+          color: c.inputFill,
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(color: c.border),
+        ),
+        child: Stack(children: [
+          // 滑块
+          AnimatedPositioned(
+            duration: const Duration(milliseconds: 280),
+            curve: Curves.easeOutCubic,
+            left: segW * idx,
+            top: 0,
+            bottom: 0,
+            width: segW,
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 280),
+              curve: Curves.easeOutCubic,
+              decoration: BoxDecoration(
+                color: _state.darkMode ? c.primaryBgStrong : Colors.white,
+                borderRadius: BorderRadius.circular(999),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.12),
+                    blurRadius: 6,
+                    offset: const Offset(0, 2),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          // 三个主题选项
+          Row(
+            children: [
+              for (final t in themes)
+                Expanded(
+                  child: Tooltip(
+                    message: t.$2,
+                    child: InkWell(
+                      onTap: () => _state.setThemeStyle(t.$1),
+                      borderRadius: BorderRadius.circular(999),
+                      child: Center(
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(t.$3, size: 14, color: themes[idx].$1 == t.$1 ? c.primaryText : c.textTertiary),
+                            const SizedBox(width: 4),
+                            Flexible(
+                              child: Text(
+                                t.$2,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: themes[idx].$1 == t.$1 ? FontWeight.w600 : FontWeight.w400,
+                                  color: themes[idx].$1 == t.$1 ? c.primaryText : c.textSecondary,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ]),
+      );
+    });
   }
 
   // ===== 主内容区 =====
@@ -732,8 +803,8 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
         final isGlass = _state.isGlassUI;
         final glassBg = isGlass ? c.sidebar.withValues(alpha: _state.darkMode ? 0.5 : 0.55) : c.sidebar;
         return Scaffold(
-          // 透明：让全局玻璃背景层透出
-          backgroundColor: Colors.transparent,
+          // 透明：让全局玻璃背景层透出；高性能模式改用不透明底色，减少合成开销
+          backgroundColor: _state.highPerformanceMode ? c.bg : Colors.transparent,
           appBar: examMode
               ? null
               : AppBar(
@@ -785,11 +856,19 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
           ),
           floatingActionButton: examMode
               ? null
-              : GlassFab(
-                  isLight: !_state.darkMode,
-                  onPressed: () => _showMobileChatSheet(ctx),
-                  icon: const Icon(Icons.auto_awesome_rounded, color: Color(0xFF7C3AED), size: 24),
-                ),
+              : _state.highPerformanceMode
+                  // 高性能模式：不使用毛玻璃模糊，改用实色悬浮按钮
+                  ? FloatingActionButton(
+                      onPressed: () => _showMobileChatSheet(ctx),
+                      backgroundColor: _state.darkMode ? const Color(0xFF2B2B32) : Colors.white,
+                      elevation: 2,
+                      child: const Icon(Icons.auto_awesome_rounded, color: Color(0xFF7C3AED), size: 24),
+                    )
+                  : GlassFab(
+                      isLight: !_state.darkMode,
+                      onPressed: () => _showMobileChatSheet(ctx),
+                      icon: const Icon(Icons.auto_awesome_rounded, color: Color(0xFF7C3AED), size: 24),
+                    ),
         );
       },
     );
@@ -1519,6 +1598,11 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
             ),
             const SizedBox(height: 8),
           ],
+          // Agent 工具调用步骤：在气泡上方单独展示（类似大厂 Agent UI）
+          if (msg.toolSteps.isNotEmpty) ...[
+            ...msg.toolSteps.map((ts) => _buildToolStepCard(ts, c)),
+            const SizedBox(height: 8),
+          ],
           // 消息内容（支持 Markdown 渲染）
           if (msg.content.isNotEmpty)
             RichText(
@@ -1557,6 +1641,50 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
       const SizedBox(width: 8),
       Expanded(child: bubble),
     ]);
+  }
+
+  /// Agent 工具调用步骤卡片：类似大厂 Agent UI，运行中显示加载动画，完成显示对勾
+  Widget _buildToolStepCard(ToolStep ts, AppColors c) {
+    final Widget leading;
+    if (ts.running) {
+      leading = SizedBox(
+        width: 12,
+        height: 12,
+        child: CircularProgressIndicator(strokeWidth: 2, color: c.primary),
+      );
+    } else if (ts.failed) {
+      leading = Icon(Icons.error_rounded, size: 14, color: Colors.red);
+    } else {
+      leading = Icon(Icons.check_circle_rounded, size: 14, color: const Color(0xFF22C55E));
+    }
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+      decoration: BoxDecoration(
+        color: c.primaryBg,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: c.primaryBorder),
+      ),
+      child: Row(children: [
+        leading,
+        const SizedBox(width: 6),
+        Expanded(
+          child: Text(
+            ts.label,
+            style: TextStyle(fontSize: 11.5, color: c.textSecondary),
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+        if (ts.running)
+          Text('运行中', style: TextStyle(fontSize: 10, color: c.primary))
+        else if (ts.failed)
+          Text('失败', style: TextStyle(fontSize: 10, color: Colors.red))
+        else
+          Text('完成', style: TextStyle(fontSize: 10, color: const Color(0xFF22C55E))),
+      ]),
+    );
   }
 
   /// R5: 简易 Markdown 解析：支持 **粗体**、*斜体*、~~删除线~~、`行内代码`、标题、列表、代码块、引用、链接

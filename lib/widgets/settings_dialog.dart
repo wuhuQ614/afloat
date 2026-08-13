@@ -408,25 +408,21 @@ class _SettingsDialogState extends State<SettingsDialog> {
       _sectionTitle('界面与风格', c),
       const SizedBox(height: 14),
       // 界面模式
-      _settingRow('界面模式', c, child: Row(children: [
+      _settingRow('界面模式', c, child: Wrap(spacing: 10, runSpacing: 8, children: [
         _buildChip2(s.uiMode.isEmpty ? 'desktop' : s.uiMode, 'desktop', '电脑端', s, c, (v) => s.setUiMode(v)),
-        const SizedBox(width: 10),
         _buildChip2(s.uiMode.isEmpty ? 'desktop' : s.uiMode, 'mobile', '手机端', s, c, (v) => s.setUiMode(v)),
       ]), hint: '切换后立即生效，也可按 F8 快速切换'),
       const SizedBox(height: 14),
       // 主题（第三大主题：经典 / 毛玻璃 / 深色）
-      _settingRow('主题', c, child: Row(children: [
+      _settingRow('主题', c, child: Wrap(spacing: 10, runSpacing: 8, children: [
         _buildChip2(s.darkMode ? 'dark' : s.uiStyle, 'classic', '经典', s, c, (_) => s.setThemeStyle('classic')),
-        const SizedBox(width: 10),
         _buildChip2(s.darkMode ? 'dark' : s.uiStyle, 'glass', '毛玻璃', s, c, (_) => s.setThemeStyle('glass')),
-        const SizedBox(width: 10),
         _buildChip2(s.darkMode ? 'dark' : s.uiStyle, 'dark', '深色', s, c, (_) => s.setThemeStyle('dark')),
       ]), hint: '经典与毛玻璃为浅色主题，深色为独立深色主题；也可用侧边栏月亮/太阳图标快速切换'),
       const SizedBox(height: 14),
       // 导航指示器
-      _settingRow('导航指示器', c, child: Row(children: [
+      _settingRow('导航指示器', c, child: Wrap(spacing: 10, runSpacing: 8, children: [
         _buildChip2(s.navIndicator, 'underline', '灰色下划线', s, c, (v) => s.setNavIndicator(v)),
-        const SizedBox(width: 10),
         _buildChip2(s.navIndicator, 'pill', '紫色渐变胶囊', s, c, (v) => s.setNavIndicator(v)),
       ]), hint: '控制侧边栏选中项的视觉表现'),
     ]);
@@ -456,19 +452,21 @@ class _SettingsDialogState extends State<SettingsDialog> {
         contentPadding: EdgeInsets.zero,
       ),
       const SizedBox(height: 6),
+      _SwitchRow(
+        icon: Icons.speed_rounded,
+        title: '高性能模式',
+        subtitle: '低配设备推荐：关闭毛玻璃模糊等重特效、使用不透明实色界面且不锁帧，大幅提升流畅度，所有功能不受影响',
+        value: s.highPerformanceMode,
+        onChanged: (v) => s.toggleHighPerformanceMode(v),
+        c: c,
+      ),
+      const SizedBox(height: 6),
       _settingRow('应用模式', c, child: Row(children: [
         _buildChip2(s.appMode.isEmpty ? 'english' : s.appMode, 'english', '英语学习模式', s, c, (v) => s.setAppMode(v)),
         const SizedBox(width: 10),
         _buildChip2(s.appMode.isEmpty ? 'english' : s.appMode, 'tools', '工具模式', s, c, (v) => s.setAppMode(v)),
       ]), hint: '工具模式包含转盘/翻牌/数字/画板/五子棋/象棋等，切换后立即生效'),
       const SizedBox(height: 14),
-      // 单词查询来源
-      _settingRow('单词查询来源', c, child: Row(children: [
-        _buildChip2(s.dictSource, 'ai', 'AI 生成', s, c, (v) => s.setDictSource(v)),
-        const SizedBox(width: 10),
-        _buildChip2(s.dictSource, 'maimemo', '墨墨 API', s, c, (v) => s.setDictSource(v)),
-      ]), hint: 'AI 生成需要已配置 API；墨墨 API 需已配置墨墨 Token，单词查询页将优先使用所选来源'),
-      const SizedBox(height: 6),
       ListTile(
         contentPadding: EdgeInsets.zero,
         leading: Icon(Icons.replay_rounded, size: 20, color: c.textTertiary),
@@ -482,9 +480,9 @@ class _SettingsDialogState extends State<SettingsDialog> {
       Text('备份包含 API 配置、收藏、错题本、学习记录、生词本等；API Key 敏感，请妥善保管', style: TextStyle(fontSize: 11.5, color: c.textTertiary)),
       const SizedBox(height: 12),
       Row(children: [
-        OutlinedButton.icon(onPressed: () => _export(s), icon: const Icon(Icons.download, size: 16), label: const Text('导出备份')),
+        Expanded(child: OutlinedButton.icon(onPressed: () => _export(s), icon: const Icon(Icons.download, size: 16), label: const Text('导出备份'))),
         const SizedBox(width: 10),
-        OutlinedButton.icon(onPressed: () => _import(s), icon: const Icon(Icons.upload, size: 16), label: const Text('导入备份')),
+        Expanded(child: OutlinedButton.icon(onPressed: () => _import(s), icon: const Icon(Icons.upload, size: 16), label: const Text('导入备份'))),
       ]),
     ]);
   }

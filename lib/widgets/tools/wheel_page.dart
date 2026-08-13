@@ -263,6 +263,7 @@ class _WheelTabPageState extends State<WheelTabPage>
     _rebuildWheelPicture(displayItems, _resultIndex, hasResult, c.isLight, dpr);
     // 改用 Column 布局，避免 Stack+Center+Positioned 导致的视觉偏移
     return Column(
+      crossAxisAlignment: CrossAxisAlignment.center,
       children: [
         // 顶部场景胶囊
         Padding(
@@ -732,6 +733,7 @@ class _WheelTabPageState extends State<WheelTabPage>
         darkMode: !AppColors.of(context).isLight,
         glassMode: widget.state.isGlassUI,
         canDelete: _collections.length > 1,
+        highPerformance: widget.state.highPerformanceMode,
       ),
     ))
         .then((result) {

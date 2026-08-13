@@ -62,6 +62,26 @@ class _ToolsModePageState extends State<ToolsModePage> with TickerProviderStateM
   /// P1-4：缓存游戏入口列表，仅在 initState 时创建一次
   late final List<_GameEntry> _gameEntries;
 
+  /// 性能优化：缓存滑块 BoxDecoration，避免动画期间每帧重建
+  BoxDecoration get _sliderDecoration => BoxDecoration(
+    borderRadius: BorderRadius.circular(22),
+    color: _isGlass
+        ? Colors.white.withValues(alpha: 0.4)
+        : _isDark
+            ? Colors.white.withValues(alpha: 0.1)
+            : Colors.white.withValues(alpha: 0.8),
+    boxShadow: [
+      BoxShadow(
+        color: Colors.black.withValues(alpha: _isGlass ? 0.04 : 0.06),
+        blurRadius: 3,
+        offset: const Offset(0, 1),
+      ),
+    ],
+  );
+
+  /// 性能优化：页面滑入动画曲线提取为静态常量，避免每帧创建
+  static const Cubic _pageCurve = Cubic(0.22, 1, 0.36, 1);
+
   static const List<_TabDef> _tabs = [
     _TabDef(id: 'wheel', label: '暴力转盘', color: Color(0xFF8B5CF6)),
     _TabDef(id: 'bomb', label: '暴力翻牌', color: Color(0xFFF97316)),
@@ -350,7 +370,7 @@ class _ToolsModePageState extends State<ToolsModePage> with TickerProviderStateM
       child: AnimatedBuilder(
         animation: _pageCtrl,
         builder: (context, _) {
-          final t = const Cubic(0.22, 1, 0.36, 1).transform(_pageCtrl.value);
+          final t = _pageCurve.transform(_pageCtrl.value);
           final dx = (1.0 - t) * 14.0 * (_slideFromRight ? 1.0 : -1.0);
           return Transform.translate(
             offset: Offset(dx, 0),
@@ -477,6 +497,7 @@ class _ToolsModePageState extends State<ToolsModePage> with TickerProviderStateM
               child: Stack(
                 children: [
                   // 滑块动画（使用预创建的 _sliderCurve，避免每帧创建 CurvedAnimation）
+                  // 性能优化：BoxDecoration 缓存为 _sliderDecoration，动画期间不重建
                   AnimatedBuilder(
                     animation: _sliderCtrl,
                     builder: (context, child) {
@@ -489,24 +510,7 @@ class _ToolsModePageState extends State<ToolsModePage> with TickerProviderStateM
                         top: 4,
                         bottom: 4,
                         width: segW - 8,
-                        child: Container(
-                          decoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(22),
-                            // 对齐参考项目：glass 0.4 白 / 暗色 0.1 白 / 亮色 0.8 白
-                            color: _isGlass
-                                ? Colors.white.withValues(alpha: 0.4)
-                                : _isDark
-                                    ? Colors.white.withValues(alpha: 0.1)
-                                    : Colors.white.withValues(alpha: 0.8),
-                            boxShadow: [
-                              BoxShadow(
-                                color: Colors.black.withValues(alpha: _isGlass ? 0.04 : 0.06),
-                                blurRadius: 3,
-                                offset: const Offset(0, 1),
-                              ),
-                            ],
-                          ),
-                        ),
+                        child: Container(decoration: _sliderDecoration),
                       );
                     },
                   ),

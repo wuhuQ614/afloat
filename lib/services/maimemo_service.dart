@@ -60,59 +60,11 @@ class MaimemoStudyRecord {
   });
 }
 
-/// 词汇查询结果（仅 id + spelling）
+/// 词汇查询结果（仅 id + spelling，供墨墨词库同步分批校验用）
 class MaimemoVocabulary {
   final String id;
   final String spelling;
   const MaimemoVocabulary({required this.id, required this.spelling});
-}
-
-/// 单词完整详情（墨墨仅提供 id + spelling，音标/发音不提供）
-class MaimemoVocabularyDetail {
-  final String id;
-  final String spelling;
-  const MaimemoVocabularyDetail({required this.id, required this.spelling});
-}
-
-/// 释义条目
-class MaimemoDefinition {
-  final String id;
-  final String content; // 中文释义（如 "n. 苹果；苹果树"）
-  final List<String> tags; // 标签（如来源/分类）
-  const MaimemoDefinition({required this.id, required this.content, this.tags = const []});
-}
-
-/// 例句条目（墨墨的 phrase）
-class MaimemoExample {
-  final String id;
-  final String content; // 英文句子
-  final String translation; // 中文翻译
-  final String source; // 来源
-  const MaimemoExample({required this.id, required this.content, this.translation = '', this.source = ''});
-}
-
-/// 助记条目
-class MaimemoNote {
-  final String id;
-  final String content; // 助记内容（谐音/联想等）
-  final String type; // 类型（如"谐音"）
-  const MaimemoNote({required this.id, required this.content, this.type = ''});
-}
-
-/// 墨墨查词聚合结果（释义 + 例句 + 助记）
-class MaimemoWordLookup {
-  final String word;
-  final MaimemoVocabularyDetail? detail;
-  final List<MaimemoDefinition> definitions;
-  final List<MaimemoExample> examples;
-  final List<MaimemoNote> notes;
-  const MaimemoWordLookup({
-    required this.word,
-    this.detail,
-    required this.definitions,
-    required this.examples,
-    required this.notes,
-  });
 }
 
 class MaimemoException implements Exception {
@@ -306,7 +258,7 @@ class MaimemoService {
     }).toList();
   }
 
-  /// 查询词汇（按拼写或 ID），返回 id + spelling 基本字段
+  /// 查询词汇（按拼写或 ID），返回 id + spelling 基本字段（供墨墨词库同步分批校验用）
   static Future<List<MaimemoVocabulary>> queryVocabulary(
     String token, {
     List<String>? spellings,
@@ -326,72 +278,6 @@ class MaimemoService {
       return MaimemoVocabulary(
         id: (m['id'] ?? '') as String,
         spelling: (m['spelling'] ?? '') as String,
-      );
-    }).toList();
-  }
-
-  /// 获取词汇详情：GET /api/v1/vocabulary?spelling=xxx（墨墨仅返回 id + spelling）
-  static Future<MaimemoVocabularyDetail?> getVocabulary(
-    String token, {
-    required String spelling,
-  }) async {
-    final data = await _get(token, '/api/v1/vocabulary', {'spelling': spelling});
-    final v = data['voc'];
-    if (v is! Map<String, dynamic>) return null;
-    return MaimemoVocabularyDetail(
-      id: (v['id'] ?? '') as String,
-      spelling: (v['spelling'] ?? '') as String,
-    );
-  }
-
-  /// 查询指定单词下的所有释义：GET /api/v1/interpretations?voc_id=xxx
-  static Future<List<MaimemoDefinition>> listDefinitions(
-    String token, {
-    required String vocId,
-  }) async {
-    final data = await _get(token, '/api/v1/interpretations', {'voc_id': vocId});
-    final list = data['interpretations'] as List? ?? [];
-    return list.map((e) {
-      final m = e as Map<String, dynamic>;
-      return MaimemoDefinition(
-        id: (m['id'] ?? '') as String,
-        content: (m['interpretation'] ?? m['content'] ?? '') as String,
-        tags: (m['tags'] as List?)?.whereType<String>().toList() ?? const [],
-      );
-    }).toList();
-  }
-
-  /// 查询指定单词下的所有例句：GET /api/v1/phrases?voc_id=xxx
-  static Future<List<MaimemoExample>> listExamples(
-    String token, {
-    required String vocId,
-  }) async {
-    final data = await _get(token, '/api/v1/phrases', {'voc_id': vocId});
-    final list = data['phrases'] as List? ?? [];
-    return list.map((e) {
-      final m = e as Map<String, dynamic>;
-      return MaimemoExample(
-        id: (m['id'] ?? '') as String,
-        content: (m['phrase'] ?? '') as String,
-        translation: (m['interpretation'] ?? '') as String,
-        source: (m['origin'] ?? '') as String,
-      );
-    }).toList();
-  }
-
-  /// 查询指定单词下的所有助记：GET /api/v1/notes?voc_id=xxx
-  static Future<List<MaimemoNote>> listNotes(
-    String token, {
-    required String vocId,
-  }) async {
-    final data = await _get(token, '/api/v1/notes', {'voc_id': vocId});
-    final list = data['notes'] as List? ?? [];
-    return list.map((e) {
-      final m = e as Map<String, dynamic>;
-      return MaimemoNote(
-        id: (m['id'] ?? '') as String,
-        content: (m['note'] ?? '') as String,
-        type: (m['note_type'] ?? '') as String,
       );
     }).toList();
   }

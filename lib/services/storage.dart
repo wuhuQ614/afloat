@@ -189,6 +189,11 @@ class Storage {
   static bool loadPowerSavingMode() => _getBool('powerSavingMode', false);
   static void savePowerSavingMode(bool v) => _setBool('powerSavingMode', v);
 
+  // ===== 高性能模式 =====
+  /// 低配设备性能优化：关闭毛玻璃等重特效、锁 60 帧，功能不变
+  static bool loadHighPerformanceMode() => _getBool('highPerformanceMode', false);
+  static void saveHighPerformanceMode(bool v) => _setBool('highPerformanceMode', v);
+
   // ===== 界面模式 =====
   /// 'desktop' | 'mobile' | '' (未选择，首次启动)
   static String loadUiMode() => _get('uiMode', '');
@@ -272,16 +277,6 @@ class Storage {
 
   static void saveAnsweredBankIndices(Set<int> set) {
     _set('answeredBankIdx', jsonEncode(set.toList()));
-  }
-
-  // ===== 查词来源：'ai' = AI生成（默认） | 'maimemo' = 墨墨开放API =====
-  static String loadDictSource() {
-    final v = _get('dictSource', 'ai');
-    return v == 'maimemo' ? 'maimemo' : 'ai';
-  }
-
-  static void saveDictSource(String v) {
-    _set('dictSource', v == 'maimemo' ? 'maimemo' : 'ai');
   }
 
   // ===== 生词本 =====

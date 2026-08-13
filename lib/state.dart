@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle, SystemChrome, SystemUiMode, SystemUiOverlayStyle;
 import 'models.dart';
+import 'theme_colors.dart' show AppColors;
 import 'services/api_service.dart';
 import 'services/maimemo_service.dart';
 import 'services/storage.dart';
@@ -21,12 +22,27 @@ class _WordSpan {
   const _WordSpan({required this.text, required this.start, required this.end});
 }
 
+/// Agent 单次工具调用步骤（用于在 AI 气泡上方单独展示，类似大厂 Agent UI）
+class ToolStep {
+  /// 展示文案，如 "生成 3 道翻译题"、"查询单词 hello"
+  String label;
+  /// 是否执行中（显示加载动画）
+  bool running;
+  /// 是否执行成功（显示对勾）
+  bool done;
+  /// 是否执行失败（显示错误）
+  bool failed;
+  ToolStep({required this.label, this.running = true, this.done = false, this.failed = false});
+}
+
 class ChatMessage {
   String role; // user / ai
   String content;
   bool showReasoning;
   bool reasoningExpanded;
   String? reasoning;
+  /// Agent 工具调用步骤列表，在气泡上方单独展示（不混入对话文本）
+  List<ToolStep> toolSteps = [];
   /// 用户消息携带的图片（base64 data URL），AI 消息为 null
   String? imageData;
   /// 缓存解码后的图片字节，避免每次重建都重新 base64Decode
@@ -117,6 +133,8 @@ class AppState extends ChangeNotifier {
   bool darkMode = false;
   bool fullscreen = false;
   bool powerSavingMode = false; // 省电模式，默认关闭，关闭时支持120帧
+  /// 高性能模式：面向低配设备，关闭毛玻璃/半透明等重特效且不锁帧，功能不受影响
+  bool highPerformanceMode = false;
   /// 首次启动快速引导是否已完成（false 时启动进入引导向导）
   bool onboardingDone = false;
   /// '' = 未选择（首次启动）, 'desktop' = 桌面端, 'mobile' = 手机端
@@ -127,11 +145,11 @@ class AppState extends ChangeNotifier {
   String uiStyle = 'classic';
   /// 是否为毛玻璃样式。深色模式是独立第三主题，
   /// 无论 uiStyle 为何都渲染为统一深色主题（不使用毛玻璃模糊），故深色下恒为 false。
-  bool get isGlassUI => uiStyle == 'glass' && !darkMode;
+  /// 高性能模式下同样恒为 false：关闭全部 BackdropFilter 模糊以获得最佳性能。
+  bool get isGlassUI =>
+      uiStyle == 'glass' && !darkMode && !highPerformanceMode;
   /// 导航指示器：'underline' = 灰色下划线 | 'pill' = 紫色渐变胶囊
   String navIndicator = 'underline';
-  /// 单词查询来源：'ai' = AI生成（默认） | 'maimemo' = 墨墨开放API
-  String dictSource = 'ai';
   String selectedType = 'translation';
   String selectedLevel = 'zsb';
   int questionStartTime = 0;
@@ -217,12 +235,13 @@ class AppState extends ChangeNotifier {
     analysisMode = Storage.loadAnalysisMode();
     fullscreen = Storage.loadFullscreen();
     powerSavingMode = Storage.loadPowerSavingMode();
+    highPerformanceMode = Storage.loadHighPerformanceMode();
+    AppColors.highPerformance = highPerformanceMode;
     onboardingDone = Storage.loadOnboardingDone();
     uiMode = Storage.loadUiMode();
     appMode = Storage.loadAppMode();
     uiStyle = Storage.loadUiStyle();
     navIndicator = Storage.loadNavIndicator();
-    dictSource = Storage.loadDictSource();
     // 手机端启动即进入沉浸式全屏（隐藏系统状态栏/导航栏），电脑端不受影响
     _applySystemUiMode();
     // 全卷模拟考试：恢复最近一次成绩与历史摘要（供学习报告展示）；
@@ -2177,12 +2196,8 @@ class AppState extends ChangeNotifier {
     try {
       // 最多循环 5 轮（防止死循环）
       for (var round = 0; round < 5; round++) {
-        // 更新占位消息
-        if (actions.isEmpty) {
-          placeholder.content = '正在思考…';
-        } else {
-          placeholder.content = '🔧 ${actions.join("\n ")}\n\n正在思考…';
-        }
+        // 更新占位消息：思考中不显示工具步骤文本
+        placeholder.content = '正在思考…';
         _notifyChatUpdate();
   
         // R1: 所有轮次全部用流式调用（streamChatWithTools 现在返回 AIResponse 含 tool_calls）
@@ -2242,18 +2257,27 @@ class AppState extends ChangeNotifier {
         // 执行每个工具调用，实时更新占位消息
         for (final tc in resp.toolCalls) {
           final args = AgentService.parseArgs(tc.arguments);
-          // 工具执行前：显示“正在xxx”
+          // 工具执行前：在气泡上方添加"调用工具"步骤卡片（运行中）
           final runningLabel = _toolRunningLabel(tc.name, args);
-          if (runningLabel.isNotEmpty) {
-            placeholder.content = actions.isEmpty
-                ? ' $runningLabel…'
-                : ' ${actions.join("\n🔧 ")}\n\n🔧 $runningLabel…';
-            _notifyChatUpdate();
-          }
+          final step = ToolStep(label: runningLabel.isEmpty ? _toolDefaultLabel(tc.name) : runningLabel);
+          placeholder.toolSteps.add(step);
+          _notifyChatUpdate();
           final result = await executeTool(tc.name, args);
+          // 工具执行后：更新该步骤状态与文案
+          step.running = false;
+          if (result.ok && result.actionLabel.isNotEmpty) {
+            step.label = result.actionLabel;
+            step.done = true;
+          } else if (result.ok) {
+            step.done = true;
+          } else {
+            step.failed = true;
+            if (result.actionLabel.isNotEmpty) step.label = result.actionLabel;
+          }
           if (result.actionLabel.isNotEmpty) {
             actions.add(result.actionLabel);
           }
+          _notifyChatUpdate();
           messages.add({
             'role': 'tool',
             'tool_call_id': tc.id,
@@ -2301,10 +2325,33 @@ class AppState extends ChangeNotifier {
     }
   }
 
+  /// 工具的默认展示标签（无参数时兜底）
+  String _toolDefaultLabel(String name) {
+    switch (name) {
+      case 'generate_questions':
+        return '生成练习题';
+      case 'generate_full_exam':
+        return '生成综合模拟全卷';
+      case 'lookup_word':
+        return '查询单词';
+      case 'analyze_words':
+        return '剖析词汇';
+      case 'next_question':
+        return '切换题目';
+      case 'toggle_favorite':
+        return '收藏题目';
+      case 'get_current_question':
+        return '读取当前题目';
+      case 'get_progress':
+        return '读取学习进度';
+      default:
+        return '调用工具';
+    }
+  }
+
   /// R3: 直接赋最终文本 + 一次通知（删除假流式，消除 O(n²) substring + 人为延迟）
   Future<void> _simulateStreamOutput(ChatMessage msg, String reply, List<String> actions) async {
-    final prefix = actions.isEmpty ? '' : '🔧 ${actions.join("\n🔧 ")}\n\n';
-    msg.content = '$prefix$reply';
+    msg.content = reply;
     _notifyChatUpdate();
   }
 
@@ -2680,30 +2727,6 @@ class AppState extends ChangeNotifier {
     }
   }
 
-  /// 用墨墨开放 API 查询单词完整信息（释义/例句/助记）。
-  /// 返回 null 表示该单词在墨墨词库中不存在；失败抛 MaimemoException。
-  Future<MaimemoWordLookup?> lookupWordMaimemo(String word) async {
-    final token = maimemoToken.trim();
-    if (token.isEmpty) {
-      throw const MaimemoException('尚未配置墨墨 API Token');
-    }
-    final detail = await MaimemoService.getVocabulary(token, spelling: word.toLowerCase());
-    if (detail == null) return null;
-    // 并发获取释义、例句、助记
-    final results = await Future.wait([
-      MaimemoService.listDefinitions(token, vocId: detail.id),
-      MaimemoService.listExamples(token, vocId: detail.id),
-      MaimemoService.listNotes(token, vocId: detail.id),
-    ]);
-    return MaimemoWordLookup(
-      word: detail.spelling,
-      detail: detail,
-      definitions: results[0] as List<MaimemoDefinition>,
-      examples: results[1] as List<MaimemoExample>,
-      notes: results[2] as List<MaimemoNote>,
-    );
-  }
-
   // ===== 学习报告数据 =====
   List<StudyRecord> studyRecords = [];
   List<WrongItem> wrongQuestions = [];
@@ -2856,6 +2879,16 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 切换高性能模式：关闭毛玻璃/半透明模糊等重特效且不锁帧，
+  /// 面向低配设备大幅提升流畅度；所有功能保持不变。
+  void toggleHighPerformanceMode(bool v) {
+    if (highPerformanceMode == v) return;
+    highPerformanceMode = v;
+    AppColors.highPerformance = v;
+    Storage.saveHighPerformanceMode(v);
+    notifyListeners();
+  }
+
   void setUiMode(String mode) {
     uiMode = mode;
     Storage.saveUiMode(mode);
@@ -2877,15 +2910,6 @@ class AppState extends ChangeNotifier {
     if (uiStyle == style) return;
     uiStyle = style;
     Storage.saveUiStyle(style);
-    notifyListeners();
-  }
-
-  /// 设置单词查询来源：'ai' = AI生成 | 'maimemo' = 墨墨开放API
-  void setDictSource(String source) {
-    final v = source == 'maimemo' ? 'maimemo' : 'ai';
-    if (dictSource == v) return;
-    dictSource = v;
-    Storage.saveDictSource(v);
     notifyListeners();
   }
 

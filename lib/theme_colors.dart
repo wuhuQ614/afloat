@@ -63,6 +63,10 @@ const Color _darkGradientEnd = Color(0xFF8B5CF6);
 
 /// 主题上下文工具：根据 isLight 返回对应颜色
 class AppColors {
+  /// 高性能模式全局开关（由 AppState 切换时同步）：
+  /// 开启后所有半透明玻璃色改为不透明实色，消除透明图层的额外合成开销。
+  static bool highPerformance = false;
+
   final bool isLight;
 
   AppColors(this.isLight);
@@ -152,11 +156,19 @@ class AppColors {
         (color: gradientEnd, alpha: isLight ? 0.07 : 0.10),
       ];
 
-  static Color glassCardColor(bool isLight) =>
-      isLight ? Colors.white.withValues(alpha: 0.78) : kDarkCard;
+  static Color glassCardColor(bool isLight) {
+    if (!isLight) return kDarkCard;
+    // 高性能模式：不透明纯白卡片，避免半透明图层的合成开销
+    if (highPerformance) return Colors.white;
+    return Colors.white.withValues(alpha: 0.78);
+  }
 
-  static Color glassSidebarColor(bool isLight) =>
-      isLight ? Colors.white.withValues(alpha: 0.65) : kDarkSidebar;
+  static Color glassSidebarColor(bool isLight) {
+    if (!isLight) return kDarkSidebar;
+    // 高性能模式：不透明浅灰白侧边栏
+    if (highPerformance) return _lightBgTint;
+    return Colors.white.withValues(alpha: 0.65);
+  }
 
   static Color glassBorderColor(bool isLight) =>
       isLight ? Colors.black.withValues(alpha: 0.06) : kDarkBorder;

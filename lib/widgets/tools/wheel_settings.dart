@@ -31,12 +31,16 @@ class WheelSettingsPage extends StatefulWidget {
   final bool glassMode;
   final bool canDelete;
 
+  /// 高性能模式：跳过全屏 BackdropFilter 模糊，使用不透明实底背景
+  final bool highPerformance;
+
   const WheelSettingsPage({
     super.key,
     required this.collection,
     required this.darkMode,
     required this.glassMode,
     required this.canDelete,
+    this.highPerformance = false,
   });
 
   @override
@@ -132,11 +136,17 @@ class _WheelSettingsPageState extends State<WheelSettingsPage>
   // ==================== 主题色 ====================
   bool get _dark => widget.darkMode && !widget.glassMode;
 
-  Color get _bg => widget.glassMode
-      ? Colors.white.withValues(alpha: 0.72)
-      : _dark
-          ? const Color(0xFF111827).withValues(alpha: 0.95)
-          : Colors.white.withValues(alpha: 0.95);
+  Color get _bg {
+    // 高性能模式：不透明实底（无需模糊兜底）
+    if (widget.highPerformance) {
+      return _dark ? const Color(0xFF111827) : Colors.white;
+    }
+    return widget.glassMode
+        ? Colors.white.withValues(alpha: 0.72)
+        : _dark
+            ? const Color(0xFF111827).withValues(alpha: 0.95)
+            : Colors.white.withValues(alpha: 0.95);
+  }
 
   Color get _divider => widget.glassMode
       ? Colors.white.withValues(alpha: 0.15)
@@ -184,12 +194,15 @@ class _WheelSettingsPageState extends State<WheelSettingsPage>
           );
         },
         child: Stack(children: [
-          // 全屏半透明背景 + 模糊（对齐参考项目 backdrop-blur-xl）
+          // 全屏半透明背景 + 模糊（对齐参考项目 backdrop-blur-xl）；
+          // 高性能模式下跳过模糊，直接用不透明实底
           Positioned.fill(
-            child: BackdropFilter(
-              filter: ui.ImageFilter.blur(sigmaX: 15, sigmaY: 15),
-              child: Container(color: _bg),
-            ),
+            child: widget.highPerformance
+                ? Container(color: _bg)
+                : BackdropFilter(
+                    filter: ui.ImageFilter.blur(sigmaX: 15, sigmaY: 15),
+                    child: Container(color: _bg),
+                  ),
           ),
           SafeArea(
             child: Column(children: [
