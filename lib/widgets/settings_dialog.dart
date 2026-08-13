@@ -461,12 +461,6 @@ class _SettingsDialogState extends State<SettingsDialog> {
         c: c,
       ),
       const SizedBox(height: 6),
-      _settingRow('应用模式', c, child: Row(children: [
-        _buildChip2(s.appMode.isEmpty ? 'english' : s.appMode, 'english', '英语学习模式', s, c, (v) => s.setAppMode(v)),
-        const SizedBox(width: 10),
-        _buildChip2(s.appMode.isEmpty ? 'english' : s.appMode, 'tools', '工具模式', s, c, (v) => s.setAppMode(v)),
-      ]), hint: '工具模式包含转盘/翻牌/数字/画板/五子棋/象棋等，切换后立即生效'),
-      const SizedBox(height: 14),
       ListTile(
         contentPadding: EdgeInsets.zero,
         leading: Icon(Icons.replay_rounded, size: 20, color: c.textTertiary),

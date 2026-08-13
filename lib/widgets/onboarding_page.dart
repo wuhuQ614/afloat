@@ -45,7 +45,7 @@ class OnboardingPage extends StatefulWidget {
 }
 
 class _OnboardingPageState extends State<OnboardingPage> {
-  static const _totalSteps = 6;
+  static const _totalSteps = 5;
   final PageController _pageCtrl = PageController();
   /// 翻页过渡层的全局 key：滚动时只局部重建这四层，不重建 PageView 本体
   final List<GlobalKey> _pageKeys = List.generate(_totalSteps, (_) => GlobalKey());
@@ -102,7 +102,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
 
   void _goTo(int idx) {
     if (idx < 0 || idx >= _totalSteps) return;
-    if (_step == 3) _saveApiIfFilled(); // 离开 API 页（任意方向）均尝试保存
+    if (_step == 2) _saveApiIfFilled(); // 离开 API 页（任意方向）均尝试保存
     _pageCtrl.animateToPage(idx, duration: const Duration(milliseconds: 260), curve: Curves.easeOutCubic);
   }
 
@@ -117,15 +117,9 @@ class _OnboardingPageState extends State<OnboardingPage> {
   }
 
   void _skipAll() {
-    if (_step == 3) _saveApiIfFilled();
-    _ensureAppMode();
+    if (_step == 2) _saveApiIfFilled();
     _ensureUiMode();
     s.completeOnboarding();
-  }
-
-  /// 未选择应用模式时兜底为英语模式（与模式选择页默认选中一致）
-  void _ensureAppMode() {
-    if (s.appMode.isEmpty) s.setAppMode('english');
   }
 
   /// 未选择使用端时兜底为电脑端（与平台选择页默认一致）
@@ -226,10 +220,9 @@ class _OnboardingPageState extends State<OnboardingPage> {
     final pages = [
       _buildStepPlatform(pal), // 0 使用端
       _buildStepTheme(pal),    // 1 外观模式
-      _buildStepAppMode(pal),  // 2 应用模式
-      _buildStepApi(pal),      // 3 API
-      _buildStepMode(pal),     // 4 词汇剖析强度
-      _buildStepWelcome(pal),  // 5 欢迎
+      _buildStepApi(pal),      // 2 API
+      _buildStepMode(pal),     // 3 词汇剖析强度
+      _buildStepWelcome(pal),  // 4 欢迎
     ];
     return PageView(
       controller: _pageCtrl,
@@ -238,7 +231,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
       // 翻页时不再首帧同步构建页面，避免"卡死一下"
       allowImplicitScrolling: true,
       onPageChanged: (i) {
-        if (_step == 3) _saveApiIfFilled();
+        if (_step == 2) _saveApiIfFilled();
         setState(() => _step = i);
       },
       children: [
@@ -306,44 +299,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
     ]));
   }
 
-  // ===== 第 3 页：选择应用模式（英语学习模式 / 工具模式）— 与外观模式同款卡片 =====
-  Widget _buildStepAppMode(_Pal pal) {
-    final mode = s.appMode.isEmpty ? 'english' : s.appMode;
-    return _pageShell(_StaggeredFadeIn(active: _step == 2, children: [
-      _pageHead(pal, '选择应用模式', '选择你想怎么使用本应用，之后可随时在设置中切换。'),
-      Row(children: [
-        Expanded(
-          child: SizedBox(
-            height: 220,
-            child: _SelectCard(
-              title: '英语学习模式',
-              subtitle: '题库 · 考场 · 剖析',
-              selected: mode == 'english',
-              pal: pal,
-              preview: _buildAppPreview(pal, isEnglish: true),
-              onTap: () => s.setAppMode('english'),
-            ),
-          ),
-        ),
-        const SizedBox(width: 16),
-        Expanded(
-          child: SizedBox(
-            height: 220,
-            child: _SelectCard(
-              title: '工具模式',
-              subtitle: '转盘 · 翻牌 · 棋类',
-              selected: mode == 'tools',
-              pal: pal,
-              preview: _buildAppPreview(pal, isEnglish: false),
-              onTap: () => s.setAppMode('tools'),
-            ),
-          ),
-        ),
-      ]),
-    ]));
-  }
-
-  // ===== 第 2 页：选择主题（第三大主题：经典 / 毛玻璃 / 深色） =====
+  // ===== 第 1 页：选择主题（第三大主题：经典 / 毛玻璃 / 深色） =====
   Widget _buildStepTheme(_Pal pal) {
     return _pageShell(_StaggeredFadeIn(active: _step == 1, children: [
       _pageHead(pal, '选择主题'),
@@ -393,7 +349,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
 
   // ===== 第 2 页：设置 API（可跳过） =====
   Widget _buildStepApi(_Pal pal) {
-    return _pageShell(_StaggeredFadeIn(active: _step == 3, children: [
+    return _pageShell(_StaggeredFadeIn(active: _step == 2, children: [
       _pageHead(pal, '设置 API', '连接 AI 服务，获取更智能的学习体验。此步骤可跳过。'),
       // API Key
       _fieldLabel(pal, 'API Key'),
@@ -449,7 +405,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
           onPressed: () {
             // 与“下一步”保存行为一致：已填完整的配置不因跳过而丢失
             _saveApiIfFilled();
-            _goTo(4);
+            _goTo(3);
           },
           style: TextButton.styleFrom(padding: EdgeInsets.zero, minimumSize: const Size(0, 28)),
           child: Text('跳过此步骤', style: TextStyle(fontSize: 12, color: pal.dim)),
@@ -492,7 +448,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
 
   // ===== 第 3 页：选择词汇剖析强度（三张结构相同的选项卡） =====
   Widget _buildStepMode(_Pal pal) {
-    return _pageShell(_StaggeredFadeIn(active: _step == 4, children: [
+    return _pageShell(_StaggeredFadeIn(active: _step == 3, children: [
       _pageHead(pal, '选择词汇剖析强度', 'AI 将根据你的选择提供不同深度的解析，之后可随时更换。'),
       _OptionCard(
         title: '快速模式',
@@ -524,7 +480,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
 
   // ===== 第 4 页：欢迎语 =====
   Widget _buildStepWelcome(_Pal pal) {
-    return _pageShell(_StaggeredFadeIn(active: _step == 5, children: [
+    return _pageShell(_StaggeredFadeIn(active: _step == 4, children: [
       const SizedBox(height: 56),
       Text('欢迎使用', style: TextStyle(fontSize: 34, fontWeight: FontWeight.w600, color: pal.h1, letterSpacing: 2)),
       const SizedBox(height: 16),
@@ -561,7 +517,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
               padding: const EdgeInsets.symmetric(horizontal: 24),
             ),
-            onPressed: isLast ? () { _ensureAppMode(); _ensureUiMode(); s.completeOnboarding(); } : () => _goTo(_step + 1),
+            onPressed: isLast ? () { _ensureUiMode(); s.completeOnboarding(); } : () => _goTo(_step + 1),
             child: Text(isLast ? '开始使用' : '下一步'),
           ),
         ),
@@ -753,44 +709,6 @@ Widget _lineContent(Color cardBg, Color lineColor, Color accentColor, {required 
   );
 }
 
-/// 工具内容区：中央转盘圆 + 底部色块
-Widget _toolContent(Color cardBg, Color lineColor, Color accentColor) {
-  return Container(
-    decoration: BoxDecoration(color: cardBg, borderRadius: BorderRadius.circular(4)),
-    padding: const EdgeInsets.all(6),
-    child: Column(children: [
-      Expanded(
-        child: Center(
-          child: Container(
-            width: 34,
-            height: 34,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              border: Border.all(color: accentColor, width: 2),
-            ),
-            child: Padding(
-              padding: const EdgeInsets.all(4),
-              child: ClipOval(
-                child: Row(children: [
-                  Expanded(child: Container(color: accentColor.withValues(alpha: 0.5))),
-                  Expanded(child: Container(color: lineColor)),
-                ]),
-              ),
-            ),
-          ),
-        ),
-      ),
-      const SizedBox(height: 4),
-      Row(children: [
-        for (var i = 0; i < 3; i++) ...[
-          Expanded(child: Container(height: 5, decoration: BoxDecoration(color: i == 1 ? accentColor.withValues(alpha: 0.6) : lineColor, borderRadius: BorderRadius.circular(2)))),
-          if (i < 2) const SizedBox(width: 4),
-        ],
-      ]),
-    ]),
-  );
-}
-
 /// 主题预览（经典浅色 / 毛玻璃浅色 / 深色）
 Widget _buildThemePreview(_Pal pal, {required String style}) {
   final isDark = style == 'dark';
@@ -851,30 +769,7 @@ Widget _buildDevicePreview(_Pal pal, {required bool isDesktop}) {
   );
 }
 
-/// 应用模式预览（英语学习 = 侧栏 + 内容含强调块；工具 = 侧栏 + 转盘圆）
-Widget _buildAppPreview(_Pal pal, {required bool isEnglish}) {
-  final isDark = pal.dark;
-  final cardBg = isDark ? const Color(0xFF1E1E2E) : const Color(0xFFF0F0F5);
-  final sidebarBg = isDark ? const Color(0xFF252538) : const Color(0xFFE8E8F0);
-  final lineColor = isDark ? const Color(0xFF3A3A55) : const Color(0xFFD8D8E2);
-  final accentColor = isEnglish ? const Color(0xFF4F6BF6) : const Color(0xFF10B981);
-  return _miniFrame(
-    cardBg: cardBg,
-    sidebarBg: sidebarBg,
-    lineColor: lineColor,
-    body: Row(children: [
-      _navRail(sidebarBg, lineColor, accentColor),
-      const SizedBox(width: 6),
-      Expanded(
-        child: isEnglish
-            ? _lineContent(cardBg, lineColor, accentColor, tall: false, highlight: true)
-            : _toolContent(cardBg, lineColor, accentColor),
-      ),
-    ]),
-  );
-}
-
-// ===== 选项卡（第 4 页：标题 + 一行 dim 说明，形态与选择卡一致） =====
+// ===== 选项卡（第 3 页：标题 + 一行 dim 说明，形态与选择卡一致） =====
 class _OptionCard extends StatelessWidget {
   final String title;
   final String desc;

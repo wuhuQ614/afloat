@@ -139,8 +139,6 @@ class AppState extends ChangeNotifier {
   bool onboardingDone = false;
   /// '' = 未选择（首次启动）, 'desktop' = 桌面端, 'mobile' = 手机端
   String uiMode = '';
-  /// 应用模式：'' = 未选择（新手引导中选择）| 'english' = 英语学习模式 | 'tools' = 工具模式
-  String appMode = '';
   /// UI 风格：'classic' = 经典(不透明), 'glass' = 毛玻璃(半透明模糊)
   String uiStyle = 'classic';
   /// 是否为毛玻璃样式。深色模式是独立第三主题，
@@ -239,7 +237,6 @@ class AppState extends ChangeNotifier {
     AppColors.highPerformance = highPerformanceMode;
     onboardingDone = Storage.loadOnboardingDone();
     uiMode = Storage.loadUiMode();
-    appMode = Storage.loadAppMode();
     uiStyle = Storage.loadUiStyle();
     navIndicator = Storage.loadNavIndicator();
     // 手机端启动即进入沉浸式全屏（隐藏系统状态栏/导航栏），电脑端不受影响
@@ -2893,16 +2890,6 @@ class AppState extends ChangeNotifier {
     uiMode = mode;
     Storage.saveUiMode(mode);
     _applySystemUiMode();
-    notifyListeners();
-  }
-
-  /// 切换应用模式：'english' = 英语学习模式 | 'tools' = 工具模式
-  void setAppMode(String mode) {
-    if (appMode == mode) return;
-    appMode = mode;
-    // 切换模式时重置页面索引，确保旧模式不残留状态
-    page = 0;
-    Storage.saveAppMode(mode);
     notifyListeners();
   }
 

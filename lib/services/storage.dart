@@ -199,12 +199,6 @@ class Storage {
   static String loadUiMode() => _get('uiMode', '');
   static void saveUiMode(String v) => _set('uiMode', v);
 
-  // ===== 应用模式 =====
-  /// 'english' = 英语学习模式（现有） | 'tools' = 工具模式（复刻参考项目）
-  /// '' = 未选择（新手引导中让用户选择）
-  static String loadAppMode() => _get('appMode', '');
-  static void saveAppMode(String v) => _set('appMode', v);
-
   // ===== UI 风格 =====
   /// 'classic' | 'glass'
   static String loadUiStyle() => _get('uiStyle', 'classic');
