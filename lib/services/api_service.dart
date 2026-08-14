@@ -571,4 +571,53 @@ class ApiService {
     }
     return p;
   }
+
+  /// 调用百度千帆 AI 搜索组件（联网搜索），返回 {answer, references}。
+  /// 失败时抛异常。url 默认即千帆搜索端点；key 为 AppBuilder API Key。
+  static Future<Map<String, dynamic>> searchWeb({
+    required String url,
+    required String key,
+    required String query,
+  }) async {
+    final resp = await http
+        .post(
+          Uri.parse(url),
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Appbuilder-Authorization': 'Bearer ${key.trim()}',
+          },
+          body: jsonEncode({
+            'messages': [
+              {'content': query, 'role': 'user'},
+            ],
+            'stream': false,
+            'enable_deep_search': false,
+            'enable_followup_query': false,
+            'resource_type_filter': [
+              {'type': 'web', 'top_k': 5},
+            ],
+          }),
+        )
+        .timeout(const Duration(seconds: 30));
+    final bodyText = utf8.decode(resp.bodyBytes);
+    if (resp.statusCode != 200) {
+      throw Exception('HTTP ${resp.statusCode}');
+    }
+    final data = jsonDecode(bodyText) as Map<String, dynamic>;
+    if (data['error'] != null) {
+      throw Exception('${data['error']}');
+    }
+    final answer = (data['answer'] ?? '') as String;
+    final refs = (data['references'] as List?) ?? <dynamic>[];
+    final refList = refs.take(5).map<Map<String, dynamic>>((e) {
+      final m = e as Map<String, dynamic>;
+      final content = (m['content'] ?? '').toString();
+      return {
+        'title': (m['title'] ?? '').toString(),
+        'url': (m['url'] ?? '').toString(),
+        'content': content.length > 200 ? content.substring(0, 200) : content,
+      };
+    }).toList();
+    return {'answer': answer, 'references': refList};
+  }
 }

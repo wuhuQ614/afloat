@@ -6,6 +6,7 @@ import 'dart:math';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show Clipboard, ClipboardData;
+import 'package:path_provider/path_provider.dart';
 import '../models.dart';
 import '../state.dart';
 import '../theme_colors.dart' show kPrimary, AppColors;
@@ -38,8 +39,16 @@ class _SettingsDialogState extends State<SettingsDialog> {
   bool _maimemoBusy = false;
   String? _maimemoMsg; // 同步结果提示
 
+  // 联网搜索服务
+  late final TextEditingController _searchUrlCtrl;
+  late final TextEditingController _searchKeyCtrl;
+  bool _searchObscure = true;
+
   /// 左侧设置分组：'model' | 'general' | 'account' | 'advanced'
   String _section = 'model';
+
+  /// 是否运行在真实手机平台（Android/iOS），用于适配仅存在于桌面端的提示
+  bool get _isPhone => Platform.isAndroid || Platform.isIOS;
 
   @override
   void initState() {
@@ -53,6 +62,8 @@ class _SettingsDialogState extends State<SettingsDialog> {
     _vision = s.apiConfig.vision;
     _fullUrl = s.apiConfig.fullUrl;
     _maimemoTokenCtrl = TextEditingController(text: s.maimemoToken);
+    _searchUrlCtrl = TextEditingController(text: s.searchUrl);
+    _searchKeyCtrl = TextEditingController(text: s.searchKey);
     s.addListener(_onStateChanged);
   }
 
@@ -65,6 +76,8 @@ class _SettingsDialogState extends State<SettingsDialog> {
     _key.dispose();
     _modelCtrl.dispose();
     _maimemoTokenCtrl.dispose();
+    _searchUrlCtrl.dispose();
+    _searchKeyCtrl.dispose();
     super.dispose();
   }
 
@@ -411,7 +424,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
       _settingRow('界面模式', c, child: Wrap(spacing: 10, runSpacing: 8, children: [
         _buildChip2(s.uiMode.isEmpty ? 'desktop' : s.uiMode, 'desktop', '电脑端', s, c, (v) => s.setUiMode(v)),
         _buildChip2(s.uiMode.isEmpty ? 'desktop' : s.uiMode, 'mobile', '手机端', s, c, (v) => s.setUiMode(v)),
-      ]), hint: '切换后立即生效，也可按 F8 快速切换'),
+      ]), hint: _isPhone ? '切换后立即生效' : '切换后立即生效，也可按 F8 快速切换'),
       const SizedBox(height: 14),
       // 主题（第三大主题：经典 / 毛玻璃 / 深色）
       _settingRow('主题', c, child: Wrap(spacing: 10, runSpacing: 8, children: [
@@ -440,7 +453,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
           Future.delayed(const Duration(milliseconds: 200), () => s.toggleFullscreen(v ?? false));
         },
         title: Text('全屏模式', style: TextStyle(fontSize: 14, color: c.text)),
-        subtitle: Text('开启后进入全屏，按 F11 可快速切换', style: TextStyle(fontSize: 11.5, color: c.textTertiary)),
+        subtitle: Text(_isPhone ? '开启后进入沉浸式全屏，隐藏状态栏与导航栏' : '开启后进入全屏，按 F11 可快速切换', style: TextStyle(fontSize: 11.5, color: c.textTertiary)),
         contentPadding: EdgeInsets.zero,
       ),
       const SizedBox(height: 6),
@@ -473,6 +486,17 @@ class _SettingsDialogState extends State<SettingsDialog> {
       const SizedBox(height: 6),
       Text('备份包含 API 配置、收藏、错题本、学习记录、生词本等；API Key 敏感，请妥善保管', style: TextStyle(fontSize: 11.5, color: c.textTertiary)),
       const SizedBox(height: 12),
+      // 一键备份：自动保存到电脑「下载」文件夹；手机保存到应用默认文件夹
+      SizedBox(
+        width: double.infinity,
+        child: FilledButton.icon(
+          onPressed: () => _backup(s),
+          icon: const Icon(Icons.save_alt, size: 16),
+          label: const Text('一键备份数据'),
+          style: FilledButton.styleFrom(backgroundColor: _primary, foregroundColor: Colors.white),
+        ),
+      ),
+      const SizedBox(height: 10),
       Row(children: [
         Expanded(child: OutlinedButton.icon(onPressed: () => _export(s), icon: const Icon(Icons.download, size: 16), label: const Text('导出备份'))),
         const SizedBox(width: 10),
@@ -570,7 +594,63 @@ class _SettingsDialogState extends State<SettingsDialog> {
         ]),
       ),
       const SizedBox(height: 14),
-      _emptyHint('更多账户与云同步功能正在规划中…', c),
+      // 联网搜索服务卡片
+      Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: c.isLight ? Colors.white : const Color(0xFF33333A),
+          borderRadius: BorderRadius.circular(16),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: c.isLight ? 0.04 : 0.15),
+              blurRadius: 8,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [
+            Icon(Icons.travel_explore, size: 22, color: _primary),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text('联网搜索服务', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: c.text)),
+                const SizedBox(height: 2),
+                Text('让 AI 助手联网获取实时信息（百度千帆 AI 搜索组件）', style: TextStyle(fontSize: 11.5, color: c.textTertiary)),
+              ]),
+            ),
+          ]),
+          const SizedBox(height: 14),
+          TextField(
+            controller: _searchUrlCtrl,
+            style: TextStyle(fontSize: 13, color: c.text),
+            decoration: _deco(c, hint: '搜索服务地址'),
+            onChanged: (_) {
+              s.setSearchConfig(_searchUrlCtrl.text, _searchKeyCtrl.text);
+            },
+          ),
+          const SizedBox(height: 10),
+          TextField(
+            controller: _searchKeyCtrl,
+            obscureText: _searchObscure,
+            style: TextStyle(fontSize: 13, color: c.text),
+            decoration: _deco(c, hint: 'AppBuilder API Key').copyWith(
+              suffixIcon: Row(mainAxisSize: MainAxisSize.min, children: [
+                IconButton(
+                  tooltip: _searchObscure ? '显示' : '隐藏',
+                  onPressed: () => setState(() => _searchObscure = !_searchObscure),
+                  icon: Icon(_searchObscure ? Icons.visibility_outlined : Icons.visibility_off_outlined, size: 18, color: c.textTertiary),
+                ),
+              ]),
+            ),
+            onChanged: (_) {
+              s.setSearchConfig(_searchUrlCtrl.text, _searchKeyCtrl.text);
+            },
+          ),
+          const SizedBox(height: 8),
+          Text('获取 Key：百度智能云千帆 → AppBuilder → 创建应用 → 查看 API Key。每日 50 次免费调用，超出后按量计费。', style: TextStyle(fontSize: 11, color: c.textTertiary, height: 1.5)),
+        ]),
+      ),
     ]);
   }
 
@@ -709,6 +789,41 @@ class _SettingsDialogState extends State<SettingsDialog> {
         child: Text(label, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: sel ? c.primaryText : c.textSecondary)),
       ),
     );
+  }
+
+  /// 一键备份：电脑保存到「下载」文件夹，手机保存到应用默认文件夹
+  Future<void> _backup(AppState s) async {
+    try {
+      Directory? dir;
+      if (Platform.isAndroid || Platform.isIOS) {
+        // 手机：应用默认文件夹（Android 为应用专属外部存储）
+        try {
+          dir = await getExternalStorageDirectory();
+        } catch (_) {
+          dir = null;
+        }
+        dir ??= await getApplicationDocumentsDirectory();
+      } else {
+        // 电脑：系统「下载」文件夹
+        dir = await getDownloadsDirectory();
+        dir ??= (await getApplicationDocumentsDirectory());
+      }
+      final name = 'afloat-backup-${DateTime.now().millisecondsSinceEpoch}.json';
+      final file = File('${dir.path}${Platform.pathSeparator}$name');
+      await file.create(recursive: true);
+      await file.writeAsString(s.buildBackupJson());
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('备份已保存到 ${file.path}'),
+          duration: const Duration(seconds: 3),
+          behavior: SnackBarBehavior.floating,
+        ));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('备份失败：$e'), behavior: SnackBarBehavior.floating));
+      }
+    }
   }
 
   Future<void> _export(AppState s) async {

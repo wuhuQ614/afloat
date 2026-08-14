@@ -132,21 +132,18 @@ class _AnswerPageState extends State<AnswerPage> {
       _Tag(text: levelName(q.level), color: c.warning),
       if (q.type == QType.translation) ...[
         const SizedBox(width: 12),
-        InkWell(
-          onTap: () => s.setDirection(s.isZh2En ? 'en2zh' : 'zh2en'),
-          borderRadius: BorderRadius.circular(6),
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-            decoration: BoxDecoration(
-              color: c.primaryBg,
-              borderRadius: BorderRadius.circular(6),
-            ),
-            child: Row(mainAxisSize: MainAxisSize.min, children: [
-              Icon(Icons.swap_horiz_rounded, size: 14, color: c.primaryText),
-              const SizedBox(width: 4),
-              Text(s.isZh2En ? '中→英' : '英→中', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: c.primaryText)),
-            ]),
+        Container(
+          decoration: BoxDecoration(
+            color: c.card,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: c.border),
           ),
+          padding: const EdgeInsets.all(3),
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            _buildDirSwitch('中', s.isZh2En, () => s.setDirection('zh2en'), c),
+            const SizedBox(width: 3),
+            _buildDirSwitch('英', !s.isZh2En, () => s.setDirection('en2zh'), c),
+          ]),
         ),
       ],
       const Spacer(),
@@ -161,6 +158,34 @@ class _AnswerPageState extends State<AnswerPage> {
           label: const Text('换一道'),
         ),
     ]);
+  }
+
+  // 中英方向分段切换：仅当前源语言显示容器背景（白字），另一语言只显示文字（灰字）
+  Widget _buildDirSwitch(String label, bool active, VoidCallback onTap, AppColors c) {
+    final text = Text(
+      label,
+      style: TextStyle(
+        fontSize: 14,
+        fontWeight: FontWeight.w800,
+        color: active ? Colors.white : c.primaryText.withValues(alpha: 0.55),
+      ),
+    );
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(6),
+      child: active
+          ? Container(
+              width: 34,
+              height: 26,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: c.chipUnselected,
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: text,
+            )
+          : SizedBox(width: 34, height: 26, child: Center(child: text)),
+    );
   }
 
   // ===== 题目内容卡片 =====
@@ -261,7 +286,7 @@ class _AnswerPageState extends State<AnswerPage> {
           q.type == QType.translation && s.textAnswerValue.isNotEmpty && !_showAnalysis && !s.chatTriggeredAnalysis
               ? _buildTextWithProgress(q, isLight)
               : ((_showAnalysis || s.chatTriggeredAnalysis) && s.analysisTokens.isNotEmpty
-                  ? _buildAnalyzedText(q.text, isLight)
+                  ? _buildAnalyzedText(_analysisSource(q), isLight)
                   : Text(q.text, style: TextStyle(fontSize: 15, height: 1.7, color: c.text))),
         // 选择题：显示题干
         if (q.type == QType.choice && q.question.isNotEmpty) ...[
@@ -282,6 +307,14 @@ class _AnswerPageState extends State<AnswerPage> {
   }
 
   // ===== 词汇剖析按钮（提取为独立方法，供 LayoutBuilder 窄屏/宽屏共用） =====
+  /// 词汇剖析的源文本：一律剖析英文内容，避免翻译题中译英时剖析中文题目。
+  /// 阅读剖析短文；翻译题剖析英文答案；其余题型剖析题干文本。
+  String _analysisSource(Question q) {
+    if (q.type == QType.reading && q.passage.isNotEmpty) return q.passage;
+    if (q.type == QType.translation && q.english.isNotEmpty) return q.english;
+    return q.text;
+  }
+
   Widget _buildAnalysisButton(Question q, AppColors c) {
     return InkWell(
       onTap: () {
@@ -301,9 +334,7 @@ class _AnswerPageState extends State<AnswerPage> {
         }
         setState(() => _showAnalysis = !_showAnalysis);
         if (_showAnalysis) {
-          // 阅读理解：剖析短文而非题干
-          final textToAnalyze = (q.type == QType.reading && q.passage.isNotEmpty) ? q.passage : q.text;
-          s.analyzeWords(textToAnalyze);
+          s.analyzeWords(_analysisSource(q));
         }
       },
       borderRadius: BorderRadius.circular(6),
@@ -1110,7 +1141,8 @@ class _AnswerPageState extends State<AnswerPage> {
         TextField(
           controller: _answerCtrl,
           maxLines: 5,
-          maxLength: 500,
+          // 翻译题允许作答 1000 字，其余文本题（语法/写作）保持 500
+          maxLength: q.type == QType.translation ? 1000 : 500,
           style: TextStyle(fontSize: 14, height: 1.6, color: c.text),
           decoration: InputDecoration(
             hintText: s.answerPlaceholder,
@@ -1440,14 +1472,6 @@ class _LearnPageState extends State<LearnPage> {
   double _countSlider = 1;
   double _wordCountSlider = 80;
   final TextEditingController _customReqCtrl = TextEditingController();
-  final Set<String> _focusAreas = {};
-
-  static const _focusAreaOptions = [
-    ('core_words', '核心高频词'),
-    ('clause_inversion', '从句倒装'),
-    ('long_sentence', '长难句切分'),
-    ('logical_connectors', '逻辑衔接词'),
-  ];
 
   @override
   void dispose() {
@@ -1467,13 +1491,6 @@ class _LearnPageState extends State<LearnPage> {
         _buildDifficultyChips(),
       ]),
     );
-    final card03 = _buildCard(
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        _buildSectionHeader('03. 强化侧重点'),
-        const SizedBox(height: 12),
-        _buildFocusChips(),
-      ]),
-    );
     return SingleChildScrollView(
       padding: EdgeInsets.all(isMobile ? 14 : 24),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -1482,22 +1499,15 @@ class _LearnPageState extends State<LearnPage> {
         const SizedBox(height: 12),
         _buildTypeGrid(),
         const SizedBox(height: 24),
-        // 02. 目标难度等级 + 03. 强化侧重点（并排）
-        if (isMobile)
-          Column(children: [card02, const SizedBox(height: 16), card03])
-        else
-          Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Expanded(child: card02),
-            const SizedBox(width: 16),
-            Expanded(child: card03),
-          ]),
+        // 02. 目标难度等级
+        card02,
         const SizedBox(height: 24),
-        // 04. 题目规模与时间估算（综合模拟套卷为固定76题，隐藏滑块）
+        // 03. 题目规模与时间估算（综合模拟套卷为固定76题，隐藏滑块）
         if (!isMixed)
           _buildCard(
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Row(children: [
-                _buildSectionHeader('04. 题目规模与时间估算'),
+                _buildSectionHeader('03. 题目规模与时间估算'),
                 const Spacer(),
                 Text('预估耗时: ${_estimateTime()}',
                     style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: c.primaryText)),
@@ -1722,7 +1732,6 @@ class _LearnPageState extends State<LearnPage> {
   Widget _buildTypeGrid() {
     final isMobile = AppScope.of(context).uiMode == 'mobile';
     final cols = isMobile ? 2 : 3;
-    final rows = isMobile ? 3 : 2;
     final types = [
       ('translation', '翻译题', '中英互译·长难句', Icons.translate_outlined),
       ('reading', '阅读理解', '细节理解·推断题', Icons.menu_book_outlined),
@@ -1731,6 +1740,7 @@ class _LearnPageState extends State<LearnPage> {
       ('writing', '写作题', '应用文·议论文', Icons.edit_outlined),
       ('mixed', '综合模拟套卷', 'AI混合全题型考卷', Icons.layers_outlined),
     ];
+    final rows = (types.length / cols).ceil();
     return Column(children: [
       for (var row = 0; row < rows; row++)
         Padding(
@@ -1738,22 +1748,31 @@ class _LearnPageState extends State<LearnPage> {
           child: Row(children: [
             for (var col = 0; col < cols; col++)
               Expanded(
-                child: Padding(
-                  padding: EdgeInsets.only(right: col < cols - 1 ? (isMobile ? 10 : 16) : 0),
-                  child: _TypeCardV2(
-                    type: types[row * cols + col].$1,
-                    title: types[row * cols + col].$2,
-                    subtitle: types[row * cols + col].$3,
-                    icon: types[row * cols + col].$4,
-                    selected: _selectedType == types[row * cols + col].$1,
-                    isMixed: types[row * cols + col].$1 == 'mixed',
-                    onTap: () => setState(() => _selectedType = types[row * cols + col].$1),
-                  ),
-                ),
+                child: _buildTypeCell(types, row * cols + col, isMobile, col, cols),
               ),
           ]),
         ),
     ]);
+  }
+
+  // 构建单个题型卡片（索引越界时渲染空白占位，避免报错灰屏）
+  Widget _buildTypeCell(List<(String, String, String, IconData)> types, int idx, bool isMobile, int col, int cols) {
+    if (idx >= types.length) {
+      return const SizedBox.shrink();
+    }
+    final t = types[idx];
+    return Padding(
+      padding: EdgeInsets.only(right: col < cols - 1 ? (isMobile ? 10 : 16) : 0),
+      child: _TypeCardV2(
+        type: t.$1,
+        title: t.$2,
+        subtitle: t.$3,
+        icon: t.$4,
+        selected: _selectedType == t.$1,
+        isMixed: t.$1 == 'mixed',
+        onTap: () => setState(() => _selectedType = t.$1),
+      ),
+    );
   }
 
   // ===== 02. 难度选择 =====
@@ -1765,6 +1784,7 @@ class _LearnPageState extends State<LearnPage> {
       ('easy', '简单'),
       ('medium', '中等'),
       ('hard', '困难'),
+      ('maimemo', '墨墨词库'),
     ];
     return Wrap(spacing: 10, runSpacing: 10, children: [
       for (final l in levels)
@@ -1787,35 +1807,7 @@ class _LearnPageState extends State<LearnPage> {
     ]);
   }
 
-  // ===== 03. 强化侧重点（多选） =====
-  Widget _buildFocusChips() {
-    final c = AppColors.of(context);
-    return Wrap(spacing: 10, runSpacing: 10, children: [
-      for (final f in _focusAreaOptions)
-        InkWell(
-          onTap: () => setState(() {
-            if (_focusAreas.contains(f.$1)) {
-              _focusAreas.remove(f.$1);
-            } else {
-              _focusAreas.add(f.$1);
-            }
-          }),
-          borderRadius: BorderRadius.circular(20),
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 200),
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            decoration: BoxDecoration(
-              color: _focusAreas.contains(f.$1) ? c.chipSelectedBg : c.chipUnselected,
-              borderRadius: BorderRadius.circular(20),
-              border: Border.all(color: _focusAreas.contains(f.$1) ? c.chipSelectedBorder : c.chipBorder),
-            ),
-            child: Text(f.$2, style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w500, color: _focusAreas.contains(f.$1) ? c.chipSelectedText : c.textSecondary)),
-          ),
-        ),
-    ]);
-  }
-
-  // ===== 04. 题目规模滑块 =====
+  // ===== 03. 题目规模滑块 =====
   Widget _buildScaleSliders() {
     final c = AppColors.of(context);
     final isMobile = AppScope.of(context).uiMode == 'mobile';
@@ -1947,14 +1939,39 @@ class _LearnPageState extends State<LearnPage> {
     final actualCount = _countSlider.round();
     final wordCount = _wordCountSlider.round();
 
+    // 墨墨词库模式：MoE 式从词库中随机选取 1/7 词汇作为 AI 参考池出题
+    if (_selectedLevel == 'maimemo') {
+      if (s.maimemoWordbook.isEmpty) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('墨墨词库为空，请先在「更多功能 → 墨墨词库」中同步'), behavior: SnackBarBehavior.floating));
+        return;
+      }
+      final refWords = s.maimemoRefWords();
+      final customText = _customReqCtrl.text.trim();
+      final parts = <String>[];
+      if (customText.isNotEmpty) parts.add(customText);
+      parts.add('每题约 $wordCount 词');
+      final customReq = parts.join('；');
+      final ok = await s.generateQuestions(count: actualCount, customReq: customReq, wordCount: wordCount, maimemoWords: refWords);
+      if (!mounted) return;
+      final messenger = ScaffoldMessenger.of(context);
+      if (ok) {
+        messenger.showSnackBar(SnackBar(
+            content: Text('已基于墨墨词库（${refWords.length} 个参考词）生成 $actualCount 道题目'),
+            duration: const Duration(seconds: 2),
+            behavior: SnackBarBehavior.floating));
+        s.setPage(1);
+      } else {
+        messenger.showSnackBar(const SnackBar(content: Text('生成失败，请检查 API 配置后重试'), behavior: SnackBarBehavior.floating));
+      }
+      return;
+    }
+
     // 构建自定义要求
     final parts = <String>[];
     final customText = _customReqCtrl.text.trim();
     if (customText.isNotEmpty) parts.add(customText);
-    if (_focusAreas.isNotEmpty) {
-      final focusLabels = _focusAreaOptions.where((f) => _focusAreas.contains(f.$1)).map((f) => f.$2).toList();
-      parts.add('强化侧重点：${focusLabels.join('、')}');
-    }
     parts.add('每题约 $wordCount 词');
     if (_selectedLevel == 'zsb') {
       parts.add('必须从专升本大纲词汇中选词，不得使用超纲词汇');

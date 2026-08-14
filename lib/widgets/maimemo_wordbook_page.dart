@@ -4,9 +4,8 @@ library;
 import 'package:flutter/material.dart';
 import '../models.dart';
 import '../state.dart';
-import '../theme_colors.dart' show kPrimary, AppColors;
+import '../theme_colors.dart' show kPrimary, kSuccess, AppColors;
 import '../services/dict_service.dart';
-import '../services/api_service.dart' as api;
 import '../services/tts_service.dart';
 import 'settings_dialog.dart';
 
@@ -22,6 +21,71 @@ class _MaimemoWordbookPageState extends State<MaimemoWordbookPage> {
   String? _syncError;
   bool _generating = false;
   bool _hasAutoSynced = false;
+  final TextEditingController _searchCtrl = TextEditingController();
+  String _typeFilter = 'all'; // all / noun / verb / adj
+  String _sort = 'default'; // default / az / za
+
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
+  }
+
+  /// 词性分类（用于筛选）
+  String _posType(String pos) {
+    final p = pos.toLowerCase();
+    if (p.contains('adj') || p.startsWith('a.')) return 'adj';
+    if (p.contains('verb') || p.startsWith('v')) return 'verb';
+    if (p.contains('noun') || p.startsWith('n')) return 'noun';
+    return '';
+  }
+
+  /// 词性显示缩写
+  String _posLabel(String pos) {
+    switch (_posType(pos)) {
+      case 'noun':
+        return 'n.';
+      case 'verb':
+        return 'v.';
+      case 'adj':
+        return 'adj.';
+      default:
+        return pos;
+    }
+  }
+
+  /// 按 搜索关键词 + 词性筛选 + 排序 得出可见列表
+  List<WordBookItem> _visibleWords() {
+    final s = AppScope.of(context);
+    final kw = _searchCtrl.text.trim().toLowerCase();
+    final list = s.maimemoWordbook.where((w) {
+      if (_typeFilter != 'all') {
+        final pt = DictService.lookup(w.word)?.pos ?? '';
+        if (_posType(pt) != _typeFilter) return false;
+      }
+      if (kw.isEmpty) return true;
+      final ph = DictService.lookup(w.word)?.phonetic ?? '';
+      return w.word.toLowerCase().contains(kw) ||
+          w.translation.toLowerCase().contains(kw) ||
+          ph.toLowerCase().contains(kw);
+    }).toList();
+    if (_sort == 'az') {
+      list.sort((a, b) => a.word.toLowerCase().compareTo(b.word.toLowerCase()));
+    } else if (_sort == 'za') {
+      list.sort((a, b) => b.word.toLowerCase().compareTo(a.word.toLowerCase()));
+    }
+    return list;
+  }
+
+  /// 今日新增数
+  int _todayCount() {
+    final s = AppScope.of(context);
+    final now = DateTime.now();
+    return s.maimemoWordbook.where((w) {
+      final d = DateTime.fromMillisecondsSinceEpoch(w.addedAt);
+      return d.year == now.year && d.month == now.month && d.day == now.day;
+    }).length;
+  }
 
   @override
   void didChangeDependencies() {
@@ -30,7 +94,10 @@ class _MaimemoWordbookPageState extends State<MaimemoWordbookPage> {
       _hasAutoSynced = true;
       final s = AppScope.of(context);
       if (s.maimemoToken.isNotEmpty) {
-        _syncMaimemo();
+        // 延迟到首帧后同步，避免 build 期间调 setState 报错
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _syncMaimemo();
+        });
       }
     }
   }
@@ -63,40 +130,32 @@ class _MaimemoWordbookPageState extends State<MaimemoWordbookPage> {
       _showSnackBar('请先配置 AI 接口');
       return;
     }
+    final words = s.maimemoWordbook.map((w) => w.word).toList();
+    // 弹出窗口选择题目的长度（与首页滑动条一致）
+    final length = await showDialog<_MaimemoLengthResult>(
+      context: context,
+      builder: (_) => _MaimemoLengthDialog(
+        defaultCount: (words.length / 5).ceil().clamp(1, 10).toInt(),
+        defaultWordCount: 80,
+      ),
+    );
+    if (length == null || !mounted) return;
+
     setState(() => _generating = true);
     try {
-      final words = s.maimemoWordbook.map((w) => w.word).toList();
-      final sample = words.take(20).toList();
-      final wordList = sample.join('、');
-      final count = (sample.length / 5).ceil().clamp(1, 5);
-      final systemPrompt = '你是一个英语出题专家。请使用以下单词生成 $count 道翻译题：$wordList\n\n'
-          '要求：\n'
-          '1. 每道题必须包含至少 2-3 个给定单词\n'
-          '2. 题目难度适中，适合英语学习者\n'
-          '3. 翻译方向为中译英（题目为中文，答案为英文）\n\n'
-          '请以JSON数组格式返回，格式如下：\n'
-          '[{"chinese": "中文内容", "english": "英文内容", "knowledge": ["知识点1"]}]\n'
-          '只返回JSON数组，不要其他内容。';
-      final reply = await api.ApiService.callAI(
-        [
-          {'role': 'user', 'content': '请用以下单词出题'}
-        ],
-        systemPrompt,
-        config: s.apiConfig,
-        maxTokens: 8192,
-        extraParams: api.ApiService.noThinkingParams(s.apiConfig.model),
+      s.selectedType = 'maimemo';
+      // 参考词抽取：总量 <=500 取全部，>500 取 500+总量/7
+      final ok = await s.generateQuestions(
+        count: length.count,
+        customReq: '',
+        wordCount: length.wordCount,
+        maimemoWords: s.maimemoRefWords(),
       );
-      if (reply != null) {
-        final list = api.ApiService.extractJsonArray(reply);
-        if (list != null && list.isNotEmpty) {
-          s.generatedQuestions = list.map((q) => s.normalizeGeneratedQuestion(q, QType.translation, 'medium')).toList();
-          s.generatedQuestionIdx = 0;
-          s.loadGeneratedQuestion();
-          if (!mounted) return;
-          _showSnackBar('已生成 ${list.length} 道题目（基于墨墨词库）');
-          s.setPage(1);
-          return;
-        }
+      if (!mounted) return;
+      if (ok) {
+        _showSnackBar('已基于墨墨词库（${words.length} 个单词）生成 ${length.count} 道题目');
+        s.setPage(1);
+        return;
       }
       _showSnackBar('生成失败，请检查 API 配置后重试');
     } catch (e) {
@@ -156,84 +215,13 @@ class _MaimemoWordbookPageState extends State<MaimemoWordbookPage> {
     final c = AppColors.of(context);
     final list = s.maimemoWordbook;
 
-    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      // 顶部信息栏
-      Padding(
-        padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
-        child: Row(children: [
-          Expanded(
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text('墨墨词库', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: c.text)),
-              const SizedBox(height: 4),
-              if (s.maimemoToken.isNotEmpty)
-                Text(
-                  '共 ${list.length} 个单词 | 累计同步 ${s.maimemoSyncedCount} 个',
-                  style: TextStyle(fontSize: 12.5, color: c.textTertiary),
-                ),
-            ]),
-          ),
-          // 操作按钮
-          if (s.maimemoToken.isNotEmpty && list.isNotEmpty)
-            FilledButton.icon(
-              style: FilledButton.styleFrom(backgroundColor: kPrimary),
-              onPressed: _generating ? null : () => _generateFromMaimemo(),
-              icon: _generating
-                  ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                  : const Icon(Icons.auto_awesome_rounded, size: 16),
-              label: Text(_generating ? '生成中...' : '用词库出题'),
-            ),
-          const SizedBox(width: 8),
-          if (list.isNotEmpty)
-            TextButton(
-              onPressed: () {
-                s.clearMaimemoWordbook();
-                setState(() {});
-              },
-              child: const Text('清空'),
-            ),
-        ]),
-      ),
-      // 同步状态
-      if (s.maimemoToken.isNotEmpty)
+    // 未配置墨墨 Token：显示配置提示
+    if (s.maimemoToken.isEmpty) {
+      return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Padding(
-          padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
-          child: Row(children: [
-            if (_syncing)
-              const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2)),
-            if (_syncing) ...[
-              const SizedBox(width: 8),
-              Text('正在同步...', style: TextStyle(fontSize: 12, color: c.textTertiary)),
-            ] else if (s.maimemoLastSync > 0) ...[
-              Icon(Icons.check_circle, size: 14, color: Colors.green.shade400),
-              const SizedBox(width: 6),
-              Text(
-                '上次同步 ${_formatTime(s.maimemoLastSync)}',
-                style: TextStyle(fontSize: 12, color: c.textTertiary),
-              ),
-            ],
-            const Spacer(),
-            if (!_syncing)
-              TextButton.icon(
-                onPressed: _syncMaimemo,
-                icon: const Icon(Icons.sync, size: 16),
-                label: const Text('同步', style: TextStyle(fontSize: 12.5)),
-                style: TextButton.styleFrom(foregroundColor: kPrimary, padding: const EdgeInsets.symmetric(horizontal: 8)),
-              ),
-          ]),
+          padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+          child: Text('墨墨词库', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700, letterSpacing: -0.4, color: c.text)),
         ),
-      if (_syncError != null)
-        Padding(
-          padding: const EdgeInsets.fromLTRB(20, 4, 20, 0),
-          child: Row(children: [
-            Icon(Icons.error_outline, size: 14, color: Colors.red.shade400),
-            const SizedBox(width: 6),
-            Expanded(
-              child: Text(_syncError!, style: TextStyle(fontSize: 12, color: Colors.red.shade400)),
-            ),
-          ]),
-        ),
-      // 配置提示
-      if (s.maimemoToken.isEmpty)
         Expanded(
           child: Center(
             child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
@@ -244,85 +232,402 @@ class _MaimemoWordbookPageState extends State<MaimemoWordbookPage> {
               Text('请前往设置 → 账户与同步 中配置', style: TextStyle(fontSize: 13, color: c.textTertiary)),
               const SizedBox(height: 20),
               FilledButton(
-                onPressed: () {
-                  showDialog(
-                    context: context,
-                    builder: (_) => const SettingsDialog(),
-                  );
-                },
+                style: FilledButton.styleFrom(backgroundColor: kPrimary),
+                onPressed: () => showDialog(context: context, builder: (_) => const SettingsDialog()),
                 child: const Text('前往设置'),
               ),
             ]),
           ),
-        )
-      else if (list.isEmpty && !_syncing)
-        // 空状态
-        Expanded(
-          child: Center(
-            child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-              Icon(Icons.auto_stories_outlined, size: 48, color: c.textTertiary.withValues(alpha: 0.5)),
-              const SizedBox(height: 16),
-              Text('墨墨词库为空', style: TextStyle(fontSize: 15, color: c.textSecondary)),
-              const SizedBox(height: 8),
-              Text('仅同步今日已学习过的单词', style: TextStyle(fontSize: 13, color: c.textTertiary)),
-              const SizedBox(height: 4),
-              Text('点击上方「同步」按钮拉取', style: TextStyle(fontSize: 13, color: c.textTertiary)),
+        ),
+      ]);
+    }
+
+    final visible = _visibleWords();
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      // Header
+      Padding(
+        padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+        child: Row(children: [
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text('墨墨词库', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700, letterSpacing: -0.4, color: c.text)),
+              const SizedBox(height: 5),
+              Text(
+                '${list.length} 个单词 · 累计同步 ${s.maimemoSyncedCount} 个',
+                style: TextStyle(fontSize: 13, color: c.textTertiary),
+              ),
             ]),
           ),
-        )
-      else
-        // 单词列表
-        Expanded(
-          child: ListView.builder(
-            padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
-            itemCount: list.length,
-            itemBuilder: (ctx, i) {
-              final w = list[i];
-              final ph = DictService.lookup(w.word)?.phonetic ?? '';
-              return Card(
-                margin: const EdgeInsets.only(bottom: 8),
-                child: ListTile(
-                  dense: true,
-                  title: Row(children: [
-                    Text(w.word, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: c.text)),
-                    if (ph.isNotEmpty) ...[
-                      const SizedBox(width: 8),
-                      Flexible(
-                        child: Text('/$ph/', style: TextStyle(fontSize: 12, color: c.textTertiary), overflow: TextOverflow.ellipsis),
-                      ),
-                    ],
-                  ]),
-                  subtitle: Text(w.translation, style: TextStyle(fontSize: 12.5, color: c.textSecondary)),
-                  trailing: Row(mainAxisSize: MainAxisSize.min, children: [
-                    if (TtsService.instance.available)
-                      IconButton(
-                        icon: Icon(Icons.volume_up, size: 16, color: c.primaryText),
-                        tooltip: '发音',
-                        onPressed: () => TtsService.instance.speakWord(w.word),
-                      ),
-                    IconButton(
-                      icon: Icon(Icons.edit_outlined, size: 16, color: c.textTertiary),
-                      tooltip: '编辑',
-                      onPressed: () => _editWord(i, w),
-                    ),
-                    IconButton(
-                      icon: Icon(Icons.close, size: 16, color: c.textTertiary),
-                      onPressed: () {
-                        s.removeFromMaimemoWordbook(w.word);
-                        setState(() {});
-                      },
-                    ),
-                  ]),
-                ),
-              );
-            },
+          if (list.isNotEmpty)
+            FilledButton.icon(
+              style: FilledButton.styleFrom(
+                backgroundColor: kPrimary,
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                minimumSize: const Size(0, 40),
+              ),
+              onPressed: _generating ? null : _generateFromMaimemo,
+              icon: _generating
+                  ? const SizedBox(width: 15, height: 15, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                  : const Icon(Icons.auto_awesome_rounded, size: 16),
+              label: Text(_generating ? '生成中...' : '用词库出题', style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+            ),
+          const SizedBox(width: 10),
+          OutlinedButton.icon(
+            style: OutlinedButton.styleFrom(
+              foregroundColor: c.textSecondary,
+              side: BorderSide(color: c.border),
+              minimumSize: const Size(0, 40),
+              padding: const EdgeInsets.symmetric(horizontal: 14),
+            ),
+            onPressed: _syncing ? null : _syncMaimemo,
+            icon: _syncing
+                ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                : const Icon(Icons.sync, size: 15),
+            label: Text(_syncing ? '同步中' : '同步', style: const TextStyle(fontSize: 13)),
           ),
+        ]),
+      ),
+      // 同步状态
+      Padding(
+        padding: const EdgeInsets.fromLTRB(20, 14, 20, 0),
+        child: Row(children: [
+          Container(
+            width: 7,
+            height: 7,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: kSuccess,
+              boxShadow: [BoxShadow(color: kSuccess.withValues(alpha: 0.5), blurRadius: 6)],
+            ),
+          ),
+          const SizedBox(width: 8),
+          Text('已同步', style: TextStyle(fontSize: 12.5, color: c.textSecondary)),
+          const SizedBox(width: 8),
+          Text('·', style: TextStyle(color: c.textTertiary)),
+          const SizedBox(width: 8),
+          Text(
+            s.maimemoLastSync > 0 ? '最后同步 ${_formatTime(s.maimemoLastSync)}' : '尚未同步',
+            style: TextStyle(fontSize: 12.5, color: c.textTertiary),
+          ),
+        ]),
+      ),
+      if (_syncError != null)
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 6, 20, 0),
+          child: Row(children: [
+            Icon(Icons.error_outline, size: 14, color: Colors.red.shade400),
+            const SizedBox(width: 6),
+            Expanded(child: Text(_syncError!, style: TextStyle(fontSize: 12, color: Colors.red.shade400))),
+          ]),
         ),
+      // 统计区
+      Padding(
+        padding: const EdgeInsets.fromLTRB(20, 20, 20, 0),
+        child: Container(
+          decoration: BoxDecoration(color: c.card, borderRadius: BorderRadius.circular(14), border: Border.all(color: c.border)),
+          padding: const EdgeInsets.symmetric(vertical: 16),
+          child: Row(children: [
+            _stat(c, '${list.length}', '词汇总数'),
+            _statDivider(c),
+            _stat(c, '${s.maimemoSyncedCount}', '累计同步'),
+            _statDivider(c),
+            _stat(c, '${_todayCount()}', '今日新增'),
+          ]),
+        ),
+      ),
+      // 工具栏：搜索 + 词性筛选 + 排序
+      Padding(
+        padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+        child: Row(children: [
+          Expanded(child: _buildSearchField(c)),
+          const SizedBox(width: 10),
+          _buildDropdown(
+            c,
+            value: _typeFilter,
+            items: const [
+              DropdownMenuItem(value: 'all', child: Text('全部词汇')),
+              DropdownMenuItem(value: 'noun', child: Text('名词')),
+              DropdownMenuItem(value: 'verb', child: Text('动词')),
+              DropdownMenuItem(value: 'adj', child: Text('形容词')),
+            ],
+            onChanged: (v) => setState(() => _typeFilter = v),
+          ),
+          const SizedBox(width: 8),
+          _buildDropdown(
+            c,
+            value: _sort,
+            items: const [
+              DropdownMenuItem(value: 'default', child: Text('默认排序')),
+              DropdownMenuItem(value: 'az', child: Text('A → Z')),
+              DropdownMenuItem(value: 'za', child: Text('Z → A')),
+            ],
+            onChanged: (v) => setState(() => _sort = v),
+          ),
+        ]),
+      ),
+      // Section 标题
+      Padding(
+        padding: const EdgeInsets.fromLTRB(22, 20, 22, 8),
+        child: Row(children: [
+          Text('全部词汇', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: c.textSecondary)),
+          const Spacer(),
+          Text('${visible.length} 个词', style: TextStyle(fontSize: 12, color: c.textTertiary)),
+        ]),
+      ),
+      // 列表或空状态
+      Expanded(
+        child: visible.isEmpty
+            ? Center(
+                child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+                  Icon(Icons.search_off, size: 40, color: c.textTertiary.withValues(alpha: 0.5)),
+                  const SizedBox(height: 12),
+                  Text('没有找到相关词汇', style: TextStyle(fontSize: 14, color: c.textTertiary)),
+                  const SizedBox(height: 6),
+                  Text(
+                    list.isEmpty ? '点击上方「同步」按钮拉取今日已学单词' : '换个关键词试试',
+                    style: TextStyle(fontSize: 12.5, color: c.textTertiary),
+                  ),
+                ]),
+              )
+            : _buildList(c, list, visible),
+      ),
     ]);
+  }
+
+  Widget _stat(AppColors c, String num, String label) {
+    return Expanded(
+      child: Column(children: [
+        Text(num, style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700, letterSpacing: -0.3, color: c.text)),
+        const SizedBox(height: 4),
+        Text(label, style: TextStyle(fontSize: 12, color: c.textTertiary)),
+      ]),
+    );
+  }
+
+  Widget _statDivider(AppColors c) => Container(width: 1, height: 34, color: c.border);
+
+  Widget _buildSearchField(AppColors c) {
+    return Container(
+      height: 42,
+      decoration: BoxDecoration(color: c.inputFill, borderRadius: BorderRadius.circular(10), border: Border.all(color: c.border)),
+      child: TextField(
+        controller: _searchCtrl,
+        onChanged: (_) => setState(() {}),
+        style: TextStyle(fontSize: 14, color: c.text),
+        decoration: InputDecoration(
+          prefixIcon: Icon(Icons.search, size: 18, color: c.textTertiary),
+          hintText: '搜索单词、释义、音标...',
+          hintStyle: TextStyle(fontSize: 13, color: c.hintText),
+          border: InputBorder.none,
+          isDense: true,
+          contentPadding: const EdgeInsets.symmetric(vertical: 12),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDropdown(
+    AppColors c, {
+    required String value,
+    required List<DropdownMenuItem<String>> items,
+    required ValueChanged<String> onChanged,
+  }) {
+    return Container(
+      height: 42,
+      padding: const EdgeInsets.symmetric(horizontal: 10),
+      decoration: BoxDecoration(color: c.inputFill, borderRadius: BorderRadius.circular(10), border: Border.all(color: c.border)),
+      child: DropdownButtonHideUnderline(
+        child: DropdownButton<String>(
+          value: value,
+          isDense: true,
+          items: items,
+          onChanged: (v) {
+            if (v != null) onChanged(v);
+          },
+          style: TextStyle(fontSize: 13, color: c.textSecondary),
+          icon: Icon(Icons.arrow_drop_down, color: c.textTertiary),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildList(AppColors c, List<WordBookItem> list, List<WordBookItem> visible) {
+    final s = AppScope.of(context);
+    return ListView.separated(
+      padding: const EdgeInsets.only(bottom: 20),
+      itemCount: visible.length,
+      separatorBuilder: (_, __) => Divider(height: 1, thickness: 1, color: c.divider, indent: 20, endIndent: 20),
+      itemBuilder: (ctx, i) {
+        final w = visible[i];
+        final origIndex = list.indexOf(w);
+        final entry = DictService.lookup(w.word);
+        final ph = entry?.phonetic ?? '';
+        final pos = entry?.pos ?? '';
+        return InkWell(
+          onTap: () => _editWord(origIndex, w),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 13),
+            child: Row(children: [
+              Expanded(
+                flex: 3,
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text(w.word, style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, letterSpacing: -0.2, color: c.text)),
+                  if (pos.isNotEmpty) ...[
+                    const SizedBox(height: 3),
+                    Text(_posLabel(pos), style: TextStyle(fontSize: 12, color: c.textTertiary)),
+                  ],
+                ]),
+              ),
+              const SizedBox(width: 12),
+              SizedBox(
+                width: 112,
+                child: Text(
+                  ph.isEmpty ? '' : '/$ph/',
+                  style: TextStyle(fontSize: 13, color: c.textTertiary),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                flex: 4,
+                child: Text(w.translation, style: TextStyle(fontSize: 14, color: c.textSecondary), maxLines: 1, overflow: TextOverflow.ellipsis),
+              ),
+              const SizedBox(width: 6),
+              Row(mainAxisSize: MainAxisSize.min, children: [
+                if (TtsService.instance.available)
+                  IconButton(
+                    icon: Icon(Icons.volume_up, size: 18, color: c.textTertiary),
+                    tooltip: '发音',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: () => TtsService.instance.speakWord(w.word),
+                  ),
+                IconButton(
+                  icon: Icon(Icons.edit_outlined, size: 18, color: c.textTertiary),
+                  tooltip: '编辑',
+                  visualDensity: VisualDensity.compact,
+                  onPressed: () => _editWord(origIndex, w),
+                ),
+                IconButton(
+                  icon: Icon(Icons.close, size: 18, color: c.textTertiary),
+                  tooltip: '删除',
+                  visualDensity: VisualDensity.compact,
+                  onPressed: () {
+                    s.removeFromMaimemoWordbook(w.word);
+                    setState(() {});
+                  },
+                ),
+              ]),
+            ]),
+          ),
+        );
+      },
+    );
   }
 
   String _formatTime(int ms) {
     final dt = DateTime.fromMillisecondsSinceEpoch(ms);
     return '${dt.month}月${dt.day}日 ${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+  }
+}
+
+/// 出题长度选择结果：题量 + 每题单词量
+class _MaimemoLengthResult {
+  final int count;
+  final int wordCount;
+  const _MaimemoLengthResult(this.count, this.wordCount);
+}
+
+/// 出题长度选择弹窗（与首页滑动条一致：题量 + 单词量）
+class _MaimemoLengthDialog extends StatefulWidget {
+  final int defaultCount;
+  final int defaultWordCount;
+  const _MaimemoLengthDialog({required this.defaultCount, required this.defaultWordCount});
+
+  @override
+  State<_MaimemoLengthDialog> createState() => _MaimemoLengthDialogState();
+}
+
+class _MaimemoLengthDialogState extends State<_MaimemoLengthDialog> {
+  late double _count;
+  late double _wordCount;
+
+  @override
+  void initState() {
+    super.initState();
+    _count = widget.defaultCount.toDouble().clamp(1, 50).toDouble();
+    _wordCount = widget.defaultWordCount.toDouble().clamp(30, 300).toDouble();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('选择题目长度'),
+      content: SizedBox(
+        width: 360,
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          _buildSliderRow(
+            label: '题量',
+            value: _count,
+            min: 1,
+            max: 50,
+            valueText: '${_count.round()} 道',
+            onChanged: (v) => setState(() => _count = v),
+          ),
+          const SizedBox(height: 14),
+          _buildSliderRow(
+            label: '每题长度',
+            value: _wordCount,
+            min: 30,
+            max: 300,
+            valueText: '${_wordCount.round()} 词',
+            onChanged: (v) => setState(() => _wordCount = v),
+          ),
+        ]),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
+        FilledButton(
+          style: FilledButton.styleFrom(backgroundColor: kPrimary),
+          onPressed: () => Navigator.pop(context, _MaimemoLengthResult(_count.round(), _wordCount.round())),
+          child: const Text('开始出题'),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildSliderRow({
+    required String label,
+    required double value,
+    required double min,
+    required double max,
+    required String valueText,
+    required ValueChanged<double> onChanged,
+  }) {
+    final c = AppColors.of(context);
+    return Row(children: [
+      SizedBox(width: 72, child: Text(label, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: c.primaryText))),
+      Expanded(
+        child: SliderTheme(
+          data: SliderThemeData(
+            trackHeight: 4,
+            thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 9),
+            overlayShape: SliderComponentShape.noOverlay,
+            activeTrackColor: kPrimary,
+            inactiveTrackColor: c.sliderInactive,
+            thumbColor: kPrimary,
+          ),
+          child: Slider(
+            value: value,
+            min: min,
+            max: max,
+            divisions: (max - min).round(),
+            label: valueText,
+            onChanged: onChanged,
+          ),
+        ),
+      ),
+      SizedBox(width: 64, child: Text(valueText, textAlign: TextAlign.right, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: c.primaryText))),
+    ]);
   }
 }

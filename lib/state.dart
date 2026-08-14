@@ -2,10 +2,12 @@
 library;
 
 import 'dart:convert';
+import 'dart:io' show Directory, File, Platform;
 import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle, SystemChrome, SystemUiMode, SystemUiOverlayStyle;
+import 'package:path_provider/path_provider.dart';
 import 'models.dart';
 import 'theme_colors.dart' show AppColors;
 import 'services/api_service.dart';
@@ -101,6 +103,15 @@ class AppState extends ChangeNotifier {
   String lastCustomReq = '';
   int lastWordCount = 80;
   int lastQuestionCount = 1;
+  List<String>? lastMaimemoWords; // 墨墨词库模式：供「换一道」重生成时复用
+
+  /// 墨墨出题参考词抽取：总量 <=500 取全部，>500 取 500+总量/7（结果不超过总量）
+  List<String> maimemoRefWords() {
+    final words = maimemoWordbook.map((w) => w.word).toList()..shuffle(Random());
+    if (words.length <= 500) return words;
+    final x = 500 + (words.length / 7).ceil();
+    return words.take(x < words.length ? x : words.length).toList();
+  }
   ApiConfig apiConfig = ApiConfig();
   bool chatApiIndependent = false;
   ApiConfig chatApiConfig = ApiConfig();
@@ -114,6 +125,9 @@ class AppState extends ChangeNotifier {
   bool chatStream = true;
   /// 对话助手"思考模式"：true 时显式开启模型深度思考（Agent 链路不再强制关闭）
   bool chatThinking = true;
+  /// 联网搜索服务配置（百度千帆 AI 搜索组件）
+  String searchUrl = 'https://qianfan.baidubce.com/v2/ai_search/chat/completions';
+  String searchKey = '';
   // ===== 墨墨背单词同步 =====
   /// 墨墨开放 API Token（墨墨 App「实验功能 → 开放 API」获取）
   String maimemoToken = '';
@@ -163,6 +177,7 @@ class AppState extends ChangeNotifier {
   final ValueNotifier<int> examNavBlockNotifier = ValueNotifier<int>(0);
 
   void setPage(int p) {
+    debugPrint('NAV setPage: $page -> $p');
     if (page == p) return;
     // 考场进行中（page==10 且未交卷）锁定导航，防止误退出；
     // 交卷后 page==11 及 exitFullExam 等正规出口（直接赋 page）不受影响
@@ -225,6 +240,8 @@ class AppState extends ChangeNotifier {
     chatShowReasoning = Storage.loadChatShowReasoning();
     chatStream = Storage.loadChatStream();
     chatThinking = Storage.loadChatThinking();
+    searchUrl = Storage.loadSearchUrl();
+    searchKey = Storage.loadSearchKey();
     maimemoToken = Storage.loadMaimemoToken();
     maimemoLastSync = Storage.loadMaimemoLastSync();
     maimemoSyncedCount = Storage.loadMaimemoSyncedCount();
@@ -422,6 +439,7 @@ class AppState extends ChangeNotifier {
         count: lastQuestionCount < 1 ? 1 : lastQuestionCount,
         customReq: lastCustomReq,
         wordCount: lastWordCount,
+        maimemoWords: lastMaimemoWords,
       );
       return;
     }
@@ -483,7 +501,7 @@ class AppState extends ChangeNotifier {
   // ===== 生成题目 =====
   bool generating = false;
 
-  Future<bool> generateQuestions({required int count, required String customReq, int wordCount = 80}) async {
+  Future<bool> generateQuestions({required int count, required String customReq, int wordCount = 80, List<String>? maimemoWords}) async {
     generating = true;
     notifyListeners();
     // 记录本次 AI 生成参数，供「换一道」重生成时复用
@@ -491,6 +509,7 @@ class AppState extends ChangeNotifier {
     lastCustomReq = customReq;
     lastWordCount = wordCount;
     lastQuestionCount = count;
+    if (maimemoWords != null && maimemoWords.isNotEmpty) lastMaimemoWords = maimemoWords;
     final levelNames = {
       'cet4': '大学英语四级（CET-4）',
       'zsb': '专升本英语',
@@ -548,7 +567,22 @@ class AppState extends ChangeNotifier {
     String systemPrompt;
     final typeName = qTypeName(qTypeFrom(selectedType));
 
-    if (selectedLevel == 'zsb' && vocabHint.isNotEmpty) {
+    if (maimemoWords != null && maimemoWords.isNotEmpty) {
+      // 墨墨词库出题：仅从参考词汇池中选词，不得调用其他词库
+      final moeLevel = levelNames[selectedLevel] ?? '中等';
+      final refList = maimemoWords.join('、');
+      systemPrompt = '你是一个英语出题专家。请生成 $count 道翻译题（中译英），难度为$moeLevel。' +
+          (customReq.isNotEmpty ? '额外要求：$customReq。' : '') +
+          '\n【墨墨词库参考词汇】以下单词来自用户的墨墨词库，出题时只能从这些单词中选词：$refList\n\n' +
+          '要求：\n' +
+          '1. 每道题必须包含至少 2-3 个来自参考词汇的单词，且尽量覆盖参考词汇中不同的单词\n' +
+          '2. 只能使用参考词汇中的单词（允许使用派生词、变形及少量连接词/介词/冠词/代词），不得使用参考词汇之外的单词，也不得调用其他任何词库\n' +
+          '3. 翻译方向为中译英（题目为中文，答案为英文），每题英文内容约 $wordCount 词\n' +
+          '4. 难度$moeLevel，语法正确、表达自然流畅\n\n' +
+          '请以JSON数组格式返回，格式如下：\n' +
+          '[{"chinese": "中文内容", "english": "英文内容", "knowledge": ["知识点1"]}]\n' +
+          '只返回JSON数组，不要其他内容。';
+    } else if (selectedLevel == 'zsb' && vocabHint.isNotEmpty) {
       if (selectedType == 'reading') {
         systemPrompt = '你是一个英语出题专家。请根据下方给出的【词汇池】，从每个词汇池中挑选合适的单词，写成一篇通顺、地道的英文短文（约 $wordCount 词），并针对短文出 3-4 道阅读理解选择题。' +
             (customReq.isNotEmpty ? '额外要求：$customReq。' : '') +
@@ -1970,6 +2004,24 @@ class AppState extends ChangeNotifier {
           return _toolToggleFavorite();
         case 'get_progress':
           return _toolGetProgress();
+        case 'goto_page':
+          return _toolGotoPage(args);
+        case 'get_wrong_questions':
+          return _toolGetWrongQuestions();
+        case 'get_favorites':
+          return _toolGetFavorites();
+        case 'start_dictation':
+          return _toolStartDictation(args);
+        case 'sync_maimemo':
+          return await _toolSyncMaimemo();
+        case 'get_study_report':
+          return _toolGetStudyReport();
+        case 'config_settings':
+          return _toolConfigSettings(args);
+        case 'search_web':
+          return await _toolSearchWeb(args);
+        case 'backup_data':
+          return await _toolBackupData();
         default:
           return ToolExecResult(content: '未知工具：$name', ok: false);
       }
@@ -2130,6 +2182,259 @@ class AppState extends ChangeNotifier {
       ok: true,
       actionLabel: '读取学习进度',
     );
+  }
+
+  /// 页面导航：page 枚举 → 页面索引
+  static const Map<String, int> _pageIndexByKey = {
+    'learn': 0, 'answer': 1, 'report': 2, 'search': 3,
+    'bank': 4, 'wrong': 5, 'favorite': 6, 'dictation': 8,
+    'grammar': 12, 'maimemo': 18,
+  };
+
+  ToolExecResult _toolGotoPage(Map<String, dynamic> args) {
+    final key = (args['page'] as String?) ?? '';
+    final idx = _pageIndexByKey[key];
+    if (idx == null) {
+      return const ToolExecResult(content: '{"ok":false,"reason":"unknown_page"}', ok: false);
+    }
+    setPage(idx);
+    return ToolExecResult(
+      content: '{"ok":true,"page":"$key","index":$idx}',
+      ok: true,
+      actionLabel: '已跳转到「$key」',
+    );
+  }
+
+  ToolExecResult _toolGetWrongQuestions() {
+    final total = wrongQuestions.fold<int>(0, (s, w) => s + w.wrongCount);
+    final brief = wrongQuestions.take(8).map((w) => w.question.text).toList();
+    return ToolExecResult(
+      content: '{"ok":true,"count":${wrongQuestions.length},"totalWrong":$total,"samples":${jsonEncode(brief)}}',
+      ok: true,
+      actionLabel: '读取错题本（${wrongQuestions.length} 道）',
+    );
+  }
+
+  ToolExecResult _toolGetFavorites() {
+    final brief = favorites.take(8).map((f) => f.text).toList();
+    return ToolExecResult(
+      content: '{"ok":true,"count":${favorites.length},"samples":${jsonEncode(brief)}}',
+      ok: true,
+      actionLabel: '读取生词本（${favorites.length} 个）',
+    );
+  }
+
+  ToolExecResult _toolStartDictation(Map<String, dynamic> args) {
+    final mode = (args['mode'] as String?) == 'en2zh' ? 'en2zh' : 'zh2en';
+    final count = ((args['count'] as num?)?.toInt() ?? 10).clamp(1, 50);
+    final source = (args['source'] as String?) ?? 'zsb';
+    // 校验词库非空
+    bool hasWords() {
+      if (source == 'custom') return customWordbook.isNotEmpty;
+      if (source == 'maimemo') return maimemoWordbook.isNotEmpty;
+      return DictService.zsbWords().isNotEmpty;
+    }
+    if (!hasWords()) {
+      return ToolExecResult(content: '{"ok":false,"reason":"empty_wordbook"}', ok: false);
+    }
+    startDictation(mode, count, source: source);
+    setPage(8);
+    return ToolExecResult(
+      content: '{"ok":true,"mode":"$mode","count":$count,"source":"$source"}',
+      ok: true,
+      actionLabel: '已开始 ${count} 个单词的默写',
+    );
+  }
+
+  Future<ToolExecResult> _toolSyncMaimemo() async {
+    if (maimemoToken.trim().isEmpty) {
+      return const ToolExecResult(content: '{"ok":false,"reason":"token_not_configured"}', ok: false);
+    }
+    if (maimemoSyncing) {
+      return const ToolExecResult(content: '{"ok":false,"reason":"syncing"}', ok: false);
+    }
+    try {
+      final count = await syncMaimemoWords();
+      return ToolExecResult(
+        content: '{"ok":true,"synced":$count,"total":${maimemoWordbook.length}}',
+        ok: true,
+        actionLabel: '已同步墨墨词库（共 ${maimemoWordbook.length} 个单词）',
+      );
+    } catch (e) {
+      return ToolExecResult(content: '{"ok":false,"reason":"sync_failed"}', ok: false);
+    }
+  }
+
+  ToolExecResult _toolGetStudyReport() {
+    final total = studyRecords.length;
+    final correct = studyRecords.where((r) => !r.isWrong).length;
+    final rate = total == 0 ? 0 : (correct / total * 100).round();
+    return ToolExecResult(
+      content: '{"ok":true,"records":$total,"correct":$correct,"accuracy":$rate,"wrong":${total - correct}}',
+      ok: true,
+      actionLabel: '读取学习报告（正确率 $rate%）',
+    );
+  }
+
+  /// 读取或修改应用设置。action=get 返回全部设置；action=set 修改指定项。
+  ToolExecResult _toolConfigSettings(Map<String, dynamic> args) {
+    final action = (args['action'] as String?) ?? 'get';
+    if (action == 'get') {
+      return ToolExecResult(
+        content: jsonEncode({
+          'ok': true,
+          'settings': {
+            'model': apiConfig.model,
+            'temperature': apiConfig.temperature.isEmpty ? 'default' : apiConfig.temperature,
+            'vision': apiConfig.vision,
+            'fullUrl': apiConfig.fullUrl,
+            'apiUrl': apiConfig.url,
+            'apiKeyConfigured': apiConfig.key.isNotEmpty,
+            'uiMode': uiMode.isEmpty ? 'desktop' : uiMode,
+            'theme': darkMode ? 'dark' : uiStyle,
+            'navIndicator': navIndicator,
+            'fullscreen': fullscreen,
+            'powerSaving': powerSavingMode,
+            'highPerformance': highPerformanceMode,
+            'maimemoTokenConfigured': maimemoToken.isNotEmpty,
+          },
+        }),
+        ok: true,
+        actionLabel: '读取当前设置',
+      );
+    }
+
+    final key = (args['key'] as String?) ?? '';
+    final value = (args['value'] as String?) ?? '';
+    bool ok = true;
+    switch (key) {
+      case 'model':
+        final c = ApiConfig(
+          url: apiConfig.url, key: apiConfig.key, model: value.isEmpty ? apiConfig.model : value,
+          temperature: apiConfig.temperature, vision: apiConfig.vision, fullUrl: apiConfig.fullUrl,
+        );
+        saveApiConfig(c);
+        break;
+      case 'temperature':
+        final t = const ['default', '0', '0.3', '0.7', '1.0'].contains(value) ? value : apiConfig.temperature;
+        final c = ApiConfig(
+          url: apiConfig.url, key: apiConfig.key, model: apiConfig.model,
+          temperature: t, vision: apiConfig.vision, fullUrl: apiConfig.fullUrl,
+        );
+        saveApiConfig(c);
+        break;
+      case 'vision':
+        if (value == 'true' || value == 'false') {
+          final c = ApiConfig(
+            url: apiConfig.url, key: apiConfig.key, model: apiConfig.model,
+            temperature: apiConfig.temperature, vision: value == 'true', fullUrl: apiConfig.fullUrl,
+          );
+          saveApiConfig(c);
+        } else { ok = false; }
+        break;
+      case 'fullUrl':
+        if (value == 'true' || value == 'false') {
+          final c = ApiConfig(
+            url: apiConfig.url, key: apiConfig.key, model: apiConfig.model,
+            temperature: apiConfig.temperature, vision: apiConfig.vision, fullUrl: value == 'true',
+          );
+          saveApiConfig(c);
+        } else { ok = false; }
+        break;
+      case 'uiMode':
+        setUiMode(value == 'mobile' ? 'mobile' : 'desktop');
+        break;
+      case 'theme':
+        if (const ['classic', 'glass', 'dark'].contains(value)) {
+          setThemeStyle(value);
+        } else {
+          ok = false;
+        }
+        break;
+      case 'navIndicator':
+        setNavIndicator(value == 'pill' ? 'pill' : 'underline');
+        break;
+      case 'fullscreen':
+        if (value == 'true' || value == 'false') {
+          toggleFullscreen(value == 'true');
+        } else {
+          ok = false;
+        }
+        break;
+      case 'powerSaving':
+        if (value == 'true' || value == 'false') {
+          togglePowerSavingMode(value == 'true');
+        } else {
+          ok = false;
+        }
+        break;
+      case 'highPerformance':
+        if (value == 'true' || value == 'false') {
+          toggleHighPerformanceMode(value == 'true');
+        } else {
+          ok = false;
+        }
+        break;
+      case 'maimemoToken':
+        setMaimemoToken(value);
+        break;
+      default:
+        ok = false;
+    }
+    if (!ok) {
+      return ToolExecResult(content: '{"ok":false,"reason":"invalid_key_or_value"}', ok: false);
+    }
+    return ToolExecResult(
+      content: '{"ok":true,"key":"$key","value":"$value"}',
+      ok: true,
+      actionLabel: '已设置「$key」',
+    );
+  }
+
+  /// 联网搜索：调用百度千帆 AI 搜索组件，返回 answer + references。
+  Future<ToolExecResult> _toolSearchWeb(Map<String, dynamic> args) async {
+    if (searchKey.trim().isEmpty) {
+      return ToolExecResult(
+        content: '{"ok":false,"reason":"请先在设置中配置联网搜索服务的 API Key"}',
+        ok: false,
+      );
+    }
+    final query = (args['query'] as String? ?? '').trim();
+    if (query.isEmpty) {
+      return ToolExecResult(content: '{"ok":false,"reason":"搜索关键词为空"}', ok: false);
+    }
+    try {
+      final result = await ApiService.searchWeb(url: searchUrl, key: searchKey, query: query);
+      return ToolExecResult(
+        content: jsonEncode({'ok': true, ...result}),
+        ok: true,
+        actionLabel: '已联网搜索"$query"',
+      );
+    } catch (e) {
+      return ToolExecResult(
+        content: '{"ok":false,"reason":"${e.toString()}"}',
+        ok: false,
+        actionLabel: '联网搜索失败',
+      );
+    }
+  }
+
+  /// 备份数据：将全部数据（API 配置、收藏、错题、学习记录、生词本等）导出到电脑下载/手机默认文件夹。
+  Future<ToolExecResult> _toolBackupData() async {
+    try {
+      final path = await backupData();
+      return ToolExecResult(
+        content: '{"ok":true,"path":"$path","tip":"备份已保存到 $path"}',
+        ok: true,
+        actionLabel: '已完成数据备份',
+      );
+    } catch (e) {
+      return ToolExecResult(
+        content: '{"ok":false,"reason":"${e.toString()}"}',
+        ok: false,
+        actionLabel: '备份失败',
+      );
+    }
   }
 
   /// Agent 循环：发送用户消息 → AI 返回 tool_calls → 执行工具 → 把结果喂回 AI → 直到 AI 返回纯文本
@@ -2317,6 +2622,24 @@ class AppState extends ChangeNotifier {
         return '正在读取题目';
       case 'get_progress':
         return '正在读取进度';
+      case 'goto_page':
+        return '正在跳转页面';
+      case 'get_wrong_questions':
+        return '正在读取错题本';
+      case 'get_favorites':
+        return '正在读取生词本';
+      case 'start_dictation':
+        return '正在准备默写';
+      case 'sync_maimemo':
+        return '正在同步墨墨词库';
+      case 'get_study_report':
+        return '正在读取学习报告';
+      case 'config_settings':
+        return '正在读取设置';
+      case 'search_web':
+        return '正在联网搜索';
+      case 'backup_data':
+        return '正在备份数据';
       default:
         return '正在处理';
     }
@@ -2341,6 +2664,24 @@ class AppState extends ChangeNotifier {
         return '读取当前题目';
       case 'get_progress':
         return '读取学习进度';
+      case 'goto_page':
+        return '跳转页面';
+      case 'get_wrong_questions':
+        return '读取错题本';
+      case 'get_favorites':
+        return '读取生词本';
+      case 'start_dictation':
+        return '开始默写';
+      case 'sync_maimemo':
+        return '同步墨墨词库';
+      case 'get_study_report':
+        return '读取学习报告';
+      case 'config_settings':
+        return '读取设置';
+      case 'search_web':
+        return '联网搜索';
+      case 'backup_data':
+        return '备份数据';
       default:
         return '调用工具';
     }
@@ -2659,6 +3000,15 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  // ===== 联网搜索服务配置（百度千帆 AI 搜索组件） =====
+  void setSearchConfig(String url, String key) {
+    searchUrl = url.trim().isEmpty ? 'https://qianfan.baidubce.com/v2/ai_search/chat/completions' : url.trim();
+    searchKey = key.trim();
+    Storage.saveSearchUrl(searchUrl);
+    Storage.saveSearchKey(searchKey);
+    notifyListeners();
+  }
+
   /// 从墨墨拉取今日已学习单词并累加入墨墨词库。
   /// 词库是累计词汇库：已存在的单词保留（含用户编辑），
   /// 今日已学习的新单词追加到词库，历史数据不会清空。
@@ -2867,6 +3217,14 @@ class AppState extends ChangeNotifier {
   void toggleFullscreen(bool v) {
     fullscreen = v;
     Storage.saveFullscreen(v);
+    // 手机端：开启全屏进入沉浸式（隐藏状态栏与导航栏），关闭时恢复基于 uiMode 的模式
+    if (Platform.isAndroid || Platform.isIOS) {
+      if (v) {
+        SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky, overlays: []);
+      } else {
+        _applySystemUiMode();
+      }
+    }
     notifyListeners();
   }
 
@@ -2954,10 +3312,53 @@ class AppState extends ChangeNotifier {
   // ===== 备份 / 导入 =====
   String buildBackupJson() => Storage.buildBackupJson();
 
+  /// 一键备份：电脑保存到「下载」文件夹，手机保存到应用默认文件夹。
+  /// 返回保存的文件路径；失败抛异常。
+  Future<String> backupData() async {
+    Directory? dir;
+    if (Platform.isAndroid || Platform.isIOS) {
+      try {
+        dir = await getExternalStorageDirectory();
+      } catch (_) {
+        dir = null;
+      }
+      dir ??= await getApplicationDocumentsDirectory();
+    } else {
+      dir = await getDownloadsDirectory();
+      dir ??= await getApplicationDocumentsDirectory();
+    }
+    final name = 'afloat-backup-${DateTime.now().millisecondsSinceEpoch}.json';
+    final file = File('${dir.path}${Platform.pathSeparator}$name');
+    await file.create(recursive: true);
+    await file.writeAsString(buildBackupJson());
+    return file.path;
+  }
+
   bool importBackup(String content) {
     final ok = Storage.importBackup(content);
     if (ok) {
       apiConfig = Storage.loadApiConfig();
+      chatApiIndependent = Storage.loadChatIndependent();
+      chatApiConfig = Storage.loadChatConfig();
+      chatShowReasoning = Storage.loadChatShowReasoning();
+      chatStream = Storage.loadChatStream();
+      chatThinking = Storage.loadChatThinking();
+      searchUrl = Storage.loadSearchUrl();
+      searchKey = Storage.loadSearchKey();
+      maimemoToken = Storage.loadMaimemoToken();
+      maimemoLastSync = Storage.loadMaimemoLastSync();
+      maimemoSyncedCount = Storage.loadMaimemoSyncedCount();
+      darkMode = Storage.loadDarkMode();
+      analysisMode = Storage.loadAnalysisMode();
+      fullscreen = Storage.loadFullscreen();
+      powerSavingMode = Storage.loadPowerSavingMode();
+      highPerformanceMode = Storage.loadHighPerformanceMode();
+      AppColors.highPerformance = highPerformanceMode;
+      uiMode = Storage.loadUiMode();
+      uiStyle = Storage.loadUiStyle();
+      navIndicator = Storage.loadNavIndicator();
+      apiProfiles = Storage.loadApiProfiles();
+      chatProfiles = Storage.loadChatProfiles();
       loadFavorites();
       loadWrongQuestions();
       loadStudyRecords();

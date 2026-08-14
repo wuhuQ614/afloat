@@ -104,6 +104,12 @@ class Storage {
   static bool loadChatThinking() => _getBool('chatThinking', true);
   static void saveChatThinking(bool v) => _setBool('chatThinking', v);
 
+  // ===== 联网搜索服务（百度千帆 AI 搜索组件） =====
+  static String loadSearchUrl() => _get('searchUrl', 'https://qianfan.baidubce.com/v2/ai_search/chat/completions');
+  static void saveSearchUrl(String v) => _set('searchUrl', v);
+  static String loadSearchKey() => _get('searchKey', '');
+  static void saveSearchKey(String v) => _set('searchKey', v);
+
   // ===== 墨墨背单词同步 =====
   static String loadMaimemoToken() => _get('maimemoToken', '');
   static void saveMaimemoToken(String v) => _set('maimemoToken', v);
@@ -445,6 +451,35 @@ class Storage {
       'examHistory': _get('examHistory', ''),
       'grammarProgress': _get('grammarProgress', ''),
       'answeredBankIdx': _get('answeredBankIdx', ''),
+      // 聊天独立 API 配置
+      'chatApiIndependent': _getBool('chatApiIndependent', false),
+      'chatApiUrl': _get('chatApiUrl', ''),
+      'chatApiKey': _get('chatApiKey', ''),
+      'chatApiModel': _get('chatApiModel', ''),
+      'chatApiTemp': _get('chatApiTemp', ''),
+      'chatApiFullUrl': _getBool('chatApiFullUrl', false),
+      'chatShowReasoning': _getBool('chatShowReasoning', false),
+      'chatStream': _getBool('chatStream', true),
+      'chatThinking': _getBool('chatThinking', true),
+      // 联网搜索服务
+      'searchUrl': _get('searchUrl', ''),
+      'searchKey': _get('searchKey', ''),
+      // 墨墨词库
+      'maimemoToken': _get('maimemoToken', ''),
+      'maimemoWordbook': _get('maimemoWordbook', ''),
+      // API 配置档
+      'apiProfiles': _get('apiProfiles', ''),
+      'chatProfiles': _get('chatProfiles', ''),
+      // 界面与模式
+      'theme_dark': _getBool('theme_dark', false),
+      'analysisMode': _get('analysisMode', 'normal'),
+      'fullscreen': _getBool('fullscreen', false),
+      'powerSavingMode': _getBool('powerSavingMode', false),
+      'highPerformanceMode': _getBool('highPerformanceMode', false),
+      'uiStyle': _get('uiStyle', 'classic'),
+      'navIndicator': _get('navIndicator', 'underline'),
+      // 自定义词库
+      'customWordbook': _get('customWordbook', ''),
     };
     return jsonEncode(data);
   }
@@ -473,6 +508,35 @@ class Storage {
       if (data.containsKey('examHistory')) _set('examHistory', data['examHistory'] as String);
       if (data.containsKey('grammarProgress')) _set('grammarProgress', data['grammarProgress'] as String);
       if (data.containsKey('answeredBankIdx')) _set('answeredBankIdx', data['answeredBankIdx'] as String);
+      // 聊天独立 API 配置
+      if (data.containsKey('chatApiIndependent')) _setBool('chatApiIndependent', data['chatApiIndependent'] as bool);
+      if (data.containsKey('chatApiUrl')) _set('chatApiUrl', data['chatApiUrl'] as String);
+      if (data.containsKey('chatApiKey')) _set('chatApiKey', data['chatApiKey'] as String);
+      if (data.containsKey('chatApiModel')) _set('chatApiModel', data['chatApiModel'] as String);
+      if (data.containsKey('chatApiTemp')) _set('chatApiTemp', data['chatApiTemp'] as String);
+      if (data.containsKey('chatApiFullUrl')) _setBool('chatApiFullUrl', data['chatApiFullUrl'] as bool);
+      if (data.containsKey('chatShowReasoning')) _setBool('chatShowReasoning', data['chatShowReasoning'] as bool);
+      if (data.containsKey('chatStream')) _setBool('chatStream', data['chatStream'] as bool);
+      if (data.containsKey('chatThinking')) _setBool('chatThinking', data['chatThinking'] as bool);
+      // 联网搜索服务
+      if (data.containsKey('searchUrl')) _set('searchUrl', data['searchUrl'] as String);
+      if (data.containsKey('searchKey')) _set('searchKey', data['searchKey'] as String);
+      // 墨墨词库
+      if (data.containsKey('maimemoToken')) _set('maimemoToken', data['maimemoToken'] as String);
+      if (data.containsKey('maimemoWordbook')) _set('maimemoWordbook', data['maimemoWordbook'] as String);
+      // API 配置档
+      if (data.containsKey('apiProfiles')) _set('apiProfiles', data['apiProfiles'] as String);
+      if (data.containsKey('chatProfiles')) _set('chatProfiles', data['chatProfiles'] as String);
+      // 界面与模式
+      if (data.containsKey('theme_dark')) _setBool('theme_dark', data['theme_dark'] as bool);
+      if (data.containsKey('analysisMode')) _set('analysisMode', data['analysisMode'] as String);
+      if (data.containsKey('fullscreen')) _setBool('fullscreen', data['fullscreen'] as bool);
+      if (data.containsKey('powerSavingMode')) _setBool('powerSavingMode', data['powerSavingMode'] as bool);
+      if (data.containsKey('highPerformanceMode')) _setBool('highPerformanceMode', data['highPerformanceMode'] as bool);
+      if (data.containsKey('uiStyle')) _set('uiStyle', data['uiStyle'] as String);
+      if (data.containsKey('navIndicator')) _set('navIndicator', data['navIndicator'] as String);
+      // 自定义词库
+      if (data.containsKey('customWordbook')) _set('customWordbook', data['customWordbook'] as String);
       return true;
     } catch (_) {
       return false;

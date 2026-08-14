@@ -150,6 +150,137 @@ class AgentService {
             'parameters': {'type': 'object', 'properties': {}, 'required': []},
           },
         },
+        {
+          'type': 'function',
+          'function': {
+            'name': 'goto_page',
+            'description': '跳转到应用的某个功能页面。当用户说"去学习/答题/学习报告/查询/题库/错题本/生词本/默写/语法学习/墨墨词库"时调用。',
+            'parameters': {
+              'type': 'object',
+              'properties': {
+                'page': {
+                  'type': 'string',
+                  'enum': ['learn', 'answer', 'report', 'search', 'bank', 'wrong', 'favorite', 'dictation', 'grammar', 'maimemo'],
+                  'description': '目标页面：learn=学习页, answer=答题页, report=学习报告, search=单词查询, bank=题库, wrong=错题本, favorite=生词本(收藏), dictation=默写, grammar=语法学习, maimemo=墨墨词库',
+                },
+              },
+              'required': ['page'],
+            },
+          },
+        },
+        {
+          'type': 'function',
+          'function': {
+            'name': 'get_wrong_questions',
+            'description': '获取错题本的错题数量与列表概览。当用户问"错题"、"错了几道"、"复习错题"时调用。',
+            'parameters': {'type': 'object', 'properties': {}, 'required': []},
+          },
+        },
+        {
+          'type': 'function',
+          'function': {
+            'name': 'get_favorites',
+            'description': '获取生词本（收藏）的单词数量与列表。当用户问"生词本"、"收藏"、"收藏了哪些"时调用。',
+            'parameters': {'type': 'object', 'properties': {}, 'required': []},
+          },
+        },
+        {
+          'type': 'function',
+          'function': {
+            'name': 'start_dictation',
+            'description': '启动单词默写（听写）练习并进入默写页。当用户要求"默写"、"听写"、"开始默写"时调用。',
+            'parameters': {
+              'type': 'object',
+              'properties': {
+                'mode': {
+                  'type': 'string',
+                  'enum': ['zh2en', 'en2zh'],
+                  'description': '默写方向：zh2en=看中文默写英文, en2zh=看英文默写中文。默认 zh2en',
+                },
+                'count': {
+                  'type': 'integer',
+                  'description': '默写单词数量（1-50），默认 10',
+                  'minimum': 1,
+                  'maximum': 50,
+                },
+                'source': {
+                  'type': 'string',
+                  'enum': ['zsb', 'custom', 'maimemo'],
+                  'description': '词库来源：zsb=专升本词库, custom=自定义词库, maimemo=墨墨词库。默认 zsb',
+                },
+              },
+              'required': ['count'],
+            },
+          },
+        },
+        {
+          'type': 'function',
+          'function': {
+            'name': 'sync_maimemo',
+            'description': '同步墨墨背单词词库（拉取今日已学习单词）。当用户要求"同步墨墨"、"更新词库"时调用。',
+            'parameters': {'type': 'object', 'properties': {}, 'required': []},
+          },
+        },
+        {
+          'type': 'function',
+          'function': {
+            'name': 'get_study_report',
+            'description': '获取学习报告（学习记录、累计答题、正确率等学习成果统计）。当用户问"学习报告"、"学习成果"、"统计"时调用。',
+            'parameters': {'type': 'object', 'properties': {}, 'required': []},
+          },
+        },
+        {
+          'type': 'function',
+          'function': {
+            'name': 'config_settings',
+            'description': '读取或修改应用的设置选项。当用户要求查看或修改设置（如模型、温度、图形能力、主题、深色模式、导航样式、界面模式、全屏、省电、高性能、墨墨Token）时调用。',
+            'parameters': {
+              'type': 'object',
+              'properties': {
+                'action': {
+                  'type': 'string',
+                  'enum': ['get', 'set'],
+                  'description': 'get=读取全部设置；set=修改指定设置',
+                },
+                'key': {
+                  'type': 'string',
+                  'enum': ['model', 'temperature', 'vision', 'fullUrl', 'uiMode', 'theme', 'navIndicator', 'fullscreen', 'powerSaving', 'highPerformance', 'maimemoToken'],
+                  'description': '要读取或修改的设置项。是否已配置敏感项（如 Key）get 时只返回已配置与否。',
+                },
+                'value': {
+                  'type': 'string',
+                  'description': '要设置的值（action=set 时需一并提供 key 与 value）。model=模型名；temperature=default/0/0.3/0.7/1.0；vision、fullUrl、fullscreen、powerSaving、highPerformance=true 或 false；uiMode=desktop 或 mobile；theme=classic 或 glass 或 dark；navIndicator=underline 或 pill；maimemoToken=墨墨 API Token',
+                },
+              },
+              'required': ['action'],
+            },
+          },
+        },
+        {
+          'type': 'function',
+          'function': {
+            'name': 'search_web',
+            'description': '联网搜索，获取全网实时信息并返回参考链接。当用户问实时新闻、天气、最新事件，或需要联网核实信息时调用。',
+            'parameters': {
+              'type': 'object',
+              'properties': {
+                'query': {
+                  'type': 'string',
+                  'description': '要搜索的关键词或问题，尽量精炼准确',
+                },
+              },
+              'required': ['query'],
+            },
+          },
+        },
+        {
+          'type': 'function',
+          'function': {
+            'name': 'backup_data',
+            'description': '备份全部数据（API 配置、收藏、错题本、学习记录、生词本等）到电脑下载目录或手机默认文件夹。当用户要求"备份数据"、"导出备份"时调用。',
+            'parameters': {'type': 'object', 'properties': {}, 'required': []},
+          },
+        },
       ];
 
   /// Agent 系统 prompt（动态生成，注入当前题目上下文，避免 AI 凭空猜测）
@@ -175,6 +306,15 @@ class AgentService {
 | "换一道/下一题" | next_question |
 | "收藏" | toggle_favorite |
 | "进度/正确率/学得怎么样" | get_progress |
+| "去学习/答题/学习报告/查询/题库/错题本/生词本/语法学习/墨墨" | goto_page |
+| "错题/错了几道/复习错题" | get_wrong_questions |
+| "生词本/收藏了哪些" | get_favorites |
+| "默写/听写/开始默写" | start_dictation |
+| "同步墨墨/更新词库" | sync_maimemo |
+| "学习报告/学习成果/统计" | get_study_report |
+| "查看/修改设置、打开/关闭某选项、换主题/模型/温度" | config_settings |
+| "实时信息、新闻、天气、联网核实" | search_web |
+| "备份数据、导出备份" | backup_data |
 
 **重要**：
 - 用户说"出题"但没指明题型 → 调 generate_questions，type 用 "translation"（翻译题最常见），并在回复里告知可指定其他题型

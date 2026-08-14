@@ -136,12 +136,10 @@ class _SidebarNavPill extends StatelessWidget {
             ? (c.isLight ? Colors.black.withValues(alpha: 0.03) : Colors.white.withValues(alpha: 0.04))
             : Colors.transparent,
         borderRadius: BorderRadius.circular(10),
-        border: Border(
-          bottom: BorderSide(
-            color: selected ? underlineColor : Colors.transparent,
-            width: selected ? 3.0 : 0,
-          ),
-        ),
+        // 未选中时不画底边线，避免 width:0 配圆角触发 hairline 断言
+        border: selected
+            ? Border(bottom: BorderSide(color: underlineColor, width: 3.0))
+            : null,
       ),
       child: _buildRow(c, selected: selected, usePill: false),
     );
@@ -528,9 +526,13 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
 
   // ===== 左侧导航栏 =====
   Widget _buildSidebar() {
-    return Builder(builder: (context) {
-      final c = AppColors.of(context);
-      final page = _state.page;
+    // 独立监听 _state，确保每次 setPage 后导航指示器都可靠重建，
+    // 避免从「更多功能」子页（如墨墨词库）出题跳转后高亮残留。
+    return ListenableBuilder(
+      listenable: _state,
+      builder: (context, _) {
+        final c = AppColors.of(context);
+        final page = _state.page;
       const mainItems = [
         (Icons.home_outlined, '学习', 0),
         (Icons.help_outline, '答题', 1),
@@ -566,7 +568,8 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
         child: _buildSidebarContent(c, page, mainItems, inMore, inSubFeature, moreTitle, moreIcon, context),
       ),
       );
-    });
+      },
+    );
   }
 
   Widget _buildSidebarContent(AppColors c, int page, List mainItems, bool inMore, bool inSubFeature, String moreTitle, IconData moreIcon, BuildContext context) {
@@ -1640,6 +1643,9 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
         border: Border.all(color: c.primaryBorder),
       ),
       child: Row(children: [
+        // 工具调用标识：扳手图标（素材库 Icons.build，非 emoji）
+        Icon(Icons.build, size: 13, color: c.primaryText),
+        const SizedBox(width: 6),
         leading,
         const SizedBox(width: 6),
         Expanded(
@@ -2029,9 +2035,6 @@ class _MoreSelectPageState extends State<_MoreSelectPage> {
     final c = AppColors.of(context);
     final isMobile = AppScope.of(context).uiMode == 'mobile';
     final crossCount = isMobile ? 2 : 3;
-    final panelRadius = BorderRadius.circular(isMobile ? 20 : 28);
-    final padAll = isMobile ? 18.0 : 28.0;
-    final isGlass = AppScope.of(context).isGlassUI;
     final moreItems = _moreItemsData;
     // 功能网格（glass/classic 共用）
     final moreGrid = GridView.builder(
@@ -2091,42 +2094,8 @@ class _MoreSelectPageState extends State<_MoreSelectPage> {
             }),
           ]),
           SizedBox(height: isMobile ? 14 : 22),
-          // 面板：glass 毛玻璃大面板 / classic 不透明实色（无毛玻璃）
-          Expanded(
-            child: isGlass
-              ? ClipRRect(
-                  borderRadius: panelRadius,
-                  child: BackdropFilter(
-                    filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
-                    child: Container(
-                      padding: EdgeInsets.all(padAll),
-                      decoration: BoxDecoration(
-                        color: (c.isLight ? Colors.white : const Color(0xFF1F1F26)).withValues(alpha: c.isLight ? 0.55 : 0.5),
-                        borderRadius: panelRadius,
-                        border: Border.all(color: c.isLight ? Colors.white.withValues(alpha: 0.7) : Colors.white.withValues(alpha: 0.12), width: 1.2),
-                        boxShadow: const [
-                          // 中性阴影：去掉 kPrimary 紫调
-                          BoxShadow(color: Colors.black26, blurRadius: 24, offset: Offset(0, 8)),
-                          BoxShadow(color: Colors.black12, blurRadius: 12, offset: Offset(0, 2)),
-                        ],
-                      ),
-                      child: moreGrid,
-                    ),
-                  ),
-                )
-              : Container(
-                  padding: EdgeInsets.all(padAll),
-                  decoration: BoxDecoration(
-                    color: c.isLight ? Colors.white : const Color(0xFF1F1F26),
-                    borderRadius: panelRadius,
-                    border: Border.all(color: c.divider, width: 1),
-                    boxShadow: const [
-                      BoxShadow(color: Colors.black12, blurRadius: 18, offset: Offset(0, 6)),
-                    ],
-                  ),
-                  child: moreGrid,
-                ),
-          ),
+          // 功能网格直接铺开，不再包裹在超大面板中
+          Expanded(child: moreGrid),
         ]),
       ),
     );

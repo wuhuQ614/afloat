@@ -2,7 +2,7 @@
 library;
 
 import 'dart:math';
-import 'dart:ui' show ImageFilter;
+import 'dart:ui' show FontFeature, ImageFilter;
 import 'package:flutter/material.dart';
 import '../models.dart';
 import '../services/api_service.dart' as api;
@@ -2377,10 +2377,21 @@ class QuestionListPanel extends StatelessWidget {
 }
 
 class _DictationPageState extends State<DictationPage> {
+  // ===== 默写页简单中性配色（灰色，参考 preview(1)，非紫色） =====
+  Color get _accent => const Color(0xFF6B7280); // 主色（中性灰）
+  Color get _accentDark => const Color(0xFF4B5563); // 主色加深
+  Color get _accentText => const Color(0xFF4B5563); // 图标/文字色
+  Color get _accentSoft => const Color(0x146B7280); // 浅灰底
+  LinearGradient get _accentGradient => LinearGradient(
+        begin: Alignment.topLeft,
+        end: Alignment.bottomRight,
+        colors: [_accent, _accentDark],
+      );
+
   String _mode = 'zh2en';
   int _count = 10;
   /// 词库来源：'custom' = 自定义词库 | 'zsb' = 专升本词库 | 'maimemo' = 墨墨词库
-  String _source = 'custom';
+  String _source = 'zsb';
   late final int _zsbCount;
   final TextEditingController _ansCtrl = TextEditingController();
   String? _feedback;
@@ -2440,6 +2451,7 @@ class _DictationPageState extends State<DictationPage> {
   // ===== 开始页面：选择词库 + 默写设置 =====
   Widget _buildStartPage(AppState s) {
     final c = AppColors.of(context);
+    final isGlass = s.isGlassUI;
     final sources = <({String key, IconData icon, String name, int count, String desc})>[
       (key: 'custom', icon: Icons.create_new_folder_outlined, name: '自定义词库', count: s.customWordbook.length, desc: '手动添加自己整理的单词'),
       (key: 'zsb', icon: Icons.school_outlined, name: '专升本词库', count: _zsbCount, desc: '覆盖专升本考纲核心词汇'),
@@ -2449,89 +2461,241 @@ class _DictationPageState extends State<DictationPage> {
       child: SingleChildScrollView(
         padding: const EdgeInsets.all(30),
         child: SizedBox(
-          width: 480,
+          width: 620,
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            // 标题
-            Row(children: [
-              Container(
-                width: 44, height: 44,
-                decoration: BoxDecoration(
-                  gradient: c.primaryGradient,
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: const Icon(Icons.edit_note_rounded, color: Colors.white, size: 24),
-              ),
-              const SizedBox(width: 14),
-              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text('单词默写', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: c.text)),
-                Text('选择词库开始默写，AI 智能批改', style: TextStyle(fontSize: 12, color: c.textTertiary)),
-              ]),
-            ]),
-            const SizedBox(height: 24),
+            // 页面标题 + 副标题（参考 preview(1) 玻璃风）
+            Text('单词默写', style: TextStyle(fontSize: 27, fontWeight: FontWeight.w800, letterSpacing: -0.5, color: c.text)),
+            const SizedBox(height: 6),
+            Text('选择词库开始默写，AI 智能批改', style: TextStyle(fontSize: 12, color: c.textTertiary)),
+            const SizedBox(height: 20),
+            // Hero 玻璃卡
+            _heroCard(c, isGlass),
+            const SizedBox(height: 22),
             // 词库选择
-            Text('选择词库', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: c.text)),
-            const SizedBox(height: 10),
+            _sectionHeader(c, Icons.library_books_outlined, '选择词库'),
+            const SizedBox(height: 12),
             for (final src in sources) ...[
-              _sourceCard(s, c, src),
+              _sourceCard(s, c, src, isGlass),
               const SizedBox(height: 10),
             ],
-            const SizedBox(height: 10),
-            // 模式选择
-            Text('默写模式', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: c.text)),
-            const SizedBox(height: 10),
-            SegmentedButton<String>(
-              segments: const [
-                ButtonSegment(value: 'zh2en', label: Text('中文 → 英文')),
-                ButtonSegment(value: 'en2zh', label: Text('英文 → 中文')),
-              ],
-              selected: {_mode},
-              onSelectionChanged: (v) => setState(() => _mode = v.first),
-            ),
-            const SizedBox(height: 20),
-            // 题量
-            Text('题量', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: c.text)),
-            const SizedBox(height: 10),
+            const SizedBox(height: 16),
+            // 默写模式
+            _sectionHeader(c, Icons.swap_horiz_rounded, '默写模式'),
+            const SizedBox(height: 12),
+            _modeSegmented(c, isGlass),
+            const SizedBox(height: 22),
+            // 题量设置
+            _sectionHeader(c, Icons.format_list_numbered_rounded, '题量设置'),
+            const SizedBox(height: 12),
             Row(children: [
               for (final n in const [5, 10, 20, 30])
                 Padding(
                   padding: const EdgeInsets.only(right: 10),
-                  child: ChoiceChip(
-                    label: Text('$n 题'),
-                    selected: _count == n,
-                    onSelected: (_) => setState(() => _count = n),
-                    selectedColor: c.primaryBg,
-                    checkmarkColor: c.primaryText,
-                    backgroundColor: c.chipUnselected,
-                  ),
+                  child: _countChip(c, n),
                 ),
             ]),
-            const SizedBox(height: 20),
+            const SizedBox(height: 22),
             // 自动跳转
-            CheckboxListTile(
-              value: _autoAdvance,
-              onChanged: (v) => setState(() => _autoAdvance = v ?? true),
-              title: Text('答完自动跳转下一题', style: TextStyle(fontSize: 13, color: c.text)),
-              subtitle: Text('答对后 1 秒自动进入下一题', style: TextStyle(fontSize: 11, color: c.textTertiary)),
-              contentPadding: EdgeInsets.zero,
-              controlAffinity: ListTileControlAffinity.leading,
-            ),
-            const SizedBox(height: 24),
+            _autoAdvanceTile(c, isGlass),
+            const SizedBox(height: 26),
             // 开始按钮
             SizedBox(
               width: double.infinity,
-              height: 48,
-              child: FilledButton(
-                style: FilledButton.styleFrom(backgroundColor: kPrimary, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
-                onPressed: () {
-                  s.startDictation(_mode, _count, source: _source);
-                  _resetDictationState();
-                  WidgetsBinding.instance.addPostFrameCallback((_) => _focusNode.requestFocus());
-                  setState(() {});
-                },
-                child: const Text('开始默写', style: TextStyle(fontSize: 16)),
-              ),
+              height: 52,
+              child: _startButton(c, s),
+            ),
+            const SizedBox(height: 7),
+            Center(
+              child: Text('Enter 键提交答案 · / 键查看快捷键', style: TextStyle(fontSize: 9, color: c.textTertiary)),
             ),
           ]),
+        ),
+      ),
+    );
+  }
+
+  // ===== Hero 玻璃卡（参考 preview(1) 玻璃拟态 Hero） =====
+  Widget _heroCard(AppColors c, bool isGlass) {
+    return Container(
+      padding: const EdgeInsets.all(22),
+      decoration: BoxDecoration(
+        color: isGlass
+            ? (c.isLight ? Colors.white.withValues(alpha: 0.5) : const Color(0xFF232328).withValues(alpha: 0.6))
+            : c.card,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: c.isLight ? Colors.white.withValues(alpha: 0.7) : c.border),
+        boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.06), blurRadius: 20, offset: const Offset(0, 8))],
+      ),
+      child: Row(children: [
+        Container(
+          width: 52, height: 52,
+          decoration: BoxDecoration(
+            gradient: _accentGradient,
+            borderRadius: BorderRadius.circular(14),
+            boxShadow: [BoxShadow(color: _accent.withValues(alpha: 0.3), blurRadius: 14, offset: const Offset(0, 4))],
+          ),
+          child: const Icon(Icons.edit_note_rounded, color: Colors.white, size: 26),
+        ),
+        const SizedBox(width: 14),
+        Expanded(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text('开始一组新的默写', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700, color: c.text)),
+            const SizedBox(height: 4),
+            Text('从你的词库中选择内容开始练习', style: TextStyle(fontSize: 12, color: c.textTertiary)),
+          ]),
+        ),
+      ]),
+    );
+  }
+
+  // ===== 小节标题 =====
+  Widget _sectionHeader(AppColors c, IconData icon, String title) {
+    return Row(children: [
+      Icon(icon, size: 15, color: _accentText),
+      const SizedBox(width: 6),
+      Text(title, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: c.textSecondary, letterSpacing: 0.4)),
+    ]);
+  }
+
+  // ===== 默写模式分段控件（优雅胶囊，替代基础 SegmentedButton） =====
+  Widget _modeSegmented(AppColors c, bool isGlass) {
+    const modes = [
+      (v: 'zh2en', label: '中文 → 英文', sub: '看中文，默写英文', icon: Icons.translate_rounded),
+      (v: 'en2zh', label: '英文 → 中文', sub: '看英文，默写中文', icon: Icons.menu_book_rounded),
+    ];
+    return Container(
+      padding: const EdgeInsets.all(4),
+      decoration: BoxDecoration(
+        color: isGlass ? (c.isLight ? Colors.white.withValues(alpha: 0.55) : const Color(0xFF232328).withValues(alpha: 0.6)) : c.cardAlt,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: c.border),
+      ),
+      child: Row(children: [
+        for (final m in modes)
+          Expanded(
+            child: GestureDetector(
+              onTap: () => setState(() => _mode = m.v),
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 200),
+                curve: Curves.easeOutCubic,
+                padding: const EdgeInsets.symmetric(vertical: 10),
+                decoration: BoxDecoration(
+                  gradient: _mode == m.v ? _accentGradient : null,
+                  color: _mode == m.v ? null : Colors.transparent,
+                  borderRadius: BorderRadius.circular(10),
+                  boxShadow: _mode == m.v
+                      ? [BoxShadow(color: _accent.withValues(alpha: 0.3), blurRadius: 10, offset: const Offset(0, 3))]
+                      : null,
+                ),
+                child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+                  Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                    Icon(m.icon, size: 16, color: _mode == m.v ? Colors.white : c.textSecondary),
+                    const SizedBox(width: 6),
+                    Text(m.label, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: _mode == m.v ? Colors.white : c.textSecondary)),
+                  ]),
+                  const SizedBox(height: 3),
+                  Text(m.sub, style: TextStyle(fontSize: 10, color: _mode == m.v ? Colors.white.withValues(alpha: 0.85) : c.textTertiary)),
+                ]),
+              ),
+            ),
+          ),
+      ]),
+    );
+  }
+
+  // ===== 题量胶囊 =====
+  Widget _countChip(AppColors c, int n) {
+    final sel = _count == n;
+    return GestureDetector(
+      onTap: () => setState(() => _count = n),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOutCubic,
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 9),
+        decoration: BoxDecoration(
+          gradient: sel ? _accentGradient : null,
+          color: sel ? null : c.chipUnselected,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: sel ? Colors.transparent : c.chipBorder),
+          boxShadow: sel ? [BoxShadow(color: _accent.withValues(alpha: 0.28), blurRadius: 10, offset: const Offset(0, 3))] : null,
+        ),
+        child: Text('$n 题', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: sel ? Colors.white : c.textSecondary)),
+      ),
+    );
+  }
+
+  // ===== 自动跳转开关（自定义，替代基础 CheckboxListTile） =====
+  Widget _autoAdvanceTile(AppColors c, bool isGlass) {
+    return GestureDetector(
+      onTap: () => setState(() => _autoAdvance = !_autoAdvance),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        decoration: BoxDecoration(
+          color: isGlass ? (c.isLight ? Colors.white.withValues(alpha: 0.5) : const Color(0xFF232328).withValues(alpha: 0.6)) : c.card,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: c.border),
+        ),
+        child: Row(children: [
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 200),
+            width: 44, height: 26,
+            padding: const EdgeInsets.all(2),
+            decoration: BoxDecoration(
+              gradient: _autoAdvance ? _accentGradient : null,
+              color: _autoAdvance ? null : c.chipUnselected,
+              borderRadius: BorderRadius.circular(13),
+            ),
+            alignment: _autoAdvance ? Alignment.centerRight : Alignment.centerLeft,
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 200),
+              width: 22, height: 22,
+              decoration: const BoxDecoration(
+                color: Colors.white,
+                shape: BoxShape.circle,
+                boxShadow: [BoxShadow(color: Colors.black26, blurRadius: 4, offset: Offset(0, 1))],
+              ),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text('答完自动跳转下一题', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: c.text)),
+              Text('答对后 1 秒自动进入下一题', style: TextStyle(fontSize: 11, color: c.textTertiary)),
+            ]),
+          ),
+        ]),
+      ),
+    );
+  }
+
+  // ===== 开始按钮 =====
+  Widget _startButton(AppColors c, AppState s) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        gradient: _accentGradient,
+        borderRadius: BorderRadius.circular(14),
+        boxShadow: [BoxShadow(color: _accent.withValues(alpha: 0.35), blurRadius: 18, offset: const Offset(0, 6))],
+      ),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(14),
+          onTap: () {
+            s.startDictation(_mode, _count, source: _source);
+            _resetDictationState();
+            WidgetsBinding.instance.addPostFrameCallback((_) => _focusNode.requestFocus());
+            setState(() {});
+          },
+          child: Container(
+            height: 50,
+            alignment: Alignment.center,
+            child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+              const Icon(Icons.bolt_rounded, color: Colors.white, size: 20),
+              const SizedBox(width: 8),
+              const Text('开始默写', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: Colors.white)),
+            ]),
+          ),
         ),
       ),
     );
@@ -2546,44 +2710,62 @@ class _DictationPageState extends State<DictationPage> {
     };
   }
 
-  // ===== 词库选择卡片 =====
-  Widget _sourceCard(AppState s, AppColors c, ({String key, IconData icon, String name, int count, String desc}) src) {
+  // ===== 词库选择卡片（glass 毛玻璃 + 渐变高光选中态） =====
+  Widget _sourceCard(AppState s, AppColors c, ({String key, IconData icon, String name, int count, String desc}) src, bool isGlass) {
     final selected = _source == src.key;
+    final baseColor = isGlass
+        ? (c.isLight ? Colors.white.withValues(alpha: 0.5) : const Color(0xFF232328).withValues(alpha: 0.6))
+        : c.card;
     return GestureDetector(
       onTap: () => setState(() => _source = src.key),
       child: AnimatedContainer(
-        duration: const Duration(milliseconds: 150),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOutCubic,
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
         decoration: BoxDecoration(
-          color: selected ? c.primaryBg : c.card,
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: selected ? c.primaryBorder : c.border, width: selected ? 1.6 : 1),
+          color: selected ? _accentSoft : baseColor,
+          borderRadius: BorderRadius.circular(15),
+          border: Border.all(
+            color: selected
+                ? _accent
+                : (isGlass ? (c.isLight ? Colors.white.withValues(alpha: 0.7) : c.border) : c.border),
+            width: selected ? 1.4 : 1,
+          ),
+          boxShadow: selected
+              ? [BoxShadow(color: _accent.withValues(alpha: 0.16), blurRadius: 14, offset: const Offset(0, 4))]
+              : [BoxShadow(color: Colors.black.withValues(alpha: 0.04), blurRadius: 12, offset: const Offset(0, 4))],
         ),
         child: Row(children: [
+          // 场景色渐变图标底
           Container(
-            width: 40, height: 40,
+            width: 45, height: 45,
             decoration: BoxDecoration(
-              color: selected ? kPrimary.withValues(alpha: 0.15) : c.primaryBg,
-              borderRadius: BorderRadius.circular(10),
+              gradient: selected ? _accentGradient : LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [_accentSoft, _accentSoft],
+              ),
+              borderRadius: BorderRadius.circular(12),
             ),
-            child: Icon(src.icon, size: 20, color: selected ? kPrimary : c.primaryText),
+            child: Icon(src.icon, size: 21, color: selected ? Colors.white : _accentText),
           ),
-          const SizedBox(width: 12),
+          const SizedBox(width: 13),
           Expanded(
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Row(children: [
-                Text(src.name, style: TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600, color: c.text)),
+                Text(src.name, style: TextStyle(fontSize: 14.5, fontWeight: FontWeight.w700, color: c.text)),
                 const SizedBox(width: 8),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
+                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
                   decoration: BoxDecoration(
-                    color: selected ? kPrimary.withValues(alpha: 0.12) : c.primaryBg,
-                    borderRadius: BorderRadius.circular(6),
+                    gradient: selected ? _accentGradient : null,
+                    color: selected ? null : _accentSoft,
+                    borderRadius: BorderRadius.circular(7),
                   ),
-                  child: Text('${src.count} 词', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: selected ? kPrimary : c.primaryText)),
+                  child: Text('${src.count} 词', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: selected ? Colors.white : _accentText)),
                 ),
               ]),
-              const SizedBox(height: 3),
+              const SizedBox(height: 4),
               Text(src.desc, style: TextStyle(fontSize: 11.5, color: c.textTertiary)),
             ]),
           ),
@@ -2594,7 +2776,25 @@ class _DictationPageState extends State<DictationPage> {
               onPressed: () => _showCustomWordbookDialog(s),
             ),
           const SizedBox(width: 2),
-          Icon(selected ? Icons.radio_button_checked : Icons.radio_button_off, size: 18, color: selected ? kPrimary : c.textTertiary),
+          // radio 指示器（参考 preview(1)）
+          AnimatedScale(
+            duration: const Duration(milliseconds: 180),
+            scale: selected ? 1.0 : 0.9,
+            child: Container(
+              width: 20, height: 20,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: selected ? _accent : Colors.transparent,
+                border: Border.all(
+                  color: selected ? _accent : (c.isLight ? const Color(0xFF9CA3AF) : c.textTertiary),
+                  width: 2,
+                ),
+              ),
+              child: selected
+                  ? const Center(child: Icon(Icons.check, size: 13, color: Colors.white))
+                  : null,
+            ),
+          ),
         ]),
       ),
     );
@@ -2686,226 +2886,410 @@ class _DictationPageState extends State<DictationPage> {
     );
   }
 
-  // ===== 答题页面 =====
+  // ===== 答题页面（参考"墨墨词库"简洁深色风格） =====
   Widget _buildAnsweringPage(AppState s, WordToken w) {
     final c = AppColors.of(context);
-    final progress = s.dictationQueue.isEmpty ? 0.0 : (s.dictationIdx / s.dictationQueue.length);
+    final isGlass = s.isGlassUI;
+    final total = s.dictationQueue.length;
+    final progress = total == 0 ? 0.0 : (s.dictationIdx / total);
     // 使用 s.dictationMode（切页回来 State 重建后 _mode 可能过期）
     final isZh2En = s.dictationMode == 'zh2en';
-    final promptText = isZh2En ? '请翻译成英文' : '请写出中文释义';
+    final promptText = isZh2En ? '请将中文翻译成英文' : '请写出该单词的中文释义';
     final hintText = isZh2En ? '输入英文单词...' : '输入中文释义...';
 
-    return Padding(
-      padding: const EdgeInsets.all(30),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        // 进度条
-        Row(children: [
-          Text('${_sourceName(s)} · ${s.dictationIdx + 1} / ${s.dictationQueue.length}', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: c.primaryText)),
-          const SizedBox(width: 12),
-          Expanded(
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(4),
-              child: LinearProgressIndicator(
-                value: progress,
-                minHeight: 6,
-                backgroundColor: c.progressBg,
-                valueColor: AlwaysStoppedAnimation(c.primaryText),
+    // 词性 / 音标（仅英文展示时同步音标与词性）
+    String phonetic = '';
+    String posLabel = w.pos;
+    if (!isZh2En) {
+      final entry = DictService.lookup(w.word);
+      phonetic = entry?.phonetic ?? '';
+      if (entry != null && entry.pos.isNotEmpty) posLabel = entry.pos;
+    }
+
+    final panelColor = isGlass
+        ? (c.isLight ? Colors.white.withValues(alpha: 0.6) : const Color(0xFF232328).withValues(alpha: 0.6))
+        : c.card;
+
+    return Center(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(32),
+        child: SizedBox(
+          width: 640,
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            // 顶部信息栏：词库名 · 共 N 题  |  当前题号
+            Row(children: [
+              Text(_sourceName(s), style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: c.text)),
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 9),
+                child: Icon(Icons.circle, size: 3, color: Color(0xFF70727C)),
+              ),
+              Text('共 $total 题', style: TextStyle(fontSize: 13, color: c.textTertiary)),
+              const Spacer(),
+              Text('${s.dictationIdx + 1} / $total', style: TextStyle(fontSize: 13, color: c.textSecondary, fontFeatures: const [FontFeature.tabularFigures()])),
+            ]),
+            const SizedBox(height: 14),
+            // 细进度条
+            ClipRRect(
+              borderRadius: BorderRadius.circular(999),
+              child: TweenAnimationBuilder<double>(
+                tween: Tween(begin: 0, end: progress),
+                duration: const Duration(milliseconds: 350),
+                curve: Curves.easeOut,
+                builder: (ctx, v, _) => LinearProgressIndicator(
+                  value: v,
+                  minHeight: 3,
+                  backgroundColor: c.progressBg,
+                  valueColor: AlwaysStoppedAnimation(c.primaryText),
+                ),
               ),
             ),
-          ),
-          const SizedBox(width: 12),
-          Text('答对 ${s.dictationCorrect}', style: TextStyle(fontSize: 13, color: c.scoreHigh, fontWeight: FontWeight.w600)),
-        ]),
-        const SizedBox(height: 24),
-        // 提示
-        Text(promptText, style: TextStyle(fontSize: 13, color: c.textTertiary)),
-        const SizedBox(height: 8),
-        // 题目卡片
-        Container(
-          width: double.infinity,
-          padding: const EdgeInsets.all(24),
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: c.isLight
-                  ? [kPrimary.withValues(alpha: 0.08), Colors.white]
-                  : [kPrimary.withValues(alpha: 0.2), kDarkCard],
-            ),
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: c.primaryBorder),
-          ),
-          child: Text(
-            isZh2En ? w.translation : w.word,
-            style: TextStyle(fontSize: 26, fontWeight: FontWeight.bold, color: c.text),
-          ),
-        ),
-        const SizedBox(height: 20),
-        // 输入框
-        TextField(
-          controller: _ansCtrl,
-          focusNode: _focusNode,
-          autofocus: true,
-          enabled: !_aiGrading,
-          style: TextStyle(fontSize: 16, color: c.text),
-          decoration: InputDecoration(
-            hintText: hintText,
-            hintStyle: TextStyle(fontSize: 14, color: c.inputHint),
-            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-            focusedBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(12),
-              borderSide: BorderSide(color: _feedback != null ? (_isCorrect ? c.scoreHigh : c.scoreLow) : kPrimary, width: 2),
-            ),
-            suffixIcon: _aiGrading
-                ? const Padding(padding: EdgeInsets.all(12), child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)))
-                : _feedback == null
-                    ? IconButton(onPressed: () => _submit(s), icon: const Icon(Icons.check_circle_outline, size: 22))
-                    : null,
-            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-          ),
-          onSubmitted: (_) {
-            if (_aiGrading) return;
-            if (_feedback != null) {
-              _nextQuestion(s);
-            } else {
-              _submit(s);
-            }
-          },
-        ),
-        // AI 批改中
-        if (_aiGrading) ...[
-          const SizedBox(height: 12),
-          Row(children: [
-            const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)),
-            const SizedBox(width: 10),
-            Text('AI 批改中...', style: TextStyle(fontSize: 13, color: c.primaryText)),
-          ]),
-        ],
-        // 反馈区
-        if (_feedback != null) ...[
-          const SizedBox(height: 14),
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(14),
-            decoration: BoxDecoration(
-              color: _isCorrect ? c.successBg : c.dangerBg,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: _isCorrect ? c.successBorder : c.dangerBorder),
-            ),
-            child: Row(children: [
-              Icon(_isCorrect ? Icons.check_circle_rounded : Icons.cancel_rounded, color: _isCorrect ? c.scoreHigh : c.scoreLow, size: 22),
+            const SizedBox(height: 40),
+            // 提示
+            Row(children: [
+              Container(
+                width: 28, height: 28,
+                decoration: BoxDecoration(color: c.primaryBg, borderRadius: BorderRadius.circular(8)),
+                child: Icon(Icons.lightbulb_outline_rounded, size: 15, color: c.primaryText),
+              ),
               const SizedBox(width: 10),
-              Expanded(
-                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Text(
-                    _isCorrect ? '回答正确！' : '回答错误',
-                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: _isCorrect ? c.scoreHigh : c.scoreLow),
+              Text(promptText, style: TextStyle(fontSize: 15, fontWeight: FontWeight.w500, color: c.textSecondary)),
+            ]),
+            const SizedBox(height: 16),
+            // 单词卡：居中大字 + 音标/词性
+            Container(
+              width: double.infinity,
+              constraints: const BoxConstraints(minHeight: 220),
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 30),
+              decoration: BoxDecoration(
+                color: panelColor,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: c.border),
+              ),
+              child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+                Text(
+                  isZh2En ? w.translation : w.word,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: isZh2En ? 32 : 56,
+                    fontWeight: FontWeight.w600,
+                    color: c.text,
+                    height: 1.1,
+                    letterSpacing: isZh2En ? 1 : -2,
                   ),
-                  if (_aiComment.isNotEmpty) ...[
-                    const SizedBox(height: 4),
-                    Text(_aiComment, style: TextStyle(fontSize: 12.5, color: c.textSecondary, height: 1.5)),
-                  ],
-                  if (!_isCorrect || _showAnswer) ...[
-                    const SizedBox(height: 4),
-                    Text('正确答案：${w.word}  ${w.translation}', style: TextStyle(fontSize: 13, color: c.textSecondary)),
-                  ],
+                ),
+                if (!isZh2En && (phonetic.isNotEmpty || posLabel.isNotEmpty)) ...[
+                  const SizedBox(height: 18),
+                  Text(
+                    [if (phonetic.isNotEmpty) '/$phonetic/', if (posLabel.isNotEmpty) posLabel].join(' · '),
+                    style: TextStyle(fontSize: 13, color: c.textTertiary, letterSpacing: 0.2),
+                  ),
+                ],
+              ]),
+            ),
+            const SizedBox(height: 20),
+            // 输入框（右侧提交箭头按钮）
+            Stack(
+              alignment: Alignment.centerRight,
+              children: [
+                TextField(
+                  controller: _ansCtrl,
+                  focusNode: _focusNode,
+                  autofocus: true,
+                  enabled: !_aiGrading,
+                  style: TextStyle(fontSize: 15, color: c.text),
+                  decoration: InputDecoration(
+                    hintText: hintText,
+                    hintStyle: TextStyle(fontSize: 14, color: c.inputHint),
+                    filled: true,
+                    fillColor: c.inputFill,
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
+                    enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: c.border)),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(10),
+                      borderSide: BorderSide(color: _feedback != null ? (_isCorrect ? c.scoreHigh : c.scoreLow) : c.primaryText, width: 1.5),
+                    ),
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 18),
+                  ),
+                  onSubmitted: (_) {
+                    if (_aiGrading) return;
+                    if (_feedback != null) {
+                      _nextQuestion(s);
+                    } else {
+                      _submit(s);
+                    }
+                  },
+                ),
+                // 提交箭头按钮
+                Positioned(
+                  right: 7,
+                  child: _aiGrading
+                      ? Padding(
+                          padding: const EdgeInsets.all(12),
+                          child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: c.primaryText)),
+                        )
+                      : Container(
+                          width: 44, height: 44,
+                          decoration: BoxDecoration(
+                            color: c.primaryText,
+                            borderRadius: BorderRadius.circular(9),
+                          ),
+                          child: IconButton(
+                            padding: EdgeInsets.zero,
+                            onPressed: _feedback != null ? () => _nextQuestion(s) : () => _submit(s),
+                            icon: Icon(_feedback != null ? Icons.arrow_forward_rounded : Icons.arrow_forward_rounded,
+                                color: _buttonOnPrimary(c), size: 21),
+                          ),
+                        ),
+                ),
+              ],
+            ),
+            // AI 批改中
+            if (_aiGrading) ...[
+              const SizedBox(height: 14),
+              Row(children: [
+                SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: c.primaryText)),
+                const SizedBox(width: 10),
+                Text('AI 批改中...', style: TextStyle(fontSize: 13, color: c.textSecondary)),
+              ]),
+            ],
+            // 反馈区
+            if (_feedback != null) ...[
+              const SizedBox(height: 16),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: _isCorrect ? c.successBg : c.dangerBg,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: _isCorrect ? c.successBorder : c.dangerBorder),
+                ),
+                child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Container(
+                    width: 30, height: 30,
+                    decoration: BoxDecoration(
+                      color: _isCorrect ? c.scoreHigh : c.scoreLow,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Icon(_isCorrect ? Icons.check_rounded : Icons.close_rounded, color: Colors.white, size: 18),
+                  ),
+                  const SizedBox(width: 11),
+                  Expanded(
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Row(children: [
+                        Text(
+                          _isCorrect ? '回答正确' : '回答错误',
+                          style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: _isCorrect ? c.scoreHigh : c.scoreLow),
+                        ),
+                        if (_autoAdvance && _isCorrect) ...[
+                          const SizedBox(width: 10),
+                          Text('即将跳转下一题', style: TextStyle(fontSize: 11, color: c.textTertiary)),
+                        ],
+                      ]),
+                      if (_aiComment.isNotEmpty) ...[
+                        const SizedBox(height: 5),
+                        Text(_aiComment, style: TextStyle(fontSize: 12.5, color: c.textSecondary, height: 1.5)),
+                      ],
+                      if (!_isCorrect || _showAnswer) ...[
+                        const SizedBox(height: 6),
+                        Text(
+                          '正确答案：${w.word}${isZh2En ? '' : (w.translation.isNotEmpty ? '  ${w.translation}' : '')}',
+                          style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: c.primaryText),
+                        ),
+                      ],
+                    ]),
+                  ),
                 ]),
               ),
-              if (_autoAdvance && _isCorrect)
-                Text('自动跳转...', style: TextStyle(fontSize: 11, color: c.textTertiary)),
+            ],
+            const SizedBox(height: 26),
+            // 操作区
+            Row(children: [
+              // 提交 / 下一题
+              _flatPrimaryButton(c, _feedback != null, () {
+                if (_feedback != null) {
+                  _nextQuestion(s);
+                } else {
+                  _submit(s);
+                }
+              }),
+              const SizedBox(width: 10),
+              // 跳过
+              _flatSecondaryButton(c, Icons.skip_next_rounded, '跳过', _aiGrading ? null : () => _skip(s)),
+              const Spacer(),
+              TextButton(
+                onPressed: () {
+                  setState(() => _showAnswer = !_showAnswer);
+                },
+                child: Text(_showAnswer ? '隐藏答案' : '显示答案', style: TextStyle(color: c.textTertiary, fontSize: 13)),
+              ),
             ]),
-          ),
-        ],
-        const SizedBox(height: 14),
-        // 操作按钮
-        Row(children: [
-          if (_feedback != null)
-            FilledButton(
-              style: FilledButton.styleFrom(backgroundColor: kPrimary),
-              onPressed: () => _nextQuestion(s),
-              child: const Text('下一题'),
-            )
-          else
-            FilledButton(
-              style: FilledButton.styleFrom(backgroundColor: kPrimary),
-              onPressed: _aiGrading ? null : () => _submit(s),
-              child: Text(_aiGrading ? '批改中...' : '提交'),
-            ),
-          const SizedBox(width: 10),
-          OutlinedButton(
-            onPressed: _aiGrading ? null : () => _skip(s),
-            child: const Text('跳过'),
-          ),
-          const Spacer(),
-          TextButton(
-            onPressed: () {
-              setState(() => _showAnswer = !_showAnswer);
-            },
-            child: Text(_showAnswer ? '隐藏答案' : '显示答案', style: TextStyle(color: c.textTertiary)),
-          ),
-        ]),
-      ]),
+          ]),
+        ),
+      ),
     );
   }
+
+  // ===== 主操作按钮（提交 / 下一题） =====
+  Widget _flatPrimaryButton(AppColors c, bool hasFeedback, VoidCallback onTap) {
+    final label = hasFeedback ? '下一题' : ( _aiGrading ? '批改中...' : '提交');
+    final enabled = !_aiGrading || hasFeedback;
+    return Container(
+      height: 42,
+      padding: const EdgeInsets.symmetric(horizontal: 19),
+      decoration: BoxDecoration(
+        color: enabled ? c.primaryBg : c.chipUnselected,
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(10),
+        onTap: enabled ? onTap : null,
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          Icon(Icons.check_rounded, size: 16, color: enabled ? c.primaryText : c.textTertiary),
+          const SizedBox(width: 7),
+          Text(label, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: enabled ? c.primaryText : c.textTertiary)),
+        ]),
+      ),
+    );
+  }
+
+  // ===== 次要操作按钮（跳过） =====
+  Widget _flatSecondaryButton(AppColors c, IconData icon, String label, VoidCallback? onTap) {
+    return Container(
+      height: 42,
+      padding: const EdgeInsets.symmetric(horizontal: 17),
+      decoration: BoxDecoration(
+        border: Border.all(color: c.border),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(10),
+        onTap: onTap,
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          Icon(icon, size: 16, color: c.textSecondary),
+          const SizedBox(width: 6),
+          Text(label, style: TextStyle(fontSize: 14, color: c.textSecondary, fontWeight: FontWeight.w500)),
+        ]),
+      ),
+    );
+  }
+
+  // 输入框内箭头按钮在浅色 primaryBg 上的文字颜色
+  Color _buttonOnPrimary(AppColors c) => c.isLight ? kPrimary : Colors.white;
 
   // ===== 完成页面 =====
   Widget _buildFinishPage(AppState s) {
     final c = AppColors.of(context);
+    final isGlass = s.isGlassUI;
     final correct = s.dictationCorrect;
     final total = s.dictationTotal;
     final rate = total == 0 ? 0.0 : correct / total;
     final good = rate >= 0.8;
-
-    final goodColor = c.scoreHigh;
-    final midColor = c.scoreMid;
+    final ringColor = good ? c.scoreHigh : c.scoreMid;
+    final praise = rate >= 0.9
+        ? '太棒了，近乎满分！'
+        : rate >= 0.8
+            ? '表现优秀，继续保持！'
+            : rate >= 0.6
+                ? '不错，再稳一点会更棒'
+                : '别灰心，多练几轮巩固一下';
 
     return Center(
       child: SingleChildScrollView(
         padding: const EdgeInsets.all(30),
         child: SizedBox(
-          width: 480,
-          child: Column(mainAxisSize: MainAxisSize.min, children: [
-            Container(
-              width: 90, height: 90,
-              decoration: BoxDecoration(
-                gradient: LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight, colors: good ? [goodColor, kPrimary] : [kPrimary, midColor]),
-                shape: BoxShape.circle,
-                boxShadow: [BoxShadow(color: (good ? goodColor : kPrimary).withValues(alpha: 0.35), blurRadius: 24, offset: const Offset(0, 8))],
-              ),
-              child: Icon(good ? Icons.emoji_events_rounded : Icons.school_rounded, color: Colors.white, size: 44),
+          width: 420,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 36, vertical: 40),
+            decoration: BoxDecoration(
+              color: isGlass ? (c.isLight ? Colors.white.withValues(alpha: 0.55) : const Color(0xFF232328).withValues(alpha: 0.6)) : c.card,
+              borderRadius: BorderRadius.circular(24),
+              border: Border.all(color: c.border),
+              boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.10), blurRadius: 28, offset: const Offset(0, 10))],
             ),
-            const SizedBox(height: 20),
-            Text('本轮默写完成', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: c.text)),
-            const SizedBox(height: 12),
-            Row(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.baseline, children: [
-              Text('$correct', style: TextStyle(fontSize: 36, fontWeight: FontWeight.w800, color: c.primaryText)),
-              Text(' / $total', style: TextStyle(fontSize: 18, color: c.textTertiary)),
-              const SizedBox(width: 12),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                decoration: BoxDecoration(
-                  color: good ? c.successBg : c.warningBg,
-                  borderRadius: BorderRadius.circular(8),
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              // 成绩环
+              SizedBox(
+                width: 150, height: 150,
+                child: Stack(fit: StackFit.expand, children: [
+                  CircularProgressIndicator(
+                    value: rate,
+                    strokeWidth: 13,
+                    strokeCap: StrokeCap.round,
+                    backgroundColor: c.progressBg,
+                    valueColor: AlwaysStoppedAnimation(ringColor),
+                  ),
+                  Center(
+                    child: Column(mainAxisSize: MainAxisSize.min, children: [
+                      Text('${(rate * 100).round()}', style: TextStyle(fontSize: 42, fontWeight: FontWeight.w800, color: c.primaryText, height: 1)),
+                      const SizedBox(height: 2),
+                      Text('正确率', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: c.textTertiary)),
+                    ]),
+                  ),
+                ]),
+              ),
+              const SizedBox(height: 22),
+              Text('本轮默写完成', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: c.text, letterSpacing: 0.3)),
+              const SizedBox(height: 8),
+              Text(praise, style: TextStyle(fontSize: 13, color: c.textSecondary)),
+              const SizedBox(height: 18),
+              // 正确/总数 + 徽章
+              Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+                  decoration: BoxDecoration(
+                    color: c.primaryBg,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: c.primaryBorder),
+                  ),
+                  child: Row(mainAxisSize: MainAxisSize.min, children: [
+                    Icon(Icons.check_circle_rounded, size: 16, color: c.primaryText),
+                    const SizedBox(width: 6),
+                    Text('答对 $correct / $total', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: c.primaryText)),
+                  ]),
                 ),
-                child: Text('正确率 ${(rate * 100).round()}%', style: TextStyle(fontSize: 14, color: good ? c.scoreHigh : c.warning, fontWeight: FontWeight.w700)),
+                const SizedBox(width: 10),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+                  decoration: BoxDecoration(
+                    color: good ? c.successBg : c.warningBg,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text('${(rate * 100).round()}%', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: good ? c.scoreHigh : c.warning)),
+                ),
+              ]),
+              const SizedBox(height: 26),
+              // 再来一轮
+              DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: c.primaryGradient,
+                  borderRadius: BorderRadius.circular(14),
+                  boxShadow: [BoxShadow(color: kPrimary.withValues(alpha: 0.35), blurRadius: 18, offset: const Offset(0, 6))],
+                ),
+                child: Material(
+                  color: Colors.transparent,
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(14),
+                    onTap: () {
+                      s.dictationQueue = [];
+                      s.touch();
+                      _resetDictationState();
+                      setState(() {});
+                    },
+                    child: Container(
+                      height: 50,
+                      width: double.infinity,
+                      alignment: Alignment.center,
+                      child: const Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                        Icon(Icons.refresh_rounded, color: Colors.white, size: 20),
+                        SizedBox(width: 8),
+                        Text('再来一轮', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: Colors.white)),
+                      ]),
+                    ),
+                  ),
+                ),
               ),
             ]),
-            const SizedBox(height: 28),
-            SizedBox(
-              width: double.infinity,
-              height: 48,
-              child: FilledButton(
-                style: FilledButton.styleFrom(backgroundColor: kPrimary, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
-                onPressed: () {
-                  s.dictationQueue = [];
-                  s.touch();
-                  _resetDictationState();
-                  setState(() {});
-                },
-                child: const Text('再来一轮', style: TextStyle(fontSize: 16)),
-              ),
-            ),
-          ]),
+          ),
         ),
       ),
     );
