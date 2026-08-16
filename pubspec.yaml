@@ -19,6 +19,7 @@ dependencies:
   desktop_drop: ^0.7.1
   webview_flutter: ^4.10.0
   audioplayers: ^6.8.1
+  flutter_inappwebview: ^6.1.5
 
 dev_dependencies:
   flutter_test:

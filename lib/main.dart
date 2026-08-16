@@ -25,6 +25,7 @@ import 'widgets/settings_dialog.dart';
 import 'widgets/platform_select_page.dart';
 import 'widgets/glass_background.dart';
 import 'widgets/maimemo_wordbook_page.dart';
+import 'widgets/browser_page.dart';
 
 final bool _isWindows = !kIsWeb && Platform.isWindows;
 
@@ -37,6 +38,7 @@ const _moreItemsData = [
   (Icons.edit_note_outlined, '默写', '单词默写练习', 8),
   (Icons.auto_stories_outlined, '墨墨', '同步墨墨词库', 18),
   (Icons.school_outlined, '语法学习', '从零学会专升本语法', 12),
+  (Icons.language_rounded, '浏览器', '轻量网页浏览', 19),
 ];
 
 // 更多功能选择页索引
@@ -540,7 +542,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
         (Icons.search_outlined, '查询', 3),
       ];
       final inMore = page >= 4;
-      final inSubFeature = page >= 4 && (page <= 8 || (page >= 12 && page <= 17) || page == 18);
+      final inSubFeature = page >= 4 && (page <= 8 || (page >= 12 && page <= 17) || page == 18 || page == 19);
       const moreTitle = '更多功能';
       const moreIcon = Icons.grid_view_outlined;
       final isGlass = _state.isGlassUI;
@@ -784,7 +786,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
           (Icons.search_outlined, '查询', 3),
         ];
         final inMore = _state.page >= 4;
-        final inSubFeature = _state.page >= 4 && (_state.page <= 8 || (_state.page >= 12 && _state.page <= 17) || _state.page == 18);
+        final inSubFeature = _state.page >= 4 && (_state.page <= 8 || (_state.page >= 12 && _state.page <= 17) || _state.page == 18 || _state.page == 19);
         final navIndex = inMore ? 3 : (_state.page == 3 ? 4 : _state.page.clamp(0, 2));
         final isGlass = _state.isGlassUI;
         final glassBg = isGlass ? c.sidebar.withValues(alpha: _state.darkMode ? 0.5 : 0.55) : c.sidebar;
@@ -1084,6 +1086,8 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
         return const _PageScaffold(title: '语法学习', child: GrammarPage());
       case 18:
         return const _PageScaffold(title: '墨墨词库', child: MaimemoWordbookPage());
+      case 19:
+        return const _PageScaffold(title: '浏览器', child: BrowserPage());
       case 10:
       case 11:
         // 沉浸考场或成绩解析页（外层已隐藏 AI 对话栏）

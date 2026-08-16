@@ -5,6 +5,7 @@
 list(APPEND FLUTTER_PLUGIN_LIST
   audioplayers_windows
   desktop_drop
+  flutter_inappwebview_windows
   flutter_tts
   screen_retriever_windows
   window_manager
