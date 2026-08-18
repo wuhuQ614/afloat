@@ -851,31 +851,78 @@ class _PaperCard extends StatelessWidget {
 // =========================================================
 //  4. 最近 7 天答题趋势
 // =========================================================
-class _TrendCard extends StatelessWidget {
+class _TrendCard extends StatefulWidget {
   final AppColors c;
   final List<StudyRecord> records;
   const _TrendCard({required this.c, required this.records});
 
   @override
-  Widget build(BuildContext context) {
-    final isLight = c.isLight;
-    final bg = isLight ? Colors.white : const Color(0xFF2A2A32);
+  State<_TrendCard> createState() => _TrendCardState();
+}
 
-    // 构建7天数据（最近7天，今天是最后一条）
-    final days = <({String label, int count, bool isToday})>[];
+class _TrendCardState extends State<_TrendCard> {
+  // 统计维度：'count' 答题数 / 'rate' 正确率 / 'wrong' 错题数
+  String _metric = 'count';
+
+  // 收集 7 天数据：每天 答题数/错题数/正确率
+  List<({String label, int count, int wrong, double rate, bool isToday})> _collect() {
+    final records = widget.records;
+    final days = <({String label, int count, int wrong, double rate, bool isToday})>[];
     final now = DateTime.now();
     for (var i = 6; i >= 0; i--) {
       final d = DateTime(now.year, now.month, now.day - i);
       final start = DateTime(d.year, d.month, d.day).millisecondsSinceEpoch;
       final end = start + 86400000;
-      final cnt = records.where((r) => r.timestamp >= start && r.timestamp < end).length;
+      final dayRec = records.where((r) => r.timestamp >= start && r.timestamp < end).toList();
+      final count = dayRec.length;
+      final wrong = dayRec.where((r) => r.isWrong).length;
+      final rate = count == 0 ? 0.0 : ((count - wrong) / count * 100);
       days.add((
         label: '${d.month}/${d.day}',
-        count: cnt,
+        count: count,
+        wrong: wrong,
+        rate: rate,
         isToday: (i == 0),
       ));
     }
-    final maxCount = days.fold<int>(1, (m, x) => max(m, x.count));
+    return days;
+  }
+
+  // 根据当前维度取数值
+  double _valueOf(({String label, int count, int wrong, double rate, bool isToday}) d) {
+    switch (_metric) {
+      case 'rate':
+        return d.rate;
+      case 'wrong':
+        return d.wrong.toDouble();
+      default:
+        return d.count.toDouble();
+    }
+  }
+
+  // 柱顶显示文本
+  String _textOf(({String label, int count, int wrong, double rate, bool isToday}) d) {
+    switch (_metric) {
+      case 'rate':
+        return d.rate == 0 && d.count == 0
+            ? ''
+            : '${d.rate.round()}%';
+      case 'wrong':
+        return d.wrong.toString();
+      default:
+        return d.count.toString();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = widget.c;
+    final isLight = c.isLight;
+    final bg = isLight ? Colors.white : const Color(0xFF2A2A32);
+
+    final days = _collect();
+    final values = days.map(_valueOf).toList();
+    final maxCount = values.fold<double>(1, (m, x) => max(m, x));
 
     return Container(
       width: double.infinity,
@@ -894,7 +941,7 @@ class _TrendCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // 标题 + 右上角下拉
+          // 标题 + 右上角维度下拉
           Row(
             crossAxisAlignment: CrossAxisAlignment.center,
             children: [
@@ -905,29 +952,11 @@ class _TrendCard extends StatelessWidget {
                       color: c.text,
                       height: 1.2)),
               const Spacer(),
-              // 题目数下拉
-              Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                decoration: BoxDecoration(
-                  color: c.isLight
-                      ? const Color(0xFFF3EEFF)
-                      : const Color(0xFF3D3258),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text('题目数',
-                        style: TextStyle(
-                            fontSize: 12,
-                            color: c.primaryText,
-                            fontWeight: FontWeight.w600)),
-                    const SizedBox(width: 3),
-                    Icon(Icons.keyboard_arrow_down_rounded,
-                        size: 16, color: c.primaryText),
-                  ],
-                ),
+              // 维度下拉（答题数/正确率/错题数）
+              _MetricDropdown(
+                c: c,
+                value: _metric,
+                onChanged: (v) => setState(() => _metric = v),
               ),
             ],
           ),
@@ -938,7 +967,7 @@ class _TrendCard extends StatelessWidget {
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Y 轴刻度（3 档：100/200/300，与 max 动态适应）
+                // Y 轴刻度（3 档，与 max 动态适应）
                 SizedBox(
                   width: 42,
                   height: 160,
@@ -955,7 +984,8 @@ class _TrendCard extends StatelessWidget {
                           child: _BarCell(
                             c: c,
                             label: d.label,
-                            count: d.count,
+                            value: _valueOf(d),
+                            text: _textOf(d),
                             maxCount: maxCount,
                             isToday: d.isToday,
                           ),
@@ -972,21 +1002,71 @@ class _TrendCard extends StatelessWidget {
   }
 }
 
-/// Y 轴刻度：300, 200, 100（与数据 max 对齐，数据级低时自动 4 档）
+/// 右上角统计维度下拉
+class _MetricDropdown extends StatelessWidget {
+  final AppColors c;
+  final String value;
+  final ValueChanged<String> onChanged;
+  const _MetricDropdown({required this.c, required this.value, required this.onChanged});
+
+  static const _labels = {
+    'count': '答题数',
+    'rate': '正确率',
+    'wrong': '错题数',
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      decoration: BoxDecoration(
+        color: c.isLight ? const Color(0xFFF3EEFF) : const Color(0xFF3D3258),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: DropdownButtonHideUnderline(
+        child: DropdownButton<String>(
+          value: value,
+          isDense: true,
+          icon: Icon(Icons.keyboard_arrow_down_rounded, size: 16, color: c.primaryText),
+          iconSize: 16,
+          style: TextStyle(
+              fontSize: 12, color: c.primaryText, fontWeight: FontWeight.w600),
+          dropdownColor: c.isLight ? Colors.white : const Color(0xFF2A2A32),
+          items: _labels.entries
+              .map((e) => DropdownMenuItem(
+                    value: e.key,
+                    child: Text(e.value,
+                        style: TextStyle(
+                            fontSize: 12,
+                            color: c.primaryText,
+                            fontWeight: FontWeight.w600)),
+                  ))
+              .toList(),
+          onChanged: (v) {
+            if (v != null) onChanged(v);
+          },
+        ),
+      ),
+    );
+  }
+}
+
+/// Y 轴刻度：与数据 max 对齐，自动 3 档
 class _YAxisTicks extends StatelessWidget {
   final AppColors c;
-  final int maxV;
+  final double maxV;
   const _YAxisTicks({required this.c, required this.maxV});
 
   @override
   Widget build(BuildContext context) {
     final steps = <String>[];
     final realMax = maxV < 100 ? 100 : (maxV < 300 ? 300 : ((maxV / 100).ceil() * 100));
-    // 3 档：100/200/300 或按 realMax 自动算
+    // 3 档
     final n = 3;
-    final step = realMax ~/ n;
+    final step = realMax / n;
     for (var i = n; i >= 1; i--) {
-      steps.add('${step * i}');
+      final v = step * i;
+      steps.add(v >= 100 ? '${v.round()}' : (v == (v.roundToDouble()) ? '${v.round()}' : v.toStringAsFixed(1)));
     }
     return Column(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -1008,13 +1088,15 @@ class _YAxisTicks extends StatelessWidget {
 class _BarCell extends StatelessWidget {
   final AppColors c;
   final String label;
-  final int count;
-  final int maxCount;
+  final double value;
+  final String text;
+  final double maxCount;
   final bool isToday;
   const _BarCell({
     required this.c,
     required this.label,
-    required this.count,
+    required this.value,
+    required this.text,
     required this.maxCount,
     required this.isToday,
   });
@@ -1022,8 +1104,8 @@ class _BarCell extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final chartH = 150.0;
-    final ratio = count == 0 ? 0.0 : (count / max(1, maxCount));
-    final barH = count == 0 ? 4.0 : (6 + ratio * (chartH - 10));
+    final ratio = value == 0 ? 0.0 : (value / max(1.0, maxCount));
+    final barH = value == 0 ? 4.0 : (6 + ratio * (chartH - 10));
 
     final lightBar = c.isLight
         ? const Color(0xFFE4DCFF)
@@ -1039,7 +1121,7 @@ class _BarCell extends StatelessWidget {
       mainAxisAlignment: MainAxisAlignment.end,
       children: [
         // 数字气泡（仅非 0 显示，今日额外高亮）
-        if (count > 0)
+        if (text.isNotEmpty)
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
             margin: const EdgeInsets.only(bottom: 6),
@@ -1051,7 +1133,7 @@ class _BarCell extends StatelessWidget {
                   : Colors.transparent,
               borderRadius: BorderRadius.circular(7),
             ),
-            child: Text('$count',
+            child: Text(text,
                 style: TextStyle(
                     fontSize: 10.5,
                     fontWeight: FontWeight.w600,
@@ -1121,6 +1203,135 @@ class _HistoryCard extends StatelessWidget {
       return '昨天 ${pad(d.hour)}:${pad(d.minute)}';
     }
     return '${d.month}月${d.day}日 ${pad(d.hour)}:${pad(d.minute)}';
+  }
+
+  String _fmtDur(int sec) {
+    final m = sec ~/ 60;
+    final s = sec % 60;
+    final h = m ~/ 60;
+    if (h > 0) return '$h小时${m % 60}分钟';
+    return m > 0 ? '$m分${s.toString().padLeft(2, '0')}秒' : '${s}秒';
+  }
+
+  /// 点击历史记录：弹出该次考试的成绩详情弹窗
+  void _showHistoryDetail(BuildContext context, ExamHistoryEntry e) {
+    final pct = e.maxScore == 0 ? 0.0 : e.totalScore / e.maxScore;
+    final color = pct >= 0.7
+        ? (c.isLight ? const Color(0xFFFB7A1C) : const Color(0xFFFF9955))
+        : (pct >= 0.4
+            ? (c.isLight ? const Color(0xFFF05A2C) : const Color(0xFFFF7B52))
+            : (c.isLight ? const Color(0xFFE84242) : const Color(0xFFFF6565)));
+    final isLight = c.isLight;
+    final bg = isLight ? Colors.white : const Color(0xFF2A2A32);
+    final d = DateTime.fromMillisecondsSinceEpoch(e.submittedAt);
+    String pad(int n) => n < 10 ? '0$n' : '$n';
+
+    showDialog(
+      context: context,
+      builder: (ctx) => Dialog(
+        backgroundColor: bg,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+        insetPadding: const EdgeInsets.symmetric(horizontal: 32, vertical: 40),
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(22, 24, 22, 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(e.title.isEmpty ? '模拟全卷' : e.title,
+                        style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w700,
+                            color: c.text,
+                            height: 1.2)),
+                  ),
+                  IconButton(
+                    icon: Icon(Icons.close_rounded, size: 20, color: c.textTertiary),
+                    visualDensity: VisualDensity.compact,
+                    onPressed: () => Navigator.of(ctx).pop(),
+                  ),
+                ],
+              ),
+              Text(
+                '${d.year}年${d.month}月${d.day}日 ${pad(d.hour)}:${pad(d.minute)} 提交',
+                style: TextStyle(fontSize: 12, color: c.textTertiary),
+              ),
+              const SizedBox(height: 18),
+              // 总分展示
+              Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text.rich(
+                      TextSpan(
+                        children: [
+                          TextSpan(
+                              text: '${e.totalScore}',
+                              style: TextStyle(
+                                  fontSize: 44,
+                                  fontWeight: FontWeight.w800,
+                                  color: color,
+                                  height: 1)),
+                          TextSpan(
+                              text: ' / ${e.maxScore}',
+                              style: TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w600,
+                                  color: c.textTertiary,
+                                  height: 1.4)),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    // 等级徽章
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 5),
+                      decoration: BoxDecoration(
+                        color: c.cardAlt,
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Text('${e.rank} 级评价',
+                          style: TextStyle(
+                              fontSize: 12.5,
+                              fontWeight: FontWeight.w700,
+                              color: c.primaryText)),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 20),
+              // 明细数据行
+              Row(
+                children: [
+                  _detailItem(c, '总分', '${e.totalScore}', flex: 1),
+                  _detailItem(c, '满分', '${e.maxScore}', flex: 1),
+                  _detailItem(c, '正确率', '${(pct * 100).round()}%', flex: 1),
+                  _detailItem(c, '用时', _fmtDur(e.durationSec), flex: 1),
+                ],
+              ),
+              const SizedBox(height: 6),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _detailItem(AppColors c, String label, String value, {int flex = 1}) {
+    return Expanded(
+      flex: flex,
+      child: Column(
+        children: [
+          Text(value,
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: c.text)),
+          const SizedBox(height: 4),
+          Text(label, style: TextStyle(fontSize: 11.5, color: c.textTertiary)),
+        ],
+      ),
+    );
   }
 
   @override
@@ -1196,6 +1407,8 @@ class _HistoryCard extends StatelessWidget {
                 title:
                     list[i].title.isEmpty ? '模拟全卷' : list[i].title,
                 time: _fmtForHistory(list[i].submittedAt),
+                subtitle: '${list[i].rank} 级 · ${_fmtDur(list[i].durationSec)}',
+                onTap: () => _showHistoryDetail(context, list[i]),
               ),
               if (i < list.length - 1)
                 Padding(
@@ -1212,19 +1425,23 @@ class _HistoryCard extends StatelessWidget {
   }
 }
 
-/// 历史记录单行： 分数 /Max ｜ 标题 ｜ 时间 + 箭头
+/// 历史记录单行： 分数 /Max ｜ 标题 ｜ 时间 + 箭头（可点击查看详情）
 class _HistoryRow extends StatelessWidget {
   final AppColors c;
   final int score;
   final int maxScore;
   final String title;
   final String time;
+  final String subtitle;
+  final VoidCallback onTap;
   const _HistoryRow({
     required this.c,
     required this.score,
     required this.maxScore,
     required this.title,
     required this.time,
+    required this.subtitle,
+    required this.onTap,
   });
 
   @override
@@ -1240,42 +1457,61 @@ class _HistoryRow extends StatelessWidget {
       scoreColor = c.isLight ? const Color(0xFFE84242) : const Color(0xFFFF6565);
     }
 
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 12),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.center,
-        children: [
-          // 分数（橙红色） / Max
-          Text('$score',
-              style: TextStyle(
-                  fontSize: 17,
-                  fontWeight: FontWeight.w800,
-                  color: scoreColor,
-                  height: 1.1)),
-          const SizedBox(width: 2),
-          Text('/$maxScore',
-              style: TextStyle(
-                  fontSize: 11.5, color: c.textTertiary, height: 1.1)),
-          const SizedBox(width: 18),
-          // 标题
-          Expanded(
-            child: Text(title,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(10),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 12),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            // 分数（橙红色） / Max
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
+                  Text('$score',
+                      style: TextStyle(
+                          fontSize: 17,
+                          fontWeight: FontWeight.w800,
+                          color: scoreColor,
+                          height: 1.1)),
+                  const SizedBox(width: 2),
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 2),
+                    child: Text('/$maxScore',
+                        style: TextStyle(
+                            fontSize: 11.5,
+                            color: c.textTertiary,
+                            height: 1.1)),
+                  ),
+                ]),
+                const SizedBox(height: 3),
+                Text(subtitle,
+                    style: TextStyle(fontSize: 10.5, color: c.textTertiary)),
+              ],
+            ),
+            const SizedBox(width: 18),
+            // 标题
+            Expanded(
+              child: Text(title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                      fontSize: 13,
+                      color: c.text,
+                      fontWeight: FontWeight.w600)),
+            ),
+            const SizedBox(width: 10),
+            // 时间 + 右箭头
+            Text(time,
                 style: TextStyle(
-                    fontSize: 13,
-                    color: c.text,
-                    fontWeight: FontWeight.w600)),
-          ),
-          const SizedBox(width: 10),
-          // 时间 + 右箭头
-          Text(time,
-              style: TextStyle(
-                  fontSize: 11.5, color: c.textTertiary, height: 1.2)),
-          const SizedBox(width: 6),
-          Icon(Icons.arrow_forward_ios_rounded,
-              size: 11.5, color: c.textTertiary),
-        ],
+                    fontSize: 11.5, color: c.textTertiary, height: 1.2)),
+            const SizedBox(width: 6),
+            Icon(Icons.arrow_forward_ios_rounded,
+                size: 11.5, color: c.textTertiary),
+          ],
+        ),
       ),
     );
   }

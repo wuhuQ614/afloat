@@ -2,7 +2,7 @@
 library;
 
 import 'dart:convert';
-import 'dart:io' show File, FileMode, Platform, Directory;
+import 'dart:io' show File, FileMode, Platform, Directory, Process, ProcessStartMode;
 import 'dart:ui' show ImageFilter, PlatformDispatcher;
 import 'package:cross_file/cross_file.dart';
 import 'package:desktop_drop/desktop_drop.dart';
@@ -26,6 +26,10 @@ import 'widgets/platform_select_page.dart';
 import 'widgets/glass_background.dart';
 import 'widgets/maimemo_wordbook_page.dart';
 import 'widgets/browser_page.dart';
+import 'widgets/snake_game_page.dart';
+import 'widgets/gomoku_page.dart';
+import 'widgets/proxy_dashboard.dart';
+import 'widgets/agent_rows.dart';
 
 final bool _isWindows = !kIsWeb && Platform.isWindows;
 
@@ -39,6 +43,9 @@ const _moreItemsData = [
   (Icons.auto_stories_outlined, '墨墨', '同步墨墨词库', 18),
   (Icons.school_outlined, '语法学习', '从零学会专升本语法', 12),
   (Icons.language_rounded, '浏览器', '轻量网页浏览', 19),
+  (Icons.videogame_asset_outlined, '贪吃蛇', '经典小游戏放松', 20),
+  (Icons.grid_3x3_rounded, '五子棋', '双人对战五子连珠', 23),
+  (Icons.lan_outlined, '代理', 'Clash 代理模式', 24),
 ];
 
 // 更多功能选择页索引
@@ -174,7 +181,7 @@ class _SidebarNavPill extends StatelessWidget {
   }
 }
 
-void main() async {
+void main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
   // 全局异常日志：捕获未处理异常写入文件，便于定位运行时白屏/崩溃
   FlutterError.onError = (details) {
@@ -190,7 +197,33 @@ void main() async {
   }
   // 后台初始化 TTS（失败时自动降级为不可用）
   TtsService.instance.init();
+  // 代理控制台独立子入口：当从主程序以 --proxy-entry 启动时，
+  // 直接进入独立的代理控制台（与主场景完全隔开，类似独立应用）
+  if (args.contains('--proxy-entry')) {
+    runApp(const ProxyDashboardPage());
+    return;
+  }
   runApp(const SmartEnglishApp());
+}
+
+/// 桌面端：将代理控制台作为独立子应用启动（弹出独立窗口）。
+/// 移动端：返回 false，由调用方走主 App 内独立 MaterialApp 路由。
+Future<bool> _tryOpenProxyWindow() async {
+  if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
+    try {
+      final exe = Platform.resolvedExecutable;
+      await Process.start(
+        exe,
+        ['--proxy-entry'],
+        mode: ProcessStartMode.detached,
+        workingDirectory: File(exe).parent.path,
+      );
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+  return false;
 }
 
 /// 追加写入运行时错误日志（Windows: %APPDATA%\AFloat\error_log.txt；其他: 应用目录）
@@ -383,7 +416,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                                 ? KeyedSubtree(
                                     key: const ValueKey('english_desktop'),
                                     child: Scaffold(
-                                    body: (_state.page == 10 || _state.page == 11)
+                                    body: (_state.page == 10 || _state.page == 11 || _state.page == 20)
                                         ? ListenableBuilder(listenable: _state, builder: (ctx, _) => _buildMainContent())
                                         : Row(children: [
                                             _buildSidebar(),
@@ -542,7 +575,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
         (Icons.search_outlined, '查询', 3),
       ];
       final inMore = page >= 4;
-      final inSubFeature = page >= 4 && (page <= 8 || (page >= 12 && page <= 17) || page == 18 || page == 19);
+      final inSubFeature = page >= 4 && (page <= 8 || (page >= 12 && page <= 17) || page == 18 || page == 19 || page == 20 || page == 21 || page == 22 || page == 23 || page == 24);
       const moreTitle = '更多功能';
       const moreIcon = Icons.grid_view_outlined;
       final isGlass = _state.isGlassUI;
@@ -733,8 +766,8 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
   Widget _buildMainContent() {
     final isGlass = _state.isGlassUI;
     final c = AppColors(!_state.darkMode);
-    // 考场沉浸模式（page==10/11）：隐藏 AI 对话栏（右侧30%），卷面独占
-    if (_state.page == 10 || _state.page == 11) {
+    // 考场/游戏沉浸模式（page==10/11/20）：隐藏 AI 对话栏（右侧30%），内容独占
+    if (_state.page == 10 || _state.page == 11 || _state.page == 20) {
       return Row(children: [
         Expanded(child: _buildPage()),
       ]);
@@ -775,8 +808,8 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
       listenable: _state,
       builder: (ctx, _) {
         final c = AppColors.of(ctx);
-        // 考场沉浸模式（page==10/11）：手机端同样全屏化，隐藏顶栏/底部导航/AI 悬浮球
-        final examMode = _state.page == 10 || _state.page == 11;
+        // 考场/游戏沉浸模式（page==10/11/20）：手机端同样全屏化，隐藏顶栏/底部导航/AI 悬浮球
+        final examMode = _state.page == 10 || _state.page == 11 || _state.page == 20;
         // 主导航：0学习 1答题 2报告 3更多(触发) 4查询
         const navItems = [
           (Icons.home_outlined, '学习', 0),
@@ -786,7 +819,6 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
           (Icons.search_outlined, '查询', 3),
         ];
         final inMore = _state.page >= 4;
-        final inSubFeature = _state.page >= 4 && (_state.page <= 8 || (_state.page >= 12 && _state.page <= 17) || _state.page == 18 || _state.page == 19);
         final navIndex = inMore ? 3 : (_state.page == 3 ? 4 : _state.page.clamp(0, 2));
         final isGlass = _state.isGlassUI;
         final glassBg = isGlass ? c.sidebar.withValues(alpha: _state.darkMode ? 0.5 : 0.55) : c.sidebar;
@@ -976,8 +1008,14 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                     return ListView.builder(
                       controller: scrollCtrl,
                       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                      itemCount: s.chatHistory.length,
-                      itemBuilder: (ctx, i) => _buildChatBubble(s.chatHistory[i], c.isLight),
+                      itemCount: s.chatHistory.length + (s.chatSending ? 1 : 0),
+                      itemBuilder: (ctx, i) {
+                        if (i < s.chatHistory.length) {
+                          final isTail = s.chatSending && i == s.chatHistory.length - 1 && s.chatHistory[i].role == 'ai';
+                          return _buildChatBubble(s.chatHistory[i], c.isLight, running: isTail);
+                        }
+                        return AgentDeepDivingRow(accent: c.primary, light: c.isLight);
+                      },
                     );
                   },
                 ),
@@ -1088,6 +1126,13 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
         return const _PageScaffold(title: '墨墨词库', child: MaimemoWordbookPage());
       case 19:
         return const _PageScaffold(title: '浏览器', child: BrowserPage());
+      case 20:
+        return const SnakeGamePage();
+      case 23:
+        return const _PageScaffold(title: '五子棋', child: GomokuPage());
+      case 24:
+        // 代理页面：从主场景隔开，作为独立应用展示（独立 MaterialApp 上下文）
+        return const ProxyDashboardPage();
       case 10:
       case 11:
         // 沉浸考场或成绩解析页（外层已隐藏 AI 对话栏）
@@ -1280,8 +1325,14 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                     return ListView.builder(
                       controller: _chatScrollCtrl,
                       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                      itemCount: s.chatHistory.length,
-                      itemBuilder: (ctx, i) => _buildChatBubble(s.chatHistory[i], c.isLight),
+                      itemCount: s.chatHistory.length + (s.chatSending ? 1 : 0),
+                      itemBuilder: (ctx, i) {
+                        if (i < s.chatHistory.length) {
+                          final isTail = s.chatSending && i == s.chatHistory.length - 1 && s.chatHistory[i].role == 'ai';
+                          return _buildChatBubble(s.chatHistory[i], c.isLight, running: isTail);
+                        }
+                        return AgentDeepDivingRow(accent: c.primary, light: c.isLight);
+                      },
                     );
                   },
                 ),
@@ -1500,7 +1551,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
     });
   }
 
-  Widget _buildChatBubble(ChatMessage msg, bool isLight) {
+  Widget _buildChatBubble(ChatMessage msg, bool isLight, {bool running = false}) {
     final c = AppColors(isLight);
     final isUser = msg.role == 'user';
     final aiIconAsset = _getAiIconAsset(_state.effectiveChatConfig.model);
@@ -1544,44 +1595,24 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                   ),
             const SizedBox(height: 8),
           ],
-          // 思考过程（可折叠）
+          // 思考过程（仿 DeepSeek「Think」折叠行：标题 + 摘要 + 可展开正文）
           if (msg.reasoning != null && msg.reasoning!.isNotEmpty && msg.showReasoning) ...[
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: c.primaryBg,
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: c.primaryBorder),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  GestureDetector(
-                    onTap: () => setState(() => msg.reasoningExpanded = !msg.reasoningExpanded),
-                    child: Row(children: [
-                      Icon(
-                        msg.reasoningExpanded ? Icons.keyboard_arrow_down_rounded : Icons.keyboard_arrow_right_rounded,
-                        size: 14,
-                        color: c.primaryText.withValues(alpha: 0.85),
-                      ),
-                      const SizedBox(width: 2),
-                      Text('思考过程', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: c.primaryText)),
-                    ]),
-                  ),
-                  if (msg.reasoningExpanded) ...[
-                    const SizedBox(height: 4),
-                    Text(msg.reasoning!, style: TextStyle(fontSize: 11.5, color: c.textSecondary, height: 1.5)),
-                  ],
-                ],
-              ),
-            ),
-            const SizedBox(height: 8),
+            AgentThinkRow(text: msg.reasoning!, running: running, light: isLight),
+            const SizedBox(height: 6),
           ],
-          // Agent 工具调用步骤：在气泡上方单独展示（类似大厂 Agent UI）
+          // Agent 工具调用步骤：单行折叠行 + 命令/终端卡片（仿 deepseek ToolRow）
           if (msg.toolSteps.isNotEmpty) ...[
-            ...msg.toolSteps.map((ts) => _buildToolStepCard(ts, c)),
-            const SizedBox(height: 8),
+            ...msg.toolSteps.map((ts) => AgentToolRow(
+                  name: ts.name,
+                  label: ts.label,
+                  running: ts.running,
+                  done: ts.done,
+                  failed: ts.failed,
+                  output: ts.output,
+                  accent: c.primary,
+                  light: isLight,
+                )),
+            const SizedBox(height: 6),
           ],
           // 消息内容（支持 Markdown 渲染）
           if (msg.content.isNotEmpty)
@@ -1621,53 +1652,6 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
       const SizedBox(width: 8),
       Expanded(child: bubble),
     ]);
-  }
-
-  /// Agent 工具调用步骤卡片：类似大厂 Agent UI，运行中显示加载动画，完成显示对勾
-  Widget _buildToolStepCard(ToolStep ts, AppColors c) {
-    final Widget leading;
-    if (ts.running) {
-      leading = SizedBox(
-        width: 12,
-        height: 12,
-        child: CircularProgressIndicator(strokeWidth: 2, color: c.primary),
-      );
-    } else if (ts.failed) {
-      leading = Icon(Icons.error_rounded, size: 14, color: Colors.red);
-    } else {
-      leading = Icon(Icons.check_circle_rounded, size: 14, color: const Color(0xFF22C55E));
-    }
-    return Container(
-      width: double.infinity,
-      margin: const EdgeInsets.only(bottom: 4),
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-      decoration: BoxDecoration(
-        color: c.primaryBg,
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: c.primaryBorder),
-      ),
-      child: Row(children: [
-        // 工具调用标识：扳手图标（素材库 Icons.build，非 emoji）
-        Icon(Icons.build, size: 13, color: c.primaryText),
-        const SizedBox(width: 6),
-        leading,
-        const SizedBox(width: 6),
-        Expanded(
-          child: Text(
-            ts.label,
-            style: TextStyle(fontSize: 11.5, color: c.textSecondary),
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-          ),
-        ),
-        if (ts.running)
-          Text('运行中', style: TextStyle(fontSize: 10, color: c.primary))
-        else if (ts.failed)
-          Text('失败', style: TextStyle(fontSize: 10, color: Colors.red))
-        else
-          Text('完成', style: TextStyle(fontSize: 10, color: const Color(0xFF22C55E))),
-      ]),
-    );
   }
 
   /// R5: 简易 Markdown 解析：支持 **粗体**、*斜体*、~~删除线~~、`行内代码`、标题、列表、代码块、引用、链接
@@ -2061,7 +2045,20 @@ class _MoreSelectPageState extends State<_MoreSelectPage> {
           c: c,
           isMobile: isMobile,
           onHover: (h) => setState(() => _hoveredIdx = h ? i : (_hoveredIdx == i ? null : _hoveredIdx)),
-          onTap: () => widget.onSelect(item.$4),
+          onTap: () {
+            // 代理（page=24）作为独立子应用：桌面端弹独立窗口，移动端走主 App 内独立路由
+            if (item.$4 == 24) {
+              if (kIsWeb || !(Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
+                // 移动端：直接走主 App 内独立 MaterialApp
+                widget.onSelect(item.$4);
+                return;
+              }
+              // 桌面端：异步尝试启动独立子进程
+              _tryOpenProxyWindow();
+            } else {
+              widget.onSelect(item.$4);
+            }
+          },
         );
       },
     );

@@ -2,7 +2,7 @@
 library;
 
 import 'dart:convert';
-import 'dart:io' show Directory, File, Platform;
+import 'dart:io' show Directory, File, Platform, Process;
 import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -26,6 +26,8 @@ class _WordSpan {
 
 /// Agent 单次工具调用步骤（用于在 AI 气泡上方单独展示，类似大厂 Agent UI）
 class ToolStep {
+  /// 工具函数名（如 "search_web"、"operate_computer"）
+  String name;
   /// 展示文案，如 "生成 3 道翻译题"、"查询单词 hello"
   String label;
   /// 是否执行中（显示加载动画）
@@ -34,7 +36,9 @@ class ToolStep {
   bool done;
   /// 是否执行失败（显示错误）
   bool failed;
-  ToolStep({required this.label, this.running = true, this.done = false, this.failed = false});
+  /// 命令/工具执行的返回内容（终端卡片展示用，可为空）
+  String? output;
+  ToolStep({required this.name, required this.label, this.running = true, this.done = false, this.failed = false, this.output});
 }
 
 class ChatMessage {
@@ -668,7 +672,9 @@ class AppState extends ChangeNotifier {
           '只返回JSON数组，不要其他内容。';
     }
 
-    final maxTokens = (selectedLevel == 'zsb' || selectedType == 'reading') ? 8192 : 4096;
+    // 默认提档到 8192：deepseek 等推理模型的思考 token 会占用 max_tokens，
+    // 给足额度避免 JSON 输出被截断导致解析失败（优先保证能出题）
+    final maxTokens = (selectedLevel == 'zsb' || selectedType == 'reading') ? 8192 : 8192;
     final reply = await ApiService.callAI(
       [
         {'role': 'user', 'content': '请出题'}
@@ -1992,6 +1998,8 @@ class AppState extends ChangeNotifier {
           return await _toolGenerateQuestions(args);
         case 'generate_full_exam':
           return await _toolGenerateFullExam(args);
+        case 'submit_generated_questions':
+          return _toolSubmitGeneratedQuestions(args);
         case 'lookup_word':
           return _toolLookupWord(args);
         case 'analyze_words':
@@ -2022,6 +2030,8 @@ class AppState extends ChangeNotifier {
           return await _toolSearchWeb(args);
         case 'backup_data':
           return await _toolBackupData();
+        case 'operate_computer':
+          return _toolOperateComputer(args);
         default:
           return ToolExecResult(content: '未知工具：$name', ok: false);
       }
@@ -2099,6 +2109,99 @@ class AppState extends ChangeNotifier {
       );
     }
     return const ToolExecResult(content: '{"ok":false,"reason":"generate_failed"}', ok: false);
+  }
+
+  /// 将 AI 直接提交的题目内容（可能是 list / JSON 字符串 / 对象）自愈并归一化为 Question 列表。
+  /// 针对低参数模型输出的 malformed JSON，尽量提取可用的题目对象并纠正结构。
+  List<Question> _healSubmittedQuestions(dynamic raw, String defaultType, String defaultLevel) {
+    List<Map<String, dynamic>> items = [];
+    // 1) 字符串：可能是被模型当成字符串包住的 JSON
+    if (raw is String) {
+      final s = raw.trim();
+      if (s.isNotEmpty) {
+        final arr = ApiService.extractJsonArray(s);
+        if (arr != null) {
+          items = arr;
+        } else {
+          final obj = ApiService.extractJsonObject(s);
+          if (obj != null) {
+            final nested = obj['questions'] ?? obj['data'] ?? obj['items'];
+            if (nested is List) {
+              items = nested.whereType<Map<String, dynamic>>().toList();
+            } else if (nested is String) {
+              items = ApiService.extractJsonArray(nested) ?? [];
+            } else {
+              items = [obj];
+            }
+          }
+        }
+      }
+    } else if (raw is Map) {
+      final nested = raw['questions'] ?? raw['data'] ?? raw['items'];
+      if (nested is List) {
+        items = nested.whereType<Map<String, dynamic>>().toList();
+      } else if (nested is String) {
+        items = ApiService.extractJsonArray(nested) ?? [];
+      } else {
+        items = [Map<String, dynamic>.from(raw)];
+      }
+    } else if (raw is List) {
+      items = raw.whereType<Map<String, dynamic>>().toList();
+    }
+
+    final out = <Question>[];
+    for (final item in items) {
+      // 每道题可自带 type，缺省用外层 type
+      final type = qTypeFrom((item['type'] ?? defaultType).toString());
+      final level = (item['level'] as String?)?.isNotEmpty == true ? (item['level'] as String) : defaultLevel;
+      try {
+        final q = normalizeGeneratedQuestion(item, type, level);
+        // 判定是否有可用内容（避免全部字段为空的废题）
+        final hasContent = q.text.isNotEmpty ||
+            q.chinese.isNotEmpty ||
+            q.english.isNotEmpty ||
+            q.passage.isNotEmpty ||
+            q.question.isNotEmpty ||
+            (q.type == QType.choice && q.hasOptions) ||
+            (q.type == QType.reading && q.hasReading);
+        if (hasContent) out.add(q);
+      } catch (_) {
+        // 跳过无法解析的单题，尽量保留其余题目
+      }
+    }
+    return out;
+  }
+
+  Future<ToolExecResult> _toolSubmitGeneratedQuestions(Map<String, dynamic> args) async {
+    final defaultType = (args['type'] as String?) ?? 'translation';
+    final defaultLevel = (args['level'] as String?) ?? 'zsb';
+    final raw = args['questions'];
+    if (raw == null) {
+      return const ToolExecResult(content: '{"ok":false,"reason":"empty_questions"}', ok: false);
+    }
+    final healed = _healSubmittedQuestions(raw, defaultType, defaultLevel);
+    if (healed.isEmpty) {
+      return const ToolExecResult(
+        content: '{"ok":false,"reason":"invalid_questions"}',
+        ok: false,
+        actionLabel: '题目内容无法解析，请检查输出格式',
+      );
+    }
+    selectedType = defaultType;
+    selectedLevel = defaultLevel;
+    generatedQuestions = healed;
+    generatedQuestionIdx = 0;
+    lastQuestionSource = 'ai';
+    lastCustomReq = '';
+    lastQuestionCount = healed.length;
+    loadGeneratedQuestion();
+    _gotoAnswerPage();
+    notifyListeners();
+    return ToolExecResult(
+      content: '{"ok":true,"count":${healed.length},"type":"$defaultType","level":"$defaultLevel","source":"ai_submit"}',
+      ok: true,
+      actionLabel: '已生成 ${healed.length} 道${levelName(defaultLevel)}${qTypeName(qTypeFrom(defaultType))}，已放入答题区',
+    );
   }
 
   ToolExecResult _toolLookupWord(Map<String, dynamic> args) {
@@ -2437,6 +2540,82 @@ class AppState extends ChangeNotifier {
     }
   }
 
+  /// 直接操控电脑（仅桌面端生效）：
+  ///   operation: open_file / open_folder / open_url / launch_app / run_command
+  ///   target: 本地路径、应用名、网址或待执行命令
+  Future<ToolExecResult> _toolOperateComputer(Map<String, dynamic> args) async {
+    if (!Platform.isWindows && !Platform.isMacOS && !Platform.isLinux) {
+      return ToolExecResult(
+        content: '{"ok":false,"reason":"手机端暂不支持直接操控电脑"}',
+        ok: false,
+        actionLabel: '操控失败',
+      );
+    }
+    final op = ((args['operation'] as String?) ?? '').trim();
+    final target = ((args['target'] as String?) ?? '').trim();
+    if (target.isEmpty) {
+      return ToolExecResult(content: '{"ok":false,"reason":"缺少目标路径/应用/命令"}', ok: false);
+    }
+    final opLabel = switch (op) {
+      'open_file' => '打开文件',
+      'open_folder' => '打开文件夹',
+      'open_url' => '打开网址',
+      'launch_app' => '启动应用',
+      'run_command' => '运行命令',
+      _ => '操作电脑',
+    };
+    try {
+      String detail;
+      switch (op) {
+        case 'open_file':
+        case 'open_folder':
+        case 'open_url':
+          if (Platform.isWindows) {
+            final r = await Process.run('cmd', ['/c', 'start', '', target]);
+            detail = r.exitCode == 0 ? '已用默认程序打开 $target' : '打开失败：${r.stderr}';
+          } else if (Platform.isMacOS) {
+            final r = await Process.run('open', [target]);
+            detail = r.exitCode == 0 ? '已打开 $target' : '打开失败：${r.stderr}';
+          } else {
+            final r = await Process.run('xdg-open', [target]);
+            detail = r.exitCode == 0 ? '已打开 $target' : '打开失败：${r.stderr}';
+          }
+        case 'launch_app':
+          if (Platform.isWindows) {
+            final r = await Process.run('cmd', ['/c', 'start', '', target]);
+            detail = r.exitCode == 0 ? '已启动应用 $target' : '启动失败：${r.stderr}';
+          } else if (Platform.isMacOS) {
+            final r = await Process.run('open', ['-a', target]);
+            detail = r.exitCode == 0 ? '已启动应用 $target' : '启动失败：${r.stderr}';
+          } else {
+            final r = await Process.run(target, const []);
+            detail = r.exitCode == 0 ? '已启动应用 $target' : '启动失败：${r.stderr}';
+          }
+        case 'run_command':
+          final r = Platform.isWindows
+              ? await Process.run('cmd', ['/c', target])
+              : await Process.run('/bin/sh', ['-c', target]);
+          final out = r.stdout.toString().trim();
+          detail = r.exitCode == 0
+              ? '命令执行成功${out.isEmpty ? '' : '：\n$out'}'
+              : '命令执行失败：${r.stderr}';
+        default:
+          return ToolExecResult(content: '{"ok":false,"reason":"不支持的操作 $op"}', ok: false);
+      }
+      return ToolExecResult(
+        content: jsonEncode({'ok': true, 'operation': op, 'target': target, 'detail': detail}),
+        ok: true,
+        actionLabel: '已完成$opLabel',
+      );
+    } catch (e) {
+      return ToolExecResult(
+        content: '{"ok":false,"reason":"${e.toString()}"}',
+        ok: false,
+        actionLabel: '$opLabel失败',
+      );
+    }
+  }
+
   /// Agent 循环：发送用户消息 → AI 返回 tool_calls → 执行工具 → 把结果喂回 AI → 直到 AI 返回纯文本
   /// 返回最终回复内容；如果 agent 不可用或失败，返回 null，调用方回退到原流程。
   /// 带 UI 实时反馈：占位消息显示“正在思考→正在出题→流式输出回复”。
@@ -2446,7 +2625,8 @@ class AppState extends ChangeNotifier {
     if (!AgentService.modelSupportsTools(cfg.model)) return null;
   
     // 创建占位 AI 消息，实时更新（让用户看到 Agent 在做什么）
-    final placeholder = ChatMessage(role: 'ai', content: '正在思考…', showReasoning: true, reasoning: '');
+    // 思考过程是否显示跟随"显示思考过程"开关，关闭时不再展示思考链
+    final placeholder = ChatMessage(role: 'ai', content: '正在思考…', showReasoning: chatShowReasoning, reasoning: '');
     chatHistory.add(placeholder);
     _notifyChatUpdate();
   
@@ -2561,10 +2741,15 @@ class AppState extends ChangeNotifier {
           final args = AgentService.parseArgs(tc.arguments);
           // 工具执行前：在气泡上方添加"调用工具"步骤卡片（运行中）
           final runningLabel = _toolRunningLabel(tc.name, args);
-          final step = ToolStep(label: runningLabel.isEmpty ? _toolDefaultLabel(tc.name) : runningLabel);
+          final step = ToolStep(name: tc.name, label: runningLabel.isEmpty ? _toolDefaultLabel(tc.name) : runningLabel);
           placeholder.toolSteps.add(step);
           _notifyChatUpdate();
           final result = await executeTool(tc.name, args);
+          // 命令 / 联网等返回了打印内容时，保存到步骤，供终端卡片展开查看
+          if (tc.name == 'operate_computer' || tc.name == 'search_web') {
+            final raw = result.content;
+            if (raw.isNotEmpty) step.output = raw.length > 2400 ? '${raw.substring(0, 2400)}\n…(已截断)' : raw;
+          }
           // 工具执行后：更新该步骤状态与文案
           step.running = false;
           if (result.ok && result.actionLabel.isNotEmpty) {
@@ -2607,6 +2792,12 @@ class AppState extends ChangeNotifier {
         final type = (args['type'] as String?) ?? 'translation';
         final count = (args['count'] as num?)?.toInt() ?? 1;
         return '正在生成 $count 道${qTypeName(qTypeFrom(type))}';
+      case 'submit_generated_questions':
+        final qArgs = args['questions'];
+        final n = qArgs is List
+            ? qArgs.length
+            : (qArgs is Map && qArgs['questions'] is List ? (qArgs['questions'] as List).length : 0);
+        return n > 0 ? '正在整理并提交 $n 道题' : '正在生成题目';
       case 'generate_full_exam':
         return '正在生成全卷（约1-2分钟）';
       case 'lookup_word':
@@ -2640,6 +2831,18 @@ class AppState extends ChangeNotifier {
         return '正在联网搜索';
       case 'backup_data':
         return '正在备份数据';
+      case 'operate_computer':
+        final op = (args['operation'] as String?) ?? '';
+        final target = (args['target'] as String?) ?? '';
+        final desc = switch (op) {
+          'open_file' => '打开文件 ${target.isNotEmpty ? '"$target"' : ''}',
+          'open_folder' => '打开文件夹 ${target.isNotEmpty ? '"$target"' : ''}',
+          'launch_app' => '启动应用 ${target.isNotEmpty ? '"$target"' : ''}',
+          'open_url' => '打开网址 $target',
+          'run_command' => '运行命令 ${target.isNotEmpty ? '"$target"' : ''}',
+          _ => '正在操作电脑',
+        };
+        return desc.trim();
       default:
         return '正在处理';
     }
@@ -2650,6 +2853,8 @@ class AppState extends ChangeNotifier {
     switch (name) {
       case 'generate_questions':
         return '生成练习题';
+      case 'submit_generated_questions':
+        return '生成题目';
       case 'generate_full_exam':
         return '生成综合模拟全卷';
       case 'lookup_word':
@@ -2682,6 +2887,8 @@ class AppState extends ChangeNotifier {
         return '联网搜索';
       case 'backup_data':
         return '备份数据';
+      case 'operate_computer':
+        return '操控电脑';
       default:
         return '调用工具';
     }

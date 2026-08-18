@@ -64,6 +64,50 @@ class AgentService {
         {
           'type': 'function',
           'function': {
+            'name': 'submit_generated_questions',
+            'description':
+                '由 AI 直接生成全部类型的英语题目，并把题目内容以 JSON 数组形式提交到答题区供用户作答。'
+                '当用户要求"出题/做题/练习"且你希望直接产出题目内容（而非调用题库）时，由你自己编写题目并用这个工具提交。'
+                '题目内容必须符合各题型要求的 JSON 结构；系统会自动校验并修复格式，低参数模型输出不规范也会被归一化。',
+            'parameters': {
+              'type': 'object',
+              'properties': {
+                'type': {
+                  'type': 'string',
+                  'enum': [
+                    'translation',
+                    'choice',
+                    'reading',
+                    'grammar',
+                    'writing',
+                    'cloze',
+                    'dialogue',
+                    'bankedCloze',
+                    'en2zh5',
+                  ],
+                  'description': '题型（缺省为每道题目自身的 type 字段）。translation=翻译题, choice=选择题, reading=阅读理解, grammar=语法填空, writing=写作题, cloze=完形填空, dialogue=补全对话, bankedCloze=选词填空, en2zh5=英译汉',
+                },
+                'level': {
+                  'type': 'string',
+                  'enum': ['easy', 'medium', 'hard', 'cet4', 'zsb'],
+                  'description': '难度：easy=简单, medium=中等, hard=困难, cet4=四级, zsb=专升本。默认 zsb',
+                },
+                'questions': {
+                  'type': 'array',
+                  'description': '题目内容数组。每道题是一个 JSON 对象，可含有：type(可选,缺省用外层 type)/level/chinese/english/question/passage/options/answer/analysis/knowledge 等字段。你必须依据题目类型按下面"提交题型 JSON 结构"约定的字段生成。',
+                  'items': {
+                    'type': 'object',
+                    'additionalProperties': true,
+                  },
+                },
+              },
+              'required': ['questions'],
+            },
+          },
+        },
+        {
+          'type': 'function',
+          'function': {
             'name': 'generate_full_exam',
             'description': '生成完整的专升本综合模拟全卷（76题/7题型/150分/120分钟）并进入考场。当用户要求生成全卷、模拟考试、套卷时调用。',
             'parameters': {
@@ -281,6 +325,28 @@ class AgentService {
             'parameters': {'type': 'object', 'properties': {}, 'required': []},
           },
         },
+        {
+          'type': 'function',
+          'function': {
+            'name': 'operate_computer',
+            'description': '直接操控用户的电脑（仅桌面端）：打开文件/文件夹、用默认程序打开网址、启动应用、执行系统命令。当用户要求"打开某个文件/文件夹/软件/网页"或"帮我执行一条命令"时调用。',
+            'parameters': {
+              'type': 'object',
+              'properties': {
+                'operation': {
+                  'type': 'string',
+                  'enum': ['open_file', 'open_folder', 'open_url', 'launch_app', 'run_command'],
+                  'description': '操作类型：open_file=用默认程序打开文件, open_folder=在资源管理器中打开文件夹, open_url=用默认浏览器打开网址, launch_app=启动应用程序, run_command=执行系统命令',
+                },
+                'target': {
+                  'type': 'string',
+                  'description': '目标：文件/文件夹的完整路径，或应用名，或完整网址（open_url 时需带 http/https），或待执行的命令（run_command 时）。',
+                },
+              },
+              'required': ['operation', 'target'],
+            },
+          },
+        },
       ];
 
   /// Agent 系统 prompt（动态生成，注入当前题目上下文，避免 AI 凭空猜测）
@@ -299,6 +365,7 @@ class AgentService {
 |-----------|-------------|
 | "出题/做题/练习/来一道" + 题型/数量 | generate_questions（useBank=true 默认走题库） |
 | "出题/做题" + "不要题库/AI出题/新题/用AI生成" | generate_questions（useBank=false 强制AI生成） |
+| 需要即时拿到用户自定义题型效果（翻译/选择/阅读/语法/写作/完形/对话/选词/英译汉），或 AI 直接产出多道题 | submit_generated_questions |
 | "全卷/模拟考试/套卷/76题" | generate_full_exam |
 | "xx什么意思/怎么读/怎么用"（xx是英文单词） | lookup_word |
 | "剖析/分析单词/标注释义" | analyze_words |
@@ -315,6 +382,7 @@ class AgentService {
 | "查看/修改设置、打开/关闭某选项、换主题/模型/温度" | config_settings |
 | "实时信息、新闻、天气、联网核实" | search_web |
 | "备份数据、导出备份" | backup_data |
+| "打开某文件/文件夹/软件/网页，执行某条命令" | operate_computer |
 
 **重要**：
 - 用户说"出题"但没指明题型 → 调 generate_questions，type 用 "translation"（翻译题最常见），并在回复里告知可指定其他题型
@@ -329,6 +397,14 @@ class AgentService {
 
 ## 难度枚举说明
 - easy=简单, medium=中等, hard=困难, cet4=四级, zsb=专升本
+
+## 提交题型 JSON 结构（工具 submit_generated_questions 的 questions 数组中每道题的字段约定）
+- 翻译题 / 英译汉(en2zh5) / 语法填空(grammar) / 默写 / 写作(writing)：`{"chinese": "中文内容或题目要求", "english": "英文内容或范文", "knowledge": ["知识点"]}`；语法填空的 english 中用 ____ 表示空格
+- 选择题(choice)：`{"question": "英文题干", "options": ["选项A","选项B","选项C","选项D"], "answer": "B", "analysis": "解析", "knowledge": ["知识点"]}`
+- 阅读理解(reading)：`{"passage": "英文短文", "questions": [{"question": "问题", "options": ["A","B","C","D"], "answer": "A", "analysis": "解析", "knowledge": ["知识点"]}]}`
+- 完形填空(cloze)：`{"passage": "带空格的短文(用 ____ 表示空格)", "options": ["每空选项数组"], "answers": ["A","B",...], "analysis": "解析"}`（若不确定选项结构，可退化为 `{"chinese": "……", "english": "带空格的短文"}`）
+- 补全对话(dialogue)：`{"dialogue": "对话", "questions": [{"question": "问题", "answer": "答案", "analysis": "解析"}]}`（可退化为翻译题结构）
+- 若某题产出不规范或字段缺失，也直接按以上字段提交，系统会自动归一化修复并放入答题区。
 
 ## 当前题目上下文（已注入，无需调用 get_current_question）
 - 题型：$qType（$dirDesc）
@@ -345,9 +421,8 @@ class AgentService {
   /// 判断模型是否可能支持 function calling
   /// （粗略判断：主流商用模型基本都支持，本地/小模型可能不支持）
   static bool modelSupportsTools(String modelName) {
-    final m = modelName.toLowerCase();
-    // 已知不支持 tools 的模型（示例，按需补充）
-    if (m.contains('deepseek-v4-flash')) return false;
+    // DeepSeek 为 OpenAI 兼容接口，支持 function calling；默认均支持工具。
+    // 若将来确有模型不支持 tools，再在此按需补充排除项。
     return true;
   }
 

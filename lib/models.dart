@@ -510,6 +510,133 @@ class ApiProfile {
       );
 }
 
+/// HTTP 代理配置（Clash 等本地代理，应用于 AI API 请求）
+class ProxyConfig {
+  /// 是否启用代理
+  bool enabled;
+  /// 代理主机（如 127.0.0.1）
+  String host;
+  /// 代理端口（如 7890）
+  String port;
+  /// 代理类型：'http' | 'socks5'
+  String type;
+
+  ProxyConfig({
+    this.enabled = false,
+    this.host = '127.0.0.1',
+    this.port = '7890',
+    this.type = 'http',
+  });
+
+  bool get ready => host.trim().isNotEmpty && int.tryParse(port.trim()) != null;
+
+  int get portNum => int.tryParse(port.trim()) ?? 0;
+
+  /// 是否已有代理信息（不管是否启用，用于前端展示）
+  bool get hasInfo => host.trim().isNotEmpty && port.trim().isNotEmpty;
+
+  Map<String, dynamic> toJson() => {
+        'enabled': enabled,
+        'host': host,
+        'port': port,
+        'type': type,
+      };
+
+  factory ProxyConfig.fromJson(Map<String, dynamic> j) => ProxyConfig(
+        enabled: (j['enabled'] ?? false) as bool,
+        host: (j['host'] ?? '127.0.0.1') as String,
+        port: (j['port'] ?? '7890') as String,
+        type: (j['type'] ?? 'http') as String,
+      );
+}
+
+/// 代理运行模式（对应 mihomo 的 mode 字段）
+enum ProxyMode {
+  rule,   // 规则模式
+  global, // 全局模式
+  direct; // 直连模式
+
+  static ProxyMode fromName(String s) {
+    switch (s) {
+      case 'global':
+        return ProxyMode.global;
+      case 'direct':
+        return ProxyMode.direct;
+      default:
+        return ProxyMode.rule;
+    }
+  }
+}
+
+/// 代理订阅源（订阅链接或本地文件导入）
+class ProxySubscription {
+  String id;
+  String name;
+  String url;       // 订阅 URL（本地导入时为空）
+  String content;   // 订阅原始内容（可能是 base64 节点列表或完整 YAML）
+  String sourceType; // 'url' | 'file'
+  int updatedAt;
+
+  ProxySubscription({
+    required this.id,
+    required this.name,
+    this.url = '',
+    this.content = '',
+    this.sourceType = 'url',
+    int? updatedAt,
+  }) : updatedAt = updatedAt ?? DateTime.now().millisecondsSinceEpoch;
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'name': name,
+        'url': url,
+        'content': content,
+        'sourceType': sourceType,
+        'updatedAt': updatedAt,
+      };
+
+  factory ProxySubscription.fromJson(Map<String, dynamic> j) => ProxySubscription(
+        id: (j['id'] ?? '').toString(),
+        name: (j['name'] ?? '').toString(),
+        url: (j['url'] ?? '').toString(),
+        content: (j['content'] ?? '').toString(),
+        sourceType: (j['sourceType'] ?? 'url').toString(),
+        updatedAt: ((j['updatedAt'] ?? 0) as num).toInt(),
+      );
+}
+
+/// 代理节点（从 mihomo API 实时获取，不持久化）
+class ProxyNode {
+  String name;
+  String type;    // 协议类型：Shadowsocks / Vmess / Trojan / ...
+  String group;   // 所属策略组名
+  bool isNow;     // 是否当前选中
+  int? delay;     // 延迟（毫秒）
+
+  ProxyNode({
+    required this.name,
+    this.type = '',
+    this.group = '',
+    this.isNow = false,
+    this.delay,
+  });
+}
+
+/// 策略组（从 mihomo API 实时获取）
+class ProxyGroup {
+  String name;
+  String type;    // select / url-test / fallback / load-balance
+  String now;     // 当前选中节点名
+  List<String> all; // 组内全部可选节点
+
+  ProxyGroup({
+    required this.name,
+    this.type = 'select',
+    this.now = '',
+    this.all = const [],
+  });
+}
+
 /// 学习记录
 class StudyRecord {
   int timestamp;

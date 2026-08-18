@@ -3,8 +3,11 @@ library;
 
 import 'dart:convert';
 import 'dart:async';
+import 'dart:io';
 import 'package:http/http.dart' as http;
+import 'package:http/io_client.dart';
 import '../models.dart';
+import 'storage.dart';
 
 /// AI 非流式调用结果：content 为 null 表示请求失败；finishReason 用于检测输出截断（'length'）
 class AIResult {
@@ -74,6 +77,22 @@ class ApiService {
     ];
   }
 
+  /// 返回当前请求应使用的 http.Client。
+  /// 若用户在代理页启用了 Clash 等 HTTP 代理，则返回走代理的客户端；否则用默认客户端。
+  static http.Client _requestClient() {
+    try {
+      final cfg = Storage.loadProxyConfig();
+      if (cfg.enabled && cfg.ready && cfg.host.trim().isNotEmpty) {
+        final hc = HttpClient()
+          ..findProxy = (_) => 'PROXY ${cfg.host.trim()}:${cfg.port.trim()};DIRECT';
+        return IOClient(hc);
+      }
+    } catch (_) {
+      // 代理读取失败时回退到直连
+    }
+    return http.Client();
+  }
+
   /// 非流式调用，返回完整内容文本；失败返回 null
   /// extraParams：额外请求体参数（透传到请求体顶层，仅限调用方按需传入）
   static Future<String?> callAI(
@@ -117,7 +136,7 @@ class ApiService {
       if (extraParams != null && extraParams.isNotEmpty) {
         body.addAll(extraParams);
       }
-      final resp = await http
+      final resp = await _requestClient()
           .post(
             Uri.parse(cfg.effectiveUrl),
             headers: {
@@ -126,7 +145,7 @@ class ApiService {
             },
             body: jsonEncode(body),
           )
-          .timeout(const Duration(seconds: 120));
+          .timeout(const Duration(seconds: 300));
       if (resp.statusCode != 200) {
         final errBody = utf8.decode(resp.bodyBytes, allowMalformed: true).trim();
         lastError = 'HTTP ${resp.statusCode}${errBody.length <= 200 ? '：$errBody' : ''}';
@@ -142,7 +161,7 @@ class ApiService {
       final msg = choice['message'] as Map<String, dynamic>?;
       return AIResult((msg?['content'] as String?) ?? '', choice['finish_reason']?.toString());
     } on TimeoutException catch (_) {
-      lastError = '请求超时（120 秒）';
+      lastError = '请求超时（300 秒）';
       return const AIResult(null, null);
     } catch (e) {
       lastError = e.toString();
@@ -185,7 +204,7 @@ class ApiService {
       if (extraParams != null && extraParams.isNotEmpty) {
         body.addAll(extraParams);
       }
-      final resp = await http
+      final resp = await _requestClient()
           .post(
             Uri.parse(cfg.effectiveUrl),
             headers: {
@@ -251,9 +270,6 @@ class ApiService {
     return resp.content ?? '';
   }
 
-  /// 复用静态 http.Client（流式请求），避免每次请求新建不关闭
-  static final http.Client _sharedClient = http.Client();
-
   /// 流式对话（SSE），支持 tools。增量累积 tool_calls，返回 AIResponse。
   static Future<AIResponse> streamChatWithTools(
     List<Map<String, dynamic>> messages,
@@ -296,7 +312,7 @@ class ApiService {
         'Authorization': 'Bearer ${cfg.key}',
       });
       req.body = jsonEncode(body);
-      final streamed = await _sharedClient.send(req).timeout(const Duration(seconds: 120));
+      final streamed = await _requestClient().send(req).timeout(const Duration(seconds: 120));
       if (streamed.statusCode != 200) return const AIResponse(content: null, toolCalls: []);
       final lines = streamed.stream
           .transform(utf8.decoder)
@@ -579,7 +595,7 @@ class ApiService {
     required String key,
     required String query,
   }) async {
-    final resp = await http
+    final resp = await _requestClient()
         .post(
           Uri.parse(url),
           headers: {

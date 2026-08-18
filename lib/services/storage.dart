@@ -118,6 +118,10 @@ class Storage {
   static int loadMaimemoSyncedCount() => _getInt('maimemoSyncedCount', 0);
   static void saveMaimemoSyncedCount(int v) => _setInt('maimemoSyncedCount', v);
 
+  // ===== 贪吃蛇游戏最高分 =====
+  static int loadSnakeHighScore() => _getInt('snakeHighScore', 0);
+  static void saveSnakeHighScore(int v) => _setInt('snakeHighScore', v);
+
   // ===== 墨墨词库 =====
   static List<WordBookItem> loadMaimemoWordbook() {
     final s = _get('maimemoWordbook', '');
@@ -214,6 +218,43 @@ class Storage {
   /// 'underline' = 灰色下划线 | 'pill' = 紫色渐变胶囊
   static String loadNavIndicator() => _get('navIndicator', 'underline');
   static void saveNavIndicator(String v) => _set('navIndicator', v);
+
+  // ===== HTTP 代理（Clash 等） =====
+  static ProxyConfig loadProxyConfig() {
+    final j = _get('proxyConfig', '');
+    if (j.isEmpty) return ProxyConfig();
+    try {
+      return ProxyConfig.fromJson(jsonDecode(j) as Map<String, dynamic>);
+    } catch (_) {
+      return ProxyConfig();
+    }
+  }
+
+  static void saveProxyConfig(ProxyConfig c) {
+    _set('proxyConfig', jsonEncode(c.toJson()));
+  }
+
+  // ===== 代理订阅（复刻 Clash） =====
+  static List<ProxySubscription> loadProxySubscriptions() {
+    final s = _get('proxySubscriptions', '');
+    if (s.isEmpty) return [];
+    try {
+      final list = jsonDecode(s) as List;
+      return list.whereType<Map<String, dynamic>>().map(ProxySubscription.fromJson).toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
+  static void saveProxySubscriptions(List<ProxySubscription> list) {
+    _set('proxySubscriptions', jsonEncode(list.map((e) => e.toJson()).toList()));
+  }
+
+  static String loadProxyMode() => _get('proxyMode', 'rule');
+  static void saveProxyMode(String v) => _set('proxyMode', v);
+
+  static String loadSelectedProxyNode() => _get('selectedProxyNode', '');
+  static void saveSelectedProxyNode(String v) => _set('selectedProxyNode', v);
 
   // ===== 收藏 =====
   static List<Favorite> loadFavorites() {
