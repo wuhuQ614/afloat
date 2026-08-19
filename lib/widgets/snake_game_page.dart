@@ -1,13 +1,16 @@
 /// 贪吃蛇小游戏：全屏沉浸式页面
+/// 架构：Dart 负责 UI（棋盘/蛇身/食物/方向键/设置菜单渲染），
+///       C++（snake_logic 库）负责游戏逻辑（方向队列/碰撞/得分/速度），
+///       通过 dart:ffi 每帧驱动逻辑并读取状态快照进行渲染。
 /// - 电脑端：仅键盘操作（方向键 / WASD），不显示屏幕方向键
 /// - 手机端：显示 D-pad 方向键，支持触屏操作
-/// - 渲染：Ticker 驱动（跟随屏幕刷新率，120Hz 显示器即 120 帧），蛇身平滑插值移动
 library;
 
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
+import '../services/snake_logic.dart' show SnakeLogic, SnakeSnapshot;
 import '../services/storage.dart';
 import '../state.dart' show AppScope;
 import '../theme_colors.dart' show AppColors;
@@ -27,29 +30,37 @@ class _SnakeGamePageState extends State<SnakeGamePage>
   static const int _cols = 20; // 网格列数
   static const int _rows = 20; // 网格行数
 
-  // 逻辑蛇（头在 index 0，整格坐标）
-  final List<Offset> _snake = [];
-  // 上一次逻辑步进的蛇（用于两次步进之间插值，实现 120fps 平滑移动）
-  final List<Offset> _prevSnake = [];
+  // ===== C++ 逻辑库（蛇的状态/移动/碰撞/得分全在 C++ 中） =====
+  SnakeLogic? _logic;
+  bool _logicError = false; // 库加载失败标记
+
+  // ===== 渲染用数据（每帧从 C++ 快照同步） =====
+  List<Offset> _snake = []; // 当前格坐标（头在 0）
+  List<Offset> _prevSnake = []; // 上一逻辑步坐标（用于插值）
   Offset _food = const Offset(8, 8);
-  Offset _dir = const Offset(1, 0); // 当前移动方向
-  Offset _pendingDir = const Offset(1, 0); // 缓冲方向（防止一帧内连续反向）
-  bool _playing = false; // 进行中
+  double _moveProgress = 1.0; // 本次移动插值进度 0~1
+
+  // ===== UI 状态（从快照同步） =====
+  bool _playing = false;
   bool _paused = false;
   bool _over = false;
   int _score = 0;
   int _highScore = 0;
-  Duration _tick = const Duration(milliseconds: 180); // 逻辑步进间隔
+  bool _lastSyncPaused = false;
+  bool _lastSyncOver = false;
+  int _lastSyncScore = -1;
 
-  // ===== 120fps 渲染 =====
+  // ===== 渲染循环 =====
   late final Ticker _ticker;
   Duration? _lastFrameTime; // 上一帧时间（用于计算帧间隔）
-  Duration _logicElapsed = Duration.zero; // 距上次逻辑步进的累积时间
-  double _moveProgress = 1.0; // 本次移动插值进度 0~1
   // FPS 统计
   int _frames = 0;
   Duration _fpsAccum = Duration.zero;
   double _fps = 0;
+  // 性能：帧信号仅驱动棋盘区域重建（避免整页 setState 拖累帧率）
+  final ValueNotifier<int> _frameSignal = ValueNotifier<int>(0);
+  final ValueNotifier<double> _fpsNotifier = ValueNotifier<double>(0);
+  int _pulseTime = 0; // 食物脉动累计时间（微秒）
 
   final FocusNode _focusNode = FocusNode();
 
@@ -57,57 +68,79 @@ class _SnakeGamePageState extends State<SnakeGamePage>
   void initState() {
     super.initState();
     _highScore = Storage.loadSnakeHighScore();
-    _resetSnake();
-    _ticker = createTicker(_onFrame); // 游戏开始时 start
+    try {
+      _logic = SnakeLogic(_highScore);
+      _syncFromLogic(); // 初始快照
+    } catch (_) {
+      _logicError = true;
+    }
+    _ticker = createTicker(_onFrame);
   }
 
   @override
   void dispose() {
+    _logic?.dispose();
     _ticker.dispose();
+    _frameSignal.dispose();
+    _fpsNotifier.dispose();
     _focusNode.dispose();
     super.dispose();
   }
 
-  void _resetSnake() {
-    _snake
-      ..clear()
-      ..addAll([const Offset(10, 10), const Offset(9, 10), const Offset(8, 10)]);
-    _dir = const Offset(1, 0);
-    _pendingDir = const Offset(1, 0);
-    _score = 0;
-    _tick = const Duration(milliseconds: 180);
-    _food = _randomFreeCell();
-    _over = false;
-    _paused = false;
-    _moveProgress = 1.0;
-    _logicElapsed = Duration.zero;
-  }
+  /// 从 C++ 快照同步渲染数据与 UI 状态（每帧调用）
+  void _syncFromLogic() {
+    final logic = _logic;
+    if (logic == null) return;
+    final SnakeSnapshot s = logic.snapshot();
+    _moveProgress = s.moveProgress;
+    _food = Offset(s.foodX.toDouble(), s.foodY.toDouble());
 
-  /// 在非蛇身位置随机生成食物
-  Offset _randomFreeCell() {
-    final occupied = _snake.toSet();
-    final free = <Offset>[];
-    for (var x = 0; x < _cols; x++) {
-      for (var y = 0; y < _rows; y++) {
-        final p = Offset(x.toDouble(), y.toDouble());
-        if (!occupied.contains(p)) free.add(p);
-      }
+    final (cx, cy, px, py) = logic.snakePos(s.snakeLen);
+    _snake = List.generate(
+        s.snakeLen, (i) => Offset(cx[i].toDouble(), cy[i].toDouble()));
+    _prevSnake = List.generate(
+        s.snakeLen, (i) => Offset(px[i].toDouble(), py[i].toDouble()));
+
+    // 状态变化检测（仅变化时 setState，避免整页每帧重建）
+    final scoreChanged = s.score != _lastSyncScore;
+    final pausedChanged = (s.paused == 1) != _lastSyncPaused;
+    final overChanged = (s.over == 1) != _lastSyncOver;
+    _score = s.score;
+    _playing = s.playing == 1;
+    _paused = s.paused == 1;
+    _over = s.over == 1;
+    _highScore = s.highScore;
+    _lastSyncScore = s.score;
+    _lastSyncPaused = _paused;
+    _lastSyncOver = _over;
+
+    // 游戏结束：停止渲染循环并持久化最高分
+    if (overChanged && _over) {
+      _ticker.stop();
+      Storage.saveSnakeHighScore(_highScore);
+      setState(() {});
+      return;
     }
-    if (free.isEmpty) return const Offset(0, 0);
-    return free[math.Random().nextInt(free.length)];
+    if (scoreChanged || pausedChanged) setState(() {});
   }
 
   void _start() {
-    _resetSnake();
-    setState(() => _playing = true);
+    final logic = _logic;
+    if (logic == null) return;
+    logic.start();
+    _syncFromLogic();
+    setState(() {});
     _focusNode.requestFocus();
     _lastFrameTime = null;
     if (!_ticker.isActive) _ticker.start();
   }
 
   void _togglePause() {
-    if (!_playing || _over) return;
-    setState(() => _paused = !_paused);
+    final logic = _logic;
+    if (logic == null || !_playing || _over) return;
+    logic.togglePause();
+    _syncFromLogic();
+    setState(() {});
     if (_paused) {
       _ticker.stop();
     } else {
@@ -117,82 +150,42 @@ class _SnakeGamePageState extends State<SnakeGamePage>
     }
   }
 
-  /// 每帧回调：驱动逻辑步进 + 插值渲染（跟随屏幕刷新率）
+  /// 每帧回调：驱动 C++ 逻辑步进 + 同步状态渲染（跟随屏幕刷新率）
   void _onFrame(Duration elapsed) {
     final dt = _lastFrameTime == null
         ? Duration.zero
         : elapsed - _lastFrameTime!;
     _lastFrameTime = elapsed;
 
-    // FPS 统计（每秒更新一次）
+    // FPS 统计（每秒更新一次，仅重建 FPS 角标）
     _frames++;
     _fpsAccum += dt;
     if (_fpsAccum >= const Duration(seconds: 1)) {
       final s = _fpsAccum.inMicroseconds / 1000000.0;
-      setState(() {
-        _fps = _frames / s;
-        _frames = 0;
-        _fpsAccum = Duration.zero;
-      });
+      _fps = _frames / s;
+      _frames = 0;
+      _fpsAccum = Duration.zero;
+      _fpsNotifier.value = _fps;
     }
 
-    if (!_playing || _paused || _over) return;
-
-    // 累积逻辑时间，满足步进间隔则执行一步
-    _logicElapsed += dt;
-    while (_logicElapsed >= _tick) {
-      _logicElapsed -= _tick;
-      _stepLogic();
-      if (_over) break;
-    }
+    if (_logic == null) return;
     if (_playing && !_paused && !_over) {
-      setState(() {
-        _moveProgress =
-            (_logicElapsed.inMicroseconds / _tick.inMicroseconds).clamp(0.0, 1.0);
-      });
-    }
-  }
-
-  /// 一步逻辑移动（纯逻辑，渲染由 _onFrame 驱动）
-  void _stepLogic() {
-    _prevSnake
-      ..clear()
-      ..addAll(_snake);
-    _dir = _pendingDir;
-    final head = _snake.first + _dir;
-    // 撞墙
-    if (head.dx < 0 || head.dx >= _cols || head.dy < 0 || head.dy >= _rows) {
-      _gameOver();
-      return;
-    }
-    // 撞自己（尾巴即将移开时不算撞）
-    final willMove = !(head == _snake.last);
-    if (willMove && _snake.sublist(0, _snake.length - 1).contains(head)) {
-      _gameOver();
-      return;
-    }
-    _snake.insert(0, head);
-    if (head == _food) {
-      _score += 10;
-      // 速度随得分提升
-      if (_score % 50 == 0 && _tick > const Duration(milliseconds: 90)) {
-        _tick = Duration(milliseconds: math.max(90, 180 - _score ~/ 10 * 6));
+      // 食物脉动时间（与旧版一致的累计式相位）
+      _pulseTime += dt.inMicroseconds;
+      // 将帧间隔传给 C++ 逻辑，内部累积步进
+      _logic!.advance(dt.inMicroseconds / 1000.0);
+      _syncFromLogic();
+      if (_playing && !_paused && !_over) {
+        _frameSignal.value++; // 仅重建棋盘区域
       }
-      _food = _randomFreeCell();
-    } else {
-      _snake.removeLast();
     }
   }
 
-  void _gameOver() {
-    _playing = false;
-    _over = true;
-    _ticker.stop();
-    if (_score > _highScore) {
-      _highScore = _score;
-      Storage.saveSnakeHighScore(_highScore);
-    }
-    setState(() {});
+  /// 转向（由 C++ 内部做方向队列缓冲与反向检测）
+  void _turn(Offset newDir) {
+    final logic = _logic;
+    if (logic == null) return;
+    logic.turn(newDir.dx.round(), newDir.dy.round());
   }
 
   /// 第 i 节的渲染位置（在两次逻辑步进之间做平滑插值）
@@ -201,16 +194,6 @@ class _SnakeGamePageState extends State<SnakeGamePage>
     final prev = i < _prevSnake.length ? _prevSnake[i] : cur;
     final t = Curves.easeOut.transform(_moveProgress);
     return Offset.lerp(prev, cur, t) ?? cur;
-  }
-
-  /// 键盘/方向按键：转换为移动方向（禁止直接反向）
-  void _turn(Offset newDir) {
-    if (!_playing || _paused || _over) return;
-    // 反向检测：_dir 是当前实际方向
-    if (newDir == -_dir) return;
-    // 同一方向忽略
-    if (newDir == _pendingDir) return;
-    setState(() => _pendingDir = newDir);
   }
 
   KeyEventResult _onKey(FocusNode node, KeyEvent event) {
@@ -257,197 +240,221 @@ class _SnakeGamePageState extends State<SnakeGamePage>
 
     return Scaffold(
       backgroundColor: c.bg,
-      body: Focus(
-        focusNode: _focusNode,
-        autofocus: true,
-        onKeyEvent: _onKey,
-        child: SafeArea(
-          child: Column(
-            children: [
-              // 顶部栏：返回 + 标题 + FPS(仅电脑端游戏中) + 得分/最高分 + 暂停
-              Padding(
-                padding: const EdgeInsets.fromLTRB(12, 8, 16, 4),
-                child: Row(
+      body: _logicError
+          ? Center(
+              child: Text('游戏逻辑库加载失败',
+                  style: TextStyle(fontSize: 14, color: c.textTertiary)),
+            )
+          : Focus(
+              focusNode: _focusNode,
+              autofocus: true,
+              onKeyEvent: _onKey,
+              child: SafeArea(
+                child: Column(
                   children: [
-                    // 返回按钮（回到更多功能）
-                    IconButton(
-                      onPressed: () => AppScope.of(context).setPage(_morePageIndex),
-                      icon: Icon(Icons.arrow_back_rounded,
-                          size: 22, color: c.textSecondary),
-                      tooltip: '返回',
-                      visualDensity: VisualDensity.compact,
-                    ),
-                    const SizedBox(width: 4),
-                    Text('贪吃蛇',
-                        style: TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.w800,
-                            color: c.text)),
-                    const Spacer(),
-                    if (_playing && !isMobile) ...[
-                      _fpsChip(c, isLight),
-                      const SizedBox(width: 10),
-                    ],
-                    _scoreChip(c, '当前得分', '$_score', isLight),
-                    const SizedBox(width: 10),
-                    _scoreChip(c, '最高纪录', '$_highScore', isLight,
-                        highlight: _score >= _highScore && _score > 0),
-                    if (_playing && !isMobile) ...[
-                      const SizedBox(width: 6),
-                      TextButton.icon(
-                        onPressed: _togglePause,
-                        icon: Icon(
-                            _paused
-                                ? Icons.play_arrow_rounded
-                                : Icons.pause_rounded,
-                            size: 18),
-                        label: Text(_paused ? '继续' : '暂停'),
+                    // 顶部栏：返回 + 标题 + FPS(游戏中) + 得分 + 最高分/设置
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(12, 8, 16, 4),
+                      child: Row(
+                        children: [
+                          IconButton(
+                            onPressed: () =>
+                                AppScope.of(context).setPage(_morePageIndex),
+                            icon: Icon(Icons.arrow_back_rounded,
+                                size: 22, color: c.textSecondary),
+                            tooltip: '返回',
+                            visualDensity: VisualDensity.compact,
+                          ),
+                          const SizedBox(width: 4),
+                          Text('贪吃蛇',
+                              style: TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.w800,
+                                  color: c.text)),
+                          const Spacer(),
+                          // FPS：位于“当前得分”左侧
+                          if (_playing) ...[
+                            ValueListenableBuilder<double>(
+                              valueListenable: _fpsNotifier,
+                              builder: (ctx, fps, _) =>
+                                  _fpsChip(c, isLight, fps, compact: isMobile),
+                            ),
+                            const SizedBox(width: 10),
+                          ],
+                          _scoreChip(c, '当前得分', '$_score', isLight),
+                          // 电脑端：保留最高纪录与暂停按钮
+                          if (!isMobile) ...[
+                            const SizedBox(width: 10),
+                            _scoreChip(c, '最高纪录', '$_highScore', isLight,
+                                highlight:
+                                    _score >= _highScore && _score > 0),
+                            if (_playing) ...[
+                              const SizedBox(width: 6),
+                              TextButton.icon(
+                                onPressed: _togglePause,
+                                icon: Icon(
+                                    _paused
+                                        ? Icons.play_arrow_rounded
+                                        : Icons.pause_rounded,
+                                    size: 18),
+                                label: Text(_paused ? '继续' : '暂停'),
+                              ),
+                            ],
+                          ],
+                          // 手机端：暂停/重来合并为顶部设置按钮
+                          if (isMobile)
+                            _SettingsMenu(
+                              c: c,
+                              playing: _playing,
+                              paused: _paused,
+                              onTogglePause: _togglePause,
+                              onRestart: _start,
+                            ),
+                        ],
                       ),
-                    ],
+                    ),
+                    const SizedBox(height: 6),
+                    // 网格地图（居中，限制最大尺寸以适配大屏/小屏）
+                    Expanded(
+                      child: Center(
+                        child: ConstrainedBox(
+                          constraints: BoxConstraints(
+                              maxWidth: gridMax, maxHeight: gridMax),
+                          child: AspectRatio(
+                            aspectRatio: _cols / _rows,
+                            child: Container(
+                              decoration: BoxDecoration(
+                                color: isLight
+                                    ? const Color(0xFFF2F4F7)
+                                    : const Color(0xFF242429),
+                                borderRadius: BorderRadius.circular(14),
+                                border: Border.all(
+                                    color: isLight
+                                        ? const Color(0xFFE5E7EB)
+                                        : const Color(0xFF3D3D45)),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: Colors.black.withValues(
+                                        alpha: isLight ? 0.06 : 0.3),
+                                    blurRadius: 30,
+                                    offset: const Offset(0, 10),
+                                    spreadRadius: -8,
+                                  ),
+                                ],
+                              ),
+                              clipBehavior: Clip.antiAlias,
+                              child: LayoutBuilder(
+                                builder: (ctx, cons) {
+                                  final cw = cons.maxWidth / _cols;
+                                  final ch = cons.maxHeight / _rows;
+                                  Rect cellRect(Offset cell) => Rect.fromLTWH(
+                                      cell.dx * cw, cell.dy * ch, cw, ch);
+                                  return ValueListenableBuilder<int>(
+                                    valueListenable: _frameSignal,
+                                    builder: (context, _, __) {
+                                      // 食物脉动（与旧版一致的时间累计式）
+                                      final pulse = (_playing &&
+                                              !_paused && !_over)
+                                          ? 0.5 +
+                                              0.5 *
+                                                  math.sin(_pulseTime /
+                                                      180000 *
+                                                      math.pi)
+                                          : 1.0;
+                                      return Stack(
+                                        children: [
+                                          RepaintBoundary(
+                                            child: CustomPaint(
+                                                painter: _GridPainter(
+                                                    c: c,
+                                                    cols: _cols,
+                                                    rows: _rows),
+                                                size: Size.infinite),
+                                          ),
+                                          Positioned.fromRect(
+                                            rect: cellRect(_food),
+                                            child: _FoodDot(
+                                                isLight: isLight,
+                                                pulse: pulse),
+                                          ),
+                                          Positioned.fill(
+                                            child: RepaintBoundary(
+                                              child: CustomPaint(
+                                                painter: _SnakePainter(
+                                                  points: List.generate(
+                                                      _snake.length,
+                                                      (i) => _renderPos(i)),
+                                                  cw: cw,
+                                                  ch: ch,
+                                                  isLight: isLight,
+                                                ),
+                                                size: Size.infinite,
+                                              ),
+                                            ),
+                                          ),
+                                          if (!_playing || _paused || _over)
+                                            Positioned.fill(
+                                              child: _Overlay(
+                                                c: c,
+                                                isLight: isLight,
+                                                state: _over
+                                                    ? 'over'
+                                                    : (_paused
+                                                        ? 'paused'
+                                                        : 'idle'),
+                                                score: _score,
+                                                highScore: _highScore,
+                                                onStart: _start,
+                                                onResume: _togglePause,
+                                              ),
+                                            ),
+                                        ],
+                                      );
+                                    },
+                                  );
+                                },
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                    // 底部：手机端显示方向键，电脑端不显示
+                    if (isMobile)
+                      _Dpad(
+                        c: c,
+                        enabled: _playing && !_paused && !_over,
+                        onTurn: _turn,
+                      ),
+                    const SizedBox(height: 10),
+                    Text(
+                      isMobile
+                          ? '方向键控制移动 · 右上角设置可暂停/重开'
+                          : '键盘方向键 / WASD 控制移动 · 空格暂停 · R 重新开始',
+                      style: TextStyle(fontSize: 11, color: c.textTertiary),
+                    ),
+                    const SizedBox(height: 14),
                   ],
                 ),
               ),
-              const SizedBox(height: 6),
-              // 网格地图（居中，限制最大尺寸以适配大屏/小屏）
-              Expanded(
-                child: Center(
-                  child: ConstrainedBox(
-                    constraints: BoxConstraints(
-                        maxWidth: gridMax, maxHeight: gridMax),
-                    child: AspectRatio(
-                      aspectRatio: _cols / _rows,
-                      child: Container(
-                        decoration: BoxDecoration(
-                          color: isLight
-                              ? const Color(0xFFF2F4F7)
-                              : const Color(0xFF242429),
-                          borderRadius: BorderRadius.circular(14),
-                          border: Border.all(
-                              color: isLight
-                                  ? const Color(0xFFE5E7EB)
-                                  : const Color(0xFF3D3D45)),
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.black
-                                  .withValues(alpha: isLight ? 0.06 : 0.3),
-                              blurRadius: 30,
-                              offset: const Offset(0, 10),
-                              spreadRadius: -8,
-                            ),
-                          ],
-                        ),
-                        clipBehavior: Clip.antiAlias,
-                        child: LayoutBuilder(
-                          builder: (ctx, cons) {
-                            final cw = cons.maxWidth / _cols;
-                            final ch = cons.maxHeight / _rows;
-                            Rect cellRect(Offset cell) => Rect.fromLTWH(
-                                cell.dx * cw, cell.dy * ch, cw, ch);
-                            // 食物脉动（仅游戏中）
-                            final pulse =
-                                (_playing && !_paused && !_over)
-                                    ? 0.5 +
-                                        0.5 *
-                                            math.sin(_logicElapsed.inMicroseconds /
-                                                180000 *
-                                                math.pi)
-                                    : 1.0;
-                            return Stack(
-                              children: [
-                                // 网格线（静态，RepaintBoundary 隔离避免每帧重绘）
-                                RepaintBoundary(
-                                  child: CustomPaint(
-                                      painter: _GridPainter(
-                                          c: c, cols: _cols, rows: _rows),
-                                      size: Size.infinite),
-                                ),
-                                // 食物
-                                Positioned.fromRect(
-                                  rect: cellRect(_food),
-                                  child: _FoodDot(
-                                      isLight: isLight, pulse: pulse),
-                                ),
-                                // 蛇身（插值位置实现 120fps 平滑移动）
-                                for (var i = 0; i < _snake.length; i++)
-                                  Positioned.fromRect(
-                                    rect: cellRect(_renderPos(i)),
-                                    child: Padding(
-                                      padding: const EdgeInsets.all(1.2),
-                                      child: DecoratedBox(
-                                        decoration: BoxDecoration(
-                                          color: i == 0
-                                              ? (isLight
-                                                  ? const Color(0xFF34C759)
-                                                  : const Color(0xFF2ECC71))
-                                              : (isLight
-                                                  ? const Color(0xFF5CE07D)
-                                                  : const Color(0xFF27AE60)),
-                                          borderRadius:
-                                              BorderRadius.circular(4),
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                // 遮罩：未开始 / 暂停 / 结束
-                                if (!_playing || _paused || _over)
-                                  Positioned.fill(
-                                    child: _Overlay(
-                                      c: c,
-                                      isLight: isLight,
-                                      state: _over
-                                          ? 'over'
-                                          : (_paused ? 'paused' : 'idle'),
-                                      score: _score,
-                                      highScore: _highScore,
-                                      onStart: _start,
-                                      onResume: _togglePause,
-                                    ),
-                                  ),
-                              ],
-                            );
-                          },
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-              // 底部：手机端显示方向键，电脑端不显示
-              if (isMobile)
-                _Dpad(
-                  c: c,
-                  enabled: _playing && !_paused && !_over,
-                  onTurn: _turn,
-                  onTogglePause: _togglePause,
-                  onRestart: _start,
-                ),
-              const SizedBox(height: 10),
-              Text(
-                isMobile
-                    ? '方向键控制移动 · 中间按钮暂停/重开'
-                    : '键盘方向键 / WASD 控制移动 · 空格暂停 · R 重新开始',
-                style: TextStyle(fontSize: 11, color: c.textTertiary),
-              ),
-              const SizedBox(height: 14),
-            ],
-          ),
-        ),
-      ),
+            ),
     );
   }
 
-  Widget _fpsChip(AppColors c, bool isLight) {
+  Widget _fpsChip(AppColors c, bool isLight, double fps,
+      {bool compact = false}) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      padding:
+          EdgeInsets.symmetric(horizontal: compact ? 7 : 8, vertical: 3),
       decoration: BoxDecoration(
         color: c.cardAlt,
         borderRadius: BorderRadius.circular(8),
         border: Border.all(
             color: isLight ? const Color(0xFFE5E7EB) : const Color(0xFF3D3D45)),
       ),
-      child: Text('${_fps.round()} FPS',
+      child: Text(compact ? '${fps.round()}fps' : '${fps.round()} FPS',
           style: TextStyle(
-              fontSize: 10,
+              fontSize: compact ? 9 : 10,
               fontWeight: FontWeight.w700,
               color: c.textSecondary)),
     );
@@ -509,16 +516,83 @@ class _GridPainter extends CustomPainter {
     final stepX = size.width / cols;
     final stepY = size.height / rows;
     for (var i = 1; i < cols; i++) {
-      canvas.drawLine(Offset(stepX * i, 0), Offset(stepX * i, size.height), paint);
+      canvas.drawLine(
+          Offset(stepX * i, 0), Offset(stepX * i, size.height), paint);
     }
     for (var j = 1; j < rows; j++) {
-      canvas.drawLine(Offset(0, stepY * j), Offset(size.width, stepY * j), paint);
+      canvas.drawLine(
+          Offset(0, stepY * j), Offset(size.width, stepY * j), paint);
     }
   }
 
   @override
   bool shouldRepaint(covariant _GridPainter oldDelegate) =>
       oldDelegate.c.isLight != c.isLight;
+}
+
+/// 蛇身绘制：连续圆滑蛇身（圆角拐弯），头部圆点 + 眼睛指示朝向
+class _SnakePainter extends CustomPainter {
+  final List<Offset> points; // 逻辑格坐标（含插值）
+  final double cw; // 每格宽（像素）
+  final double ch; // 每格高（像素）
+  final bool isLight;
+  _SnakePainter({
+    required this.points,
+    required this.cw,
+    required this.ch,
+    required this.isLight,
+  });
+
+  Offset _px(Offset p) => Offset(p.dx * cw + cw / 2, p.dy * ch + ch / 2);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (points.isEmpty) return;
+    final bodyW = math.min(cw, ch) * 0.8; // 蛇身粗度
+    final path = Path()..moveTo(_px(points.last).dx, _px(points.last).dy);
+    // 从尾到头连线，圆角连接消除转弯处的方形棱角
+    for (var i = points.length - 2; i >= 0; i--) {
+      final p = _px(points[i]);
+      path.lineTo(p.dx, p.dy);
+    }
+    canvas.drawPath(
+      path,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = bodyW
+        ..strokeCap = StrokeCap.round
+        ..strokeJoin = StrokeJoin.round
+        ..color = isLight
+            ? const Color(0xFF5CE07D)
+            : const Color(0xFF27AE60),
+    );
+    // 头部
+    final head = _px(points.first);
+    final headR = bodyW / 2;
+    canvas.drawCircle(
+      head,
+      headR,
+      Paint()
+        ..color = isLight ? const Color(0xFF34C759) : const Color(0xFF2ECC71),
+    );
+    // 眼睛：按头部朝向放置
+    final dir = points.length >= 2 ? points[0] - points[1] : const Offset(1, 0);
+    final len = math.sqrt(dir.dx * dir.dx + dir.dy * dir.dy);
+    final d = len > 0 ? Offset(dir.dx / len, dir.dy / len) : const Offset(1, 0);
+    final n = Offset(-d.dy, d.dx);
+    final eyeWhite = isLight ? Colors.white : const Color(0xFFE8F5E9);
+    for (final s in [1.0, -1.0]) {
+      final center = head + n * (headR * 0.5) * s + d * (headR * 0.4);
+      canvas.drawCircle(center, headR * 0.32, Paint()..color = eyeWhite);
+      canvas.drawCircle(
+          center + d * (headR * 0.12),
+          headR * 0.16,
+          Paint()..color = const Color(0xFF1B5E20));
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _SnakePainter oldDelegate) => true;
 }
 
 /// 食物点（脉动动画）
@@ -602,7 +676,8 @@ class _Overlay extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.sports_esports_outlined, size: 40, color: c.textTertiary),
+            Icon(Icons.sports_esports_outlined,
+                size: 40, color: c.textTertiary),
             const SizedBox(height: 12),
             Text(title,
                 style: TextStyle(
@@ -617,7 +692,9 @@ class _Overlay extends StatelessWidget {
             ElevatedButton.icon(
               onPressed: action,
               icon: Icon(
-                  state == 'paused' ? Icons.play_arrow_rounded : Icons.restart_alt_rounded,
+                  state == 'paused'
+                      ? Icons.play_arrow_rounded
+                      : Icons.restart_alt_rounded,
                   size: 18),
               label: Text(btnLabel),
               style: ElevatedButton.styleFrom(
@@ -625,7 +702,8 @@ class _Overlay extends StatelessWidget {
                     ? const Color(0xFF34C759)
                     : const Color(0xFF2ECC71),
                 foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 10),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 22, vertical: 10),
                 shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(10)),
               ),
@@ -637,73 +715,123 @@ class _Overlay extends StatelessWidget {
   }
 }
 
-/// 屏幕方向键（仅手机端显示）
+/// 屏幕方向键（仅手机端显示）：十字布局，间距更合理
 class _Dpad extends StatelessWidget {
   final AppColors c;
   final bool enabled;
   final ValueChanged<Offset> onTurn;
-  final VoidCallback onTogglePause;
-  final VoidCallback onRestart;
   const _Dpad({
     required this.c,
     required this.enabled,
     required this.onTurn,
-    required this.onTogglePause,
-    required this.onRestart,
   });
 
   @override
   Widget build(BuildContext context) {
-    const btnSize = 52.0;
-    Widget btn(IconData icon, VoidCallback cb, {Color? bg}) {
+    const btnSize = 56.0;
+    Widget arrow(IconData icon, Offset dir) {
       return GestureDetector(
-        onTap: enabled ? cb : null,
+        onTap: enabled ? () => onTurn(dir) : null,
         child: Container(
           width: btnSize,
           height: btnSize,
           decoration: BoxDecoration(
             color: enabled
-                ? (bg ??
-                    (c.isLight
-                        ? const Color(0xFFF0F2F5)
-                        : const Color(0xFF33333A)))
+                ? (c.isLight
+                    ? const Color(0xFFF0F2F5)
+                    : const Color(0xFF33333A))
                 : c.cardAlt,
-            borderRadius: BorderRadius.circular(14),
+            borderRadius: BorderRadius.circular(16),
             border: Border.all(
                 color: c.isLight
                     ? const Color(0xFFE5E7EB)
                     : const Color(0xFF3D3D45)),
           ),
           child: Icon(icon,
-              size: 24,
+              size: 28,
               color: enabled ? c.textSecondary : c.textTertiary),
         ),
       );
     }
 
     return Column(
+      mainAxisSize: MainAxisSize.min,
       children: [
-        btn(Icons.keyboard_arrow_up_rounded, () => onTurn(const Offset(0, -1))),
-        const SizedBox(height: 8),
+        arrow(Icons.keyboard_arrow_up_rounded, const Offset(0, -1)),
+        const SizedBox(height: 14),
         Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            btn(Icons.keyboard_arrow_left_rounded, () => onTurn(const Offset(-1, 0))),
-            const SizedBox(width: 8),
-            btn(Icons.replay_rounded, onRestart, bg: c.primaryLight),
-            const SizedBox(width: 8),
-            btn(
-              Icons.pause_rounded,
-              onTogglePause,
-              bg: c.primaryLight,
-            ),
-            const SizedBox(width: 8),
-            btn(Icons.keyboard_arrow_right_rounded, () => onTurn(const Offset(1, 0))),
+            arrow(Icons.keyboard_arrow_left_rounded, const Offset(-1, 0)),
+            const SizedBox(width: 44),
+            arrow(Icons.keyboard_arrow_right_rounded, const Offset(1, 0)),
           ],
         ),
-        const SizedBox(height: 8),
-        btn(Icons.keyboard_arrow_down_rounded, () => onTurn(const Offset(0, 1))),
+        const SizedBox(height: 14),
+        arrow(Icons.keyboard_arrow_down_rounded, const Offset(0, 1)),
       ],
+    );
+  }
+}
+
+/// 手机端顶部设置菜单：暂停/继续 + 重新开始
+class _SettingsMenu extends StatelessWidget {
+  final AppColors c;
+  final bool playing;
+  final bool paused;
+  final VoidCallback onTogglePause;
+  final VoidCallback onRestart;
+  const _SettingsMenu({
+    required this.c,
+    required this.playing,
+    required this.paused,
+    required this.onTogglePause,
+    required this.onRestart,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return PopupMenuButton<String>(
+      tooltip: '设置',
+      color: c.cardAlt,
+      position: PopupMenuPosition.under,
+      onSelected: (v) {
+        if (v == 'pause') onTogglePause();
+        if (v == 'restart') onRestart();
+      },
+      itemBuilder: (ctx) => [
+        if (playing)
+          PopupMenuItem(
+            value: 'pause',
+            height: 44,
+            child: Row(
+              children: [
+                Icon(paused ? Icons.play_arrow_rounded : Icons.pause_rounded,
+                    size: 18, color: c.textSecondary),
+                const SizedBox(width: 10),
+                Text(paused ? '继续' : '暂停',
+                    style: TextStyle(fontSize: 14, color: c.text)),
+              ],
+            ),
+          ),
+        PopupMenuItem(
+          value: 'restart',
+          height: 44,
+          child: Row(
+            children: [
+              Icon(Icons.replay_rounded, size: 18, color: c.textSecondary),
+              const SizedBox(width: 10),
+              Text('重新开始',
+                  style: TextStyle(fontSize: 14, color: c.text)),
+            ],
+          ),
+        ),
+      ],
+      child: Padding(
+        padding: const EdgeInsets.all(6),
+        child:
+            Icon(Icons.settings_outlined, size: 22, color: c.textSecondary),
+      ),
     );
   }
 }

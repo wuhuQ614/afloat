@@ -1,8 +1,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    <!-- 系统级 VPN 接管骨架：为后续 go-mobile 原生库 + VpnService 全局代理预留权限 -->
-    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
     
     <application
         android:label="afloat"
@@ -36,14 +34,6 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
-        <!-- 系统级 VPN 接管骨架服务（占位，供后续 go-mobile 演进） -->
-        <service android:name=".ProxyVpnService"
-            android:permission="android.permission.BIND_VPN_SERVICE"
-            android:exported="false">
-            <intent-filter>
-                <action android:name="android.net.VpnService"/>
-            </intent-filter>
-        </service>
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and

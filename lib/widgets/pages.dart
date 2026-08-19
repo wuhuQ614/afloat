@@ -1823,8 +1823,10 @@ class _RecordsPageState extends State<RecordsPage> {
       ],
       systemPrompt,
       config: s.apiConfig,
-      maxTokens: 8192,
-      extraParams: api.ApiService.noThinkingParams(s.apiConfig.model),
+      maxTokens: 200000, // 默认 200k，避免出题输出被截断
+      extraParams: s.apiConfig.questionSpeed == 'normal'
+          ? api.ApiService.thinkingParams(s.apiConfig.model)
+          : api.ApiService.noThinkingParams(s.apiConfig.model),
     );
     setState(() => _generating = false);
     if (reply != null) {

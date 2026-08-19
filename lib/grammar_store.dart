@@ -228,7 +228,9 @@ class GrammarStore extends ChangeNotifier {
         ],
         systemPrompt,
         config: cfg,
-        extraParams: ApiService.noThinkingParams(cfg.model),
+        extraParams: cfg.questionSpeed == 'normal'
+            ? ApiService.thinkingParams(cfg.model)
+            : ApiService.noThinkingParams(cfg.model),
       );
       final content = r.content;
       if (content == null) {

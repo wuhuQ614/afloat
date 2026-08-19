@@ -132,6 +132,38 @@ class AppState extends ChangeNotifier {
   /// 联网搜索服务配置（百度千帆 AI 搜索组件）
   String searchUrl = 'https://qianfan.baidubce.com/v2/ai_search/chat/completions';
   String searchKey = '';
+
+  // ===== 开发者模式 =====
+  /// 开发者模式：开启后在考场加载页/浮层展示 AI 出题思维链与输出文本
+  bool devMode = false;
+  /// 开发者日志缓冲区（最近保留 [devLogLimit] 条）
+  static const int devLogLimit = 2000;
+  final List<String> devLog = [];
+
+  /// 追加一条开发者日志（自动保留最近 [devLogLimit] 条）
+  void devLogAdd(String line) {
+    if (!devMode) return;
+    if (devLog.length >= devLogLimit) devLog.removeAt(0);
+    devLog.add(line);
+    notifyListeners();
+  }
+
+  /// 清空开发者日志
+  void devLogClear() {
+    if (devLog.isEmpty) return;
+    devLog.clear();
+    notifyListeners();
+  }
+
+  /// 开启/关闭开发者模式（持久化到本地）
+  void setDevMode(bool v) {
+    if (devMode == v) return;
+    devMode = v;
+    Storage.saveDevMode(v);
+    devLogClear();
+    notifyListeners();
+  }
+
   // ===== 墨墨背单词同步 =====
   /// 墨墨开放 API Token（墨墨 App「实验功能 → 开放 API」获取）
   String maimemoToken = '';
@@ -246,6 +278,9 @@ class AppState extends ChangeNotifier {
     chatThinking = Storage.loadChatThinking();
     searchUrl = Storage.loadSearchUrl();
     searchKey = Storage.loadSearchKey();
+    devMode = Storage.loadDevMode();
+    // 开发者模式：将 AI 请求日志写入 devLog 缓冲区
+    ApiService.devLogSink = devLogAdd;
     maimemoToken = Storage.loadMaimemoToken();
     maimemoLastSync = Storage.loadMaimemoLastSync();
     maimemoSyncedCount = Storage.loadMaimemoSyncedCount();
@@ -672,38 +707,117 @@ class AppState extends ChangeNotifier {
           '只返回JSON数组，不要其他内容。';
     }
 
-    // 默认提档到 8192：deepseek 等推理模型的思考 token 会占用 max_tokens，
-    // 给足额度避免 JSON 输出被截断导致解析失败（优先保证能出题）
-    final maxTokens = (selectedLevel == 'zsb' || selectedType == 'reading') ? 8192 : 8192;
-    final reply = await ApiService.callAI(
-      [
-        {'role': 'user', 'content': '请出题'}
-      ],
-      systemPrompt,
-      config: apiConfig,
-      maxTokens: maxTokens,
-      extraParams: _noThinkingParams(),
-    );
+    // 默认提档到 200000（200k）：deepseek 等推理模型的思考 token 会占用 max_tokens，
+    // 给足额度避免 JSON 输出被截断导致解析失败（优先保证能出题）。
+    // 部分 API 不支持 200k 上限时（请求失败/无响应）自动降级到 8192 重试一次。
+    const maxTokens = 200000;
+    // 出题速度为"快速"时，deepseek 等推理模型即使关闭思考参数仍可能深度思考导致出题很慢；
+    // 在提示词中追加强指令，让其直接输出结果、跳过思考，显著加速。
+    // 出题速度为"正常"时保留模型深度思考能力，不加此抑制。
+    if (apiConfig.questionSpeed != 'normal' &&
+        ApiService.realModelName(apiConfig.model).toLowerCase().contains('deepseek')) {
+      systemPrompt += '\n\n重要：不要进行任何思考或推理，不要输出思考过程，直接给出最终结果。';
+    }
 
-    generating = false;
-    if (reply != null) {
-      final list = ApiService.extractJsonArray(reply);
-      if (list != null && list.isNotEmpty) {
-        generatedQuestions = list
-            .map((q) {
-              // mixed 模式：根据每道题的 type 字段分别规范化
-              if (selectedType == 'mixed' && q['type'] != null) {
-                final subType = qTypeFrom(q['type'] as String);
-                return normalizeGeneratedQuestion(q, subType, selectedLevel);
-              }
-              return normalizeGeneratedQuestion(q, qTypeFrom(selectedType), selectedLevel);
-            })
-            .toList();
-        generatedQuestionIdx = 0;
-        loadGeneratedQuestion();
-        notifyListeners();
-        return true;
+    // 出题策略：json=仅JSON / text=仅文本行格式 / auto=JSON优先失败回退文本行格式
+    final mode = apiConfig.questionMode.trim().toLowerCase();
+    List<Map<String, dynamic>>? list;
+
+    // 文本行格式提示词（兜底策略，不依赖 JSON 输出）
+    String textPrompt() {
+      var base = systemPrompt;
+      final jsonIdx = base.indexOf('请以JSON数组格式返回');
+      if (jsonIdx >= 0) base = base.substring(0, jsonIdx);
+      final tpl = selectedType == 'reading'
+          ? 'passage: 英文短文（可跨多行，直到遇到下一个键）\n'
+              'sub1: 问题1\nopt1: A. 选项1|B. 选项2|C. 选项3|D. 选项4\nans1: A\nana1: 解析1\n'
+              'sub2: 问题2\nopt2: A. 选项1|B. 选项2|C. 选项3|D. 选项4\nans2: C\n'
+          : (selectedType == 'choice'
+              ? 'question: 英文题干\noptions: A. 选项1|B. 选项2|C. 选项3|D. 选项4\nanswer: B\nanalysis: 答案解析\nknowledge: 知识点1|知识点2\n'
+              : 'chinese: 中文内容\nenglish: 英文内容\nknowledge: 知识点1|知识点2\n');
+      return '$base\n【输出要求】不要输出JSON，请严格使用以下文本行格式输出（每行"键: 值"，题目之间用空行分隔）：\n$tpl';
+    }
+
+    if (mode == 'text') {
+      // 仅文本行格式：直接请求文本格式
+      var reply = await ApiService.callAI(
+        [
+          {'role': 'user', 'content': '请出题'}
+        ],
+        textPrompt(),
+        config: apiConfig,
+        maxTokens: maxTokens,
+        extraParams: _questionParams(),
+      );
+      // 部分 API 不支持 200k 上限：失败时降级到 8192 重试一次
+      if (reply == null && maxTokens > 8192) {
+        reply = await ApiService.callAI(
+          [
+            {'role': 'user', 'content': '请出题'}
+          ],
+          textPrompt(),
+          config: apiConfig,
+          maxTokens: 8192,
+          extraParams: _questionParams(),
+        );
       }
+      generating = false;
+      if (reply != null) list = ApiService.parseTextQuestions(reply);
+    } else {
+      // 默认 JSON 优先
+      var reply = await ApiService.callAI(
+        [
+          {'role': 'user', 'content': '请出题'}
+        ],
+        systemPrompt,
+        config: apiConfig,
+        maxTokens: maxTokens,
+        extraParams: _questionParams(),
+      );
+      // 部分 API 不支持 200k 上限：失败时降级到 8192 重试一次
+      if (reply == null && maxTokens > 8192) {
+        reply = await ApiService.callAI(
+          [
+            {'role': 'user', 'content': '请出题'}
+          ],
+          systemPrompt,
+          config: apiConfig,
+          maxTokens: 8192,
+          extraParams: _questionParams(),
+        );
+      }
+      generating = false;
+      if (reply != null) list = ApiService.extractJsonArray(reply);
+      // auto 兜底：JSON 解析失败时改用文本行格式重新生成，保证能出上题
+      if ((list == null || list.isEmpty) && mode != 'json') {
+        final reply2 = await ApiService.callAI(
+          [
+            {'role': 'user', 'content': '请出题'}
+          ],
+          textPrompt(),
+          config: apiConfig,
+          maxTokens: maxTokens,
+          extraParams: _questionParams(),
+        );
+        if (reply2 != null) list = ApiService.parseTextQuestions(reply2);
+      }
+    }
+
+    if (list != null && list.isNotEmpty) {
+      generatedQuestions = list
+          .map((q) {
+            // mixed 模式：根据每道题的 type 字段分别规范化
+            if (selectedType == 'mixed' && q['type'] != null) {
+              final subType = qTypeFrom(q['type'] as String);
+              return normalizeGeneratedQuestion(q, subType, selectedLevel);
+            }
+            return normalizeGeneratedQuestion(q, qTypeFrom(selectedType), selectedLevel);
+          })
+          .toList();
+      generatedQuestionIdx = 0;
+      loadGeneratedQuestion();
+      notifyListeners();
+      return true;
     }
     notifyListeners();
     return false;
@@ -1241,6 +1355,13 @@ class AppState extends ChangeNotifier {
   Map<String, dynamic> _noThinkingParams() {
     final m = ApiService.realModelName(apiConfig.model).toLowerCase();
     final p = <String, dynamic>{};
+    // DeepSeek V4 系列（deepseek-v4-pro / deepseek-v4-flash）：默认开启思考，
+    // 官方正确关闭方式为 "thinking": {"type": "disabled"}；
+    // 布尔值 enable_thinking 对 V4 无效（返回 400 或被忽略），故不再发送。
+    if (m.contains('deepseek') && m.contains('v4')) {
+      p['thinking'] = {'type': 'disabled'};
+      return p;
+    }
     // enable_thinking: false 适用于多数国产模型
     if (m.contains('deepseek') ||
         m.contains('qwen') ||
@@ -1272,6 +1393,15 @@ class AppState extends ChangeNotifier {
       p['thinking_config'] = {'thinking_budget': 0};
     }
     return p;
+  }
+
+  /// 出题参数：根据「出题速度」配置决定是否开启模型深度思考。
+  /// fast（快速，默认）= 关闭思考直出；normal（正常）= 允许模型深度思考。
+  Map<String, dynamic> _questionParams() {
+    if (apiConfig.questionSpeed == 'normal') {
+      return ApiService.thinkingParams(apiConfig.model);
+    }
+    return _noThinkingParams();
   }
 
   Future<void> analyzeWords(String text, {bool force = false}) async {
@@ -1428,7 +1558,7 @@ class AppState extends ChangeNotifier {
         [{'role': 'user', 'content': isZh ? '请剖析这些中文词组的用法' : '请剖析这些单词的用法'}],
         buildPrompt(batch),
         config: apiConfig,
-        maxTokens: 4096,
+        maxTokens: 200000, // 默认 200k，避免批量剖析输出被截断
         extraParams: _noThinkingParams(),
       );
       List<Map<String, dynamic>>? list;
@@ -3552,6 +3682,7 @@ class AppState extends ChangeNotifier {
       chatThinking = Storage.loadChatThinking();
       searchUrl = Storage.loadSearchUrl();
       searchKey = Storage.loadSearchKey();
+      devMode = Storage.loadDevMode();
       maimemoToken = Storage.loadMaimemoToken();
       maimemoLastSync = Storage.loadMaimemoLastSync();
       maimemoSyncedCount = Storage.loadMaimemoSyncedCount();
@@ -3860,7 +3991,7 @@ class AppState extends ChangeNotifier {
   }
 
   /// 大题请求（整段一次出全部题目，首次 + 1 次重试）：
-  /// 大题型首次 max_tokens 升档到 16000（API 不支持/请求失败则降回 8192 重试）；
+  /// 大题型首次 max_tokens 升档到 200000（200k）（API 不支持/请求失败则降回 8192 重试）；
   /// finish_reason=='length' 按截断处理：先用截断修复解析尽力救回，不完整则交拆分兜底；
   /// 重试时精简 prompt 缩减输出量。返回解析产物（可能为部分题目），彻底失败返回 null。
   Future<Object?> _requestSectionWithRetry(ExamBatchSpec spec, String customReq) async {
@@ -3869,7 +4000,7 @@ class AppState extends ChangeNotifier {
     Object? best; // 各次尝试中救回题目最多的部分产物
     for (var attempt = 1; attempt <= maxAttempts; attempt++) {
       if (currentExamPaper == null) return best;
-      final maxTokens = (big && attempt == 1) ? 16000 : 8192;
+      final maxTokens = (big && attempt == 1) ? 200000 : 8192;
       AIResult? res;
       try {
         res = await ApiService.callAIResult(
@@ -3879,7 +4010,7 @@ class AppState extends ChangeNotifier {
           _buildBatchPrompt(spec, customReq, attempt),
           config: apiConfig,
           maxTokens: maxTokens,
-          extraParams: _noThinkingParams(),
+          extraParams: _questionParams(),
         );
       } catch (_) {
         res = null;
@@ -4029,6 +4160,12 @@ class AppState extends ChangeNotifier {
     }
     final shorter = attempt >= 2;
     sb.writeln('【输出要求】只返回纯 JSON（不要 markdown 代码块，不要解释文字）；严格按模板输出，禁止输出模板之外的任何字段；选项尽量简短（≤8词）；每题 analysis 不超过20字且可为空字符串。');
+    // 出题速度为"快速"时，deepseek 等推理模型深度思考会拖慢出题：追加"跳过思考直接输出"强指令；
+    // 出题速度为"正常"时保留模型深度思考能力，不加此抑制。
+    if (apiConfig.questionSpeed != 'normal' &&
+        ApiService.realModelName(apiConfig.model).toLowerCase().contains('deepseek')) {
+      sb.writeln('【重要】不要进行任何思考或推理，不要输出思考过程，直接给出最终 JSON 结果。');
+    }
     if (shorter) {
       sb.writeln('【重要】上一次生成失败，请大幅精简输出：短文更短、句子更简单、解析更简短。');
     }

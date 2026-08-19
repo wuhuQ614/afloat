@@ -21,6 +21,7 @@ import 'widgets/onboarding_page.dart';
 // import 'widgets/onboarding_web_page.dart';  // WebView 版（Windows 不兼容，先切回原版）
 import 'widgets/pages.dart';
 import 'widgets/exam_page.dart';
+import 'widgets/dev_console.dart';
 import 'widgets/settings_dialog.dart';
 import 'widgets/platform_select_page.dart';
 import 'widgets/glass_background.dart';
@@ -28,7 +29,6 @@ import 'widgets/maimemo_wordbook_page.dart';
 import 'widgets/browser_page.dart';
 import 'widgets/snake_game_page.dart';
 import 'widgets/gomoku_page.dart';
-import 'widgets/proxy_dashboard.dart';
 import 'widgets/agent_rows.dart';
 
 final bool _isWindows = !kIsWeb && Platform.isWindows;
@@ -45,7 +45,6 @@ const _moreItemsData = [
   (Icons.language_rounded, '浏览器', '轻量网页浏览', 19),
   (Icons.videogame_asset_outlined, '贪吃蛇', '经典小游戏放松', 20),
   (Icons.grid_3x3_rounded, '五子棋', '双人对战五子连珠', 23),
-  (Icons.lan_outlined, '代理', 'Clash 代理模式', 24),
 ];
 
 // 更多功能选择页索引
@@ -181,7 +180,7 @@ class _SidebarNavPill extends StatelessWidget {
   }
 }
 
-void main(List<String> args) async {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   // 全局异常日志：捕获未处理异常写入文件，便于定位运行时白屏/崩溃
   FlutterError.onError = (details) {
@@ -197,33 +196,7 @@ void main(List<String> args) async {
   }
   // 后台初始化 TTS（失败时自动降级为不可用）
   TtsService.instance.init();
-  // 代理控制台独立子入口：当从主程序以 --proxy-entry 启动时，
-  // 直接进入独立的代理控制台（与主场景完全隔开，类似独立应用）
-  if (args.contains('--proxy-entry')) {
-    runApp(const ProxyDashboardPage());
-    return;
-  }
   runApp(const SmartEnglishApp());
-}
-
-/// 桌面端：将代理控制台作为独立子应用启动（弹出独立窗口）。
-/// 移动端：返回 false，由调用方走主 App 内独立 MaterialApp 路由。
-Future<bool> _tryOpenProxyWindow() async {
-  if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
-    try {
-      final exe = Platform.resolvedExecutable;
-      await Process.start(
-        exe,
-        ['--proxy-entry'],
-        mode: ProcessStartMode.detached,
-        workingDirectory: File(exe).parent.path,
-      );
-      return true;
-    } catch (_) {
-      return false;
-    }
-  }
-  return false;
 }
 
 /// 追加写入运行时错误日志（Windows: %APPDATA%\AFloat\error_log.txt；其他: 应用目录）
@@ -430,6 +403,10 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                                   ),
               ),
             ),
+            // 开发者模式：全局开发者控制台（右下角入口 + 全屏日志浮层），
+            // 覆盖答题/翻译题、单词查询、词汇剖析、考场等所有页面
+            if (_state.devMode)
+              Positioned.fill(child: DevConsoleEntry(state: _state)),
           ]);
         }),
       )),
@@ -1130,9 +1107,6 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
         return const SnakeGamePage();
       case 23:
         return const _PageScaffold(title: '五子棋', child: GomokuPage());
-      case 24:
-        // 代理页面：从主场景隔开，作为独立应用展示（独立 MaterialApp 上下文）
-        return const ProxyDashboardPage();
       case 10:
       case 11:
         // 沉浸考场或成绩解析页（外层已隐藏 AI 对话栏）
@@ -2045,20 +2019,7 @@ class _MoreSelectPageState extends State<_MoreSelectPage> {
           c: c,
           isMobile: isMobile,
           onHover: (h) => setState(() => _hoveredIdx = h ? i : (_hoveredIdx == i ? null : _hoveredIdx)),
-          onTap: () {
-            // 代理（page=24）作为独立子应用：桌面端弹独立窗口，移动端走主 App 内独立路由
-            if (item.$4 == 24) {
-              if (kIsWeb || !(Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
-                // 移动端：直接走主 App 内独立 MaterialApp
-                widget.onSelect(item.$4);
-                return;
-              }
-              // 桌面端：异步尝试启动独立子进程
-              _tryOpenProxyWindow();
-            } else {
-              widget.onSelect(item.$4);
-            }
-          },
+          onTap: () => widget.onSelect(item.$4),
         );
       },
     );

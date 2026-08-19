@@ -31,6 +31,8 @@ class _SettingsDialogState extends State<SettingsDialog> {
   late String _temp;
   late bool _vision;
   late bool _fullUrl;
+  late String _questionMode;
+  late String _questionSpeed;
   late int _editIdx;
   bool _obscureKey = true;
   // 墨墨同步
@@ -61,6 +63,8 @@ class _SettingsDialogState extends State<SettingsDialog> {
     _temp = s.apiConfig.temperature.isEmpty ? 'default' : s.apiConfig.temperature;
     _vision = s.apiConfig.vision;
     _fullUrl = s.apiConfig.fullUrl;
+    _questionMode = s.apiConfig.questionMode.isEmpty ? 'auto' : s.apiConfig.questionMode;
+    _questionSpeed = s.apiConfig.questionSpeed.isEmpty ? 'fast' : s.apiConfig.questionSpeed;
     _maimemoTokenCtrl = TextEditingController(text: s.maimemoToken);
     _searchUrlCtrl = TextEditingController(text: s.searchUrl);
     _searchKeyCtrl = TextEditingController(text: s.searchKey);
@@ -89,11 +93,13 @@ class _SettingsDialogState extends State<SettingsDialog> {
       _temp = c.temperature.isEmpty ? 'default' : c.temperature;
       _vision = c.vision;
       _fullUrl = c.fullUrl;
+      _questionMode = c.questionMode.isEmpty ? 'auto' : c.questionMode;
+      _questionSpeed = c.questionSpeed.isEmpty ? 'fast' : c.questionSpeed;
     });
   }
 
   void _saveConfig(AppState s) {
-    final c = ApiConfig(url: _url.text.trim(), key: _key.text.trim(), model: _modelCtrl.text.trim(), temperature: _temp, vision: _vision, fullUrl: _fullUrl);
+    final c = ApiConfig(url: _url.text.trim(), key: _key.text.trim(), model: _modelCtrl.text.trim(), temperature: _temp, vision: _vision, fullUrl: _fullUrl, questionMode: _questionMode, questionSpeed: _questionSpeed);
     final profiles = List.of(s.apiProfiles);
     int activeIdx;
     if (_editIdx >= 0 && _editIdx < profiles.length) {
@@ -387,6 +393,37 @@ class _SettingsDialogState extends State<SettingsDialog> {
         child: Text('温度值越低答案越准确、越随机度低；厂家默认最稳', style: TextStyle(fontSize: 11, color: c.textTertiary)),
       ),
       const SizedBox(height: 12),
+      // 出题策略
+      _labeledField(
+        '出题策略',
+        DropdownButtonFormField<String>(
+          value: _questionMode,
+          decoration: _deco(c),
+          items: const [
+            DropdownMenuItem(value: 'auto', child: Text('自动（JSON优先，失败自动切换文本格式）')),
+            DropdownMenuItem(value: 'json', child: Text('仅 JSON')),
+            DropdownMenuItem(value: 'text', child: Text('仅文本行格式')),
+          ],
+          onChanged: (v) => setState(() => _questionMode = v ?? _questionMode),
+        ),
+        c,
+      ),
+      const SizedBox(height: 12),
+      // 出题速度
+      _labeledField(
+        '出题速度',
+        DropdownButtonFormField<String>(
+          value: _questionSpeed,
+          decoration: _deco(c),
+          items: const [
+            DropdownMenuItem(value: 'fast', child: Text('快速')),
+            DropdownMenuItem(value: 'normal', child: Text('正常')),
+          ],
+          onChanged: (v) => setState(() => _questionSpeed = v ?? _questionSpeed),
+        ),
+        c,
+      ),
+      const SizedBox(height: 12),
       // 图形能力
       _SwitchRow(
         icon: Icons.image_outlined,
@@ -468,7 +505,6 @@ class _SettingsDialogState extends State<SettingsDialog> {
       _SwitchRow(
         icon: Icons.speed_rounded,
         title: '高性能模式',
-        subtitle: '低配设备推荐：关闭毛玻璃模糊等重特效、使用不透明实色界面且不锁帧，大幅提升流畅度，所有功能不受影响',
         value: s.highPerformanceMode,
         onChanged: (v) => s.toggleHighPerformanceMode(v),
         c: c,
@@ -705,36 +741,19 @@ class _SettingsDialogState extends State<SettingsDialog> {
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       _sectionTitle('高级功能', c),
       const SizedBox(height: 14),
-      _emptyHint('高级功能正在开发中…', c),
+      _SwitchRow(
+        icon: Icons.bug_report_outlined,
+        title: '开发者模式',
+        value: s.devMode,
+        onChanged: (v) => s.setDevMode(v),
+        c: c,
+      ),
     ]);
   }
 
   // ============== 小组件 ==============
 
   Widget _sectionTitle(String t, AppColors c) => Text(t, style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: c.text, letterSpacing: 0.2));
-
-  Widget _emptyHint(String t, AppColors c) {
-    final isLight = c.isLight;
-    return Container(
-      padding: const EdgeInsets.all(22),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(14),
-        color: isLight ? Colors.white : const Color(0xFF33333A),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: isLight ? 0.04 : 0.15),
-            blurRadius: 8,
-            offset: const Offset(0, 2),
-          ),
-        ],
-      ),
-      child: Center(child: Column(children: [
-        Icon(Icons.construction_outlined, size: 40, color: c.textTertiary),
-        const SizedBox(height: 10),
-        Text(t, style: TextStyle(fontSize: 13, color: c.textTertiary)),
-      ])),
-    );
-  }
 
   InputDecoration _deco(AppColors c, {String? hint}) => InputDecoration(
     hintText: hint, hintStyle: TextStyle(color: c.inputHint),
@@ -873,12 +892,12 @@ class _SettingsDialogState extends State<SettingsDialog> {
 class _SwitchRow extends StatelessWidget {
   final IconData icon;
   final String title;
-  final String subtitle;
+  final String? subtitle;
   final String? subtitle2;
   final bool value;
   final ValueChanged<bool> onChanged;
   final AppColors c;
-  const _SwitchRow({required this.icon, required this.title, required this.subtitle, this.subtitle2, required this.value, required this.onChanged, required this.c});
+  const _SwitchRow({required this.icon, required this.title, this.subtitle, this.subtitle2, required this.value, required this.onChanged, required this.c});
 
   @override
   Widget build(BuildContext context) {
@@ -902,8 +921,10 @@ class _SwitchRow extends StatelessWidget {
         Expanded(
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Text(title, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: c.text)),
-            const SizedBox(height: 2),
-            Text(subtitle, style: TextStyle(fontSize: 11.5, color: c.textTertiary)),
+            if (subtitle != null) ...[
+              const SizedBox(height: 2),
+              Text(subtitle!, style: TextStyle(fontSize: 11.5, color: c.textTertiary)),
+            ],
             if (subtitle2 != null) ...[
               const SizedBox(height: 2),
               Text(subtitle2!, style: TextStyle(fontSize: 11, color: c.textTertiary)),

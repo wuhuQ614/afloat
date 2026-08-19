@@ -66,6 +66,8 @@ class Storage {
         model: _get('apiModel', 'gpt-5.1'),
         temperature: _get('apiTemp', 'default'),
         fullUrl: _getBool('apiFullUrl', false),
+        questionMode: _get('apiQuestionMode', 'auto'),
+        questionSpeed: _get('apiQuestionSpeed', 'fast'),
       );
 
   static void saveApiConfig(ApiConfig c) {
@@ -74,6 +76,8 @@ class Storage {
     _set('apiModel', c.model);
     _set('apiTemp', c.temperature);
     _setBool('apiFullUrl', c.fullUrl);
+    _set('apiQuestionMode', c.questionMode);
+    _set('apiQuestionSpeed', c.questionSpeed);
   }
 
   static bool loadChatIndependent() => _getBool('chatApiIndependent', false);
@@ -103,6 +107,10 @@ class Storage {
 
   static bool loadChatThinking() => _getBool('chatThinking', true);
   static void saveChatThinking(bool v) => _setBool('chatThinking', v);
+
+  // ===== 开发者模式（显示 AI 出题思维链与输出文本） =====
+  static bool loadDevMode() => _getBool('devMode', false);
+  static void saveDevMode(bool v) => _setBool('devMode', v);
 
   // ===== 联网搜索服务（百度千帆 AI 搜索组件） =====
   static String loadSearchUrl() => _get('searchUrl', 'https://qianfan.baidubce.com/v2/ai_search/chat/completions');
@@ -218,43 +226,6 @@ class Storage {
   /// 'underline' = 灰色下划线 | 'pill' = 紫色渐变胶囊
   static String loadNavIndicator() => _get('navIndicator', 'underline');
   static void saveNavIndicator(String v) => _set('navIndicator', v);
-
-  // ===== HTTP 代理（Clash 等） =====
-  static ProxyConfig loadProxyConfig() {
-    final j = _get('proxyConfig', '');
-    if (j.isEmpty) return ProxyConfig();
-    try {
-      return ProxyConfig.fromJson(jsonDecode(j) as Map<String, dynamic>);
-    } catch (_) {
-      return ProxyConfig();
-    }
-  }
-
-  static void saveProxyConfig(ProxyConfig c) {
-    _set('proxyConfig', jsonEncode(c.toJson()));
-  }
-
-  // ===== 代理订阅（复刻 Clash） =====
-  static List<ProxySubscription> loadProxySubscriptions() {
-    final s = _get('proxySubscriptions', '');
-    if (s.isEmpty) return [];
-    try {
-      final list = jsonDecode(s) as List;
-      return list.whereType<Map<String, dynamic>>().map(ProxySubscription.fromJson).toList();
-    } catch (_) {
-      return [];
-    }
-  }
-
-  static void saveProxySubscriptions(List<ProxySubscription> list) {
-    _set('proxySubscriptions', jsonEncode(list.map((e) => e.toJson()).toList()));
-  }
-
-  static String loadProxyMode() => _get('proxyMode', 'rule');
-  static void saveProxyMode(String v) => _set('proxyMode', v);
-
-  static String loadSelectedProxyNode() => _get('selectedProxyNode', '');
-  static void saveSelectedProxyNode(String v) => _set('selectedProxyNode', v);
 
   // ===== 收藏 =====
   static List<Favorite> loadFavorites() {
@@ -502,6 +473,8 @@ class Storage {
       'chatShowReasoning': _getBool('chatShowReasoning', false),
       'chatStream': _getBool('chatStream', true),
       'chatThinking': _getBool('chatThinking', true),
+      // 开发者模式
+      'devMode': _getBool('devMode', false),
       // 联网搜索服务
       'searchUrl': _get('searchUrl', ''),
       'searchKey': _get('searchKey', ''),
@@ -559,6 +532,8 @@ class Storage {
       if (data.containsKey('chatShowReasoning')) _setBool('chatShowReasoning', data['chatShowReasoning'] as bool);
       if (data.containsKey('chatStream')) _setBool('chatStream', data['chatStream'] as bool);
       if (data.containsKey('chatThinking')) _setBool('chatThinking', data['chatThinking'] as bool);
+      // 开发者模式
+      if (data.containsKey('devMode')) _setBool('devMode', data['devMode'] as bool);
       // 联网搜索服务
       if (data.containsKey('searchUrl')) _set('searchUrl', data['searchUrl'] as String);
       if (data.containsKey('searchKey')) _set('searchKey', data['searchKey'] as String);
