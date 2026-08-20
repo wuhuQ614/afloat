@@ -1,9 +1,10 @@
 /// SmartEnglish 智能英语学习 - Flutter Windows 桌面版 (afloat 风格)
 library;
 
+import 'dart:async' show Timer;
 import 'dart:convert';
 import 'dart:io' show File, FileMode, Platform, Directory, Process, ProcessStartMode;
-import 'dart:ui' show ImageFilter, PlatformDispatcher;
+import 'dart:ui' show FontFeature, ImageFilter, PlatformDispatcher;
 import 'package:cross_file/cross_file.dart';
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:file_picker/file_picker.dart';
@@ -13,12 +14,13 @@ import 'package:flutter/services.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:window_manager/window_manager.dart';
 import 'state.dart';
+import 'models.dart';
 import 'services/tts_service.dart';
+import 'services/chat_capabilities.dart';
 import 'theme_colors.dart';
 import 'widgets/learn_page.dart';
 import 'widgets/grammar_page.dart';
 import 'widgets/onboarding_page.dart';
-// import 'widgets/onboarding_web_page.dart';  // WebView 版（Windows 不兼容，先切回原版）
 import 'widgets/pages.dart';
 import 'widgets/exam_page.dart';
 import 'widgets/dev_console.dart';
@@ -228,6 +230,17 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
   bool _lastFullscreen = false;
   /// 考试确认对话框是否正在显示
   bool _examDialogShowing = false;
+  /// 手机端浏览器页是否临时显示底部导航栏
+  bool _showBrowserNav = false;
+  Timer? _browserNavTimer;
+  /// 各聊天按钮的 GlobalKey，用于从按钮位置浮出对应面板
+  final GlobalKey _modelSelectorBtnKey = GlobalKey();
+  final GlobalKey _plusBtnKey = GlobalKey();
+  final GlobalKey _contextPillKey = GlobalKey();
+  final GlobalKey _permissionBtnKey = GlobalKey();
+  final GlobalKey _workspaceBtnKey = GlobalKey();
+  /// Root Navigator 句柄，用于切换 uiMode 前清空浮层/modal
+  final GlobalKey<NavigatorState> _rootNavKey = GlobalKey<NavigatorState>();
 
   // R5: Markdown 解析 RegExp 提升为 static final，避免每次重建新建
   static final _reStrikethrough = RegExp(r'~~(.+?)~~');
@@ -257,11 +270,26 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
       return true;
     }
     if (event.logicalKey == LogicalKeyboardKey.f8) {
-      _state.setUiMode(_state.uiMode == 'mobile' ? 'desktop' : 'mobile');
+      _switchUiMode(_state.uiMode == 'mobile' ? 'desktop' : 'mobile');
       return true;
     }
 
     return false;
+  }
+
+  /// 切换 UI 模式（mobile <-> desktop），关键步骤：
+  /// 1. 先把 root navigator 上的所有 modal/dialog 关闭（包括 mobile 端打开的 AI chat 全屏页、
+  ///    dev console、设置弹窗等），避免切到 desktop 时上面还盖着一层 mobile 状态导致白屏/空白。
+  /// 2. 再调用 setState 通知 AppState 切换 uiMode，并由 MaterialApp 的 ListenableBuilder
+  ///    用 KeyedSubtree 重建 desktop/mobile 布局分支。
+  void _switchUiMode(String mode) {
+    // popUntil first route — 先把浮在上面的 overlay（modal/dialog/snackbar/tooltip）
+    // 全部 pop 掉，避免 desktop 切完后下方还有 mobile 状态的浮动 UI 残留造成视觉错位
+    final nav = _rootNavKey.currentState;
+    if (nav != null && nav.canPop()) {
+      nav.popUntil((route) => route.isFirst);
+    }
+    _state.setUiMode(mode);
   }
 
   Future<void> _init() async {
@@ -297,6 +325,11 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
     _updateFrameRate();
     // 全卷生成完成（examPendingConfirm=true）时触发确认弹窗
     _checkExamConfirmDialog();
+    // 离开浏览器页后重置临时导航栏状态
+    if (_state.page != 19 && _showBrowserNav) {
+      _showBrowserNav = false;
+      _browserNavTimer?.cancel();
+    }
     setState(() {});
   }
 
@@ -326,6 +359,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
 
   @override
   void dispose() {
+    _browserNavTimer?.cancel();
     HardwareKeyboard.instance.removeHandler(_onGlobalKey);
     _state.removeListener(_onState);
     super.dispose();
@@ -340,6 +374,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
         builder: (context, _) => MaterialApp(
         title: 'AFloat',
         debugShowCheckedModeBanner: false,
+        navigatorKey: _rootNavKey,
         theme: _buildTheme(Brightness.light),
         darkTheme: _buildTheme(Brightness.dark),
         themeMode: _state.darkMode ? ThemeMode.dark : ThemeMode.light,
@@ -357,7 +392,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                     return KeyEventResult.handled;
                   }
                   if (event is KeyDownEvent && event.logicalKey == LogicalKeyboardKey.f8) {
-                    _state.setUiMode(_state.uiMode == 'mobile' ? 'desktop' : 'mobile');
+                    _switchUiMode(_state.uiMode == 'mobile' ? 'desktop' : 'mobile');
                     return KeyEventResult.handled;
                   }
                   // F7：直接加载 mock 试卷进入考场预览（不调用 AI）
@@ -379,11 +414,10 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                       )
                     : !_state.onboardingDone
                         ? OnboardingPage(state: _state)
-                        // ? OnboardingWebPage(state: _state)  // WebView 版（Windows 不兼容，先切回原版）
                         : _state.uiMode.isEmpty
                             ? PlatformSelectPage(
-                                onDesktop: () => _state.setUiMode('desktop'),
-                                onMobile: () => _state.setUiMode('mobile'),
+                                onDesktop: () => _switchUiMode('desktop'),
+                                onMobile: () => _switchUiMode('mobile'),
                               )
                             : _state.uiMode == 'desktop'
                                 ? KeyedSubtree(
@@ -787,6 +821,9 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
         final c = AppColors.of(ctx);
         // 考场/游戏沉浸模式（page==10/11/20）：手机端同样全屏化，隐藏顶栏/底部导航/AI 悬浮球
         final examMode = _state.page == 10 || _state.page == 11 || _state.page == 20;
+        // 浏览器沉浸模式（page==19）：隐藏顶栏/底部导航/AI 悬浮球，底部上滑唤出导航栏
+        final browserMode = _state.page == 19;
+        final immersiveMode = examMode || browserMode;
         // 主导航：0学习 1答题 2报告 3更多(触发) 4查询
         const navItems = [
           (Icons.home_outlined, '学习', 0),
@@ -802,7 +839,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
         return Scaffold(
           // 透明：让全局玻璃背景层透出；高性能模式改用不透明底色，减少合成开销
           backgroundColor: _state.highPerformanceMode ? c.bg : Colors.transparent,
-          appBar: examMode
+          appBar: immersiveMode
               ? null
               : AppBar(
             backgroundColor: glassBg,
@@ -817,19 +854,73 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
               ),
             ],
           ),
-          body: isGlass
-            ? ClipRect(child: BackdropFilter(
-                filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
-                child: Container(
-                  decoration: BoxDecoration(
-                    color: c.bg.withValues(alpha: _state.darkMode ? 0.4 : 0.45),
-                  ),
-                  child: _buildPage(),
+          body: Stack(children: [
+            Positioned.fill(
+              child: isGlass
+                ? ClipRect(child: BackdropFilter(
+                    filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: c.bg.withValues(alpha: _state.darkMode ? 0.4 : 0.45),
+                      ),
+                      child: _buildPage(),
+                    ),
+                  ))
+                : _buildPage(),
+            ),
+            // 浏览器沉浸模式下，底部上滑区域唤出导航栏
+            if (browserMode && !_showBrowserNav)
+              Positioned(
+                bottom: 0,
+                left: 0,
+                right: 0,
+                height: 28,
+                child: GestureDetector(
+                  behavior: HitTestBehavior.translucent,
+                  onVerticalDragUpdate: (details) {
+                    if (details.primaryDelta != null && details.primaryDelta! < -8) {
+                      setState(() {
+                        _showBrowserNav = true;
+                        _browserNavTimer?.cancel();
+                        _browserNavTimer = Timer(const Duration(seconds: 3), () {
+                          if (mounted) setState(() => _showBrowserNav = false);
+                        });
+                      });
+                    }
+                  },
+                  onTap: () => setState(() {
+                    _showBrowserNav = true;
+                    _browserNavTimer?.cancel();
+                    _browserNavTimer = Timer(const Duration(seconds: 3), () {
+                      if (mounted) setState(() => _showBrowserNav = false);
+                    });
+                  }),
+                  child: Container(color: Colors.transparent),
                 ),
-              ))
-            : _buildPage(),
-          bottomNavigationBar: examMode
-              ? null
+              ),
+          ]),
+          bottomNavigationBar: immersiveMode
+              ? (browserMode && _showBrowserNav ? NavigationBar(
+            selectedIndex: navIndex,
+            onDestinationSelected: (i) {
+              if (navItems[i].$3 == -1) {
+                _state.setPage(_morePageIndex);
+              } else {
+                _state.setPage(navItems[i].$3);
+              }
+            },
+            labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
+            backgroundColor: glassBg,
+            indicatorColor: kPrimary.withValues(alpha: c.isLight ? 0.12 : 0.3),
+            destinations: [
+              for (var i = 0; i < navItems.length; i++)
+                NavigationDestination(
+                  icon: Icon(navItems[i].$1, size: 22, color: (i == 3 ? inMore : navIndex == i) ? kPrimary : c.textTertiary),
+                  selectedIcon: Icon(navItems[i].$1, size: 22, color: kPrimary),
+                  label: navItems[i].$2,
+                ),
+            ],
+          ) : null)
               : NavigationBar(
             selectedIndex: navIndex,
             onDestinationSelected: (i) {
@@ -851,7 +942,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                 ),
             ],
           ),
-          floatingActionButton: examMode
+          floatingActionButton: immersiveMode
               ? null
               : _state.highPerformanceMode
                   // 高性能模式：不使用毛玻璃模糊，改用实色悬浮按钮
@@ -936,7 +1027,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                     tooltip: '对话设置',
                     onPressed: () {
                       Navigator.of(ctx).pop();
-                      showDialog(context: context, builder: (_) => const ChatSettingsDialog());
+                      showDialog(context: context, builder: (_) => const SettingsDialog());
                     },
                   ),
                   IconButton(
@@ -957,7 +1048,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                     final localAiIconAsset = _getAiIconAsset(cfg.ready ? cfg.model : '');
                     if (s.chatHistory.isEmpty) {
                       if (!cfg.ready) {
-                        return _buildApiConfigPrompt(c.isLight);
+                        return _buildApiConfigPrompt(ctx, c.isLight);
                       }
                       final levelName = s.selectedLevel.isEmpty ? '高中' : s.selectedLevel;
                       final typeName = s.selectedType.isEmpty ? '综合' : s.selectedType;
@@ -997,77 +1088,17 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                   },
                 ),
               ),
-              // 输入框
-              Container(
-                padding: EdgeInsets.fromLTRB(12, 8, 16, MediaQuery.of(ctx).padding.bottom + 8),
-                child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  if (_chatImageData != null) ...[
-                    Container(
-                      padding: const EdgeInsets.all(6),
-                      decoration: BoxDecoration(
-                        color: c.card,
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(color: c.divider),
-                      ),
-                      child: Row(mainAxisSize: MainAxisSize.min, children: [
-                        ClipRRect(
-                          borderRadius: BorderRadius.circular(6),
-                          child: Image.memory(base64Decode(_chatImageData!.split(',').last), width: 56, height: 56, fit: BoxFit.cover),
-                        ),
-                        const SizedBox(width: 8),
-                        Text('已选择图片，将随消息发送', style: TextStyle(fontSize: 12, color: c.textSecondary)),
-                        const SizedBox(width: 4),
-                        IconButton(
-                          visualDensity: VisualDensity.compact,
-                          icon: const Icon(Icons.close_rounded, size: 16),
-                          color: c.textTertiary,
-                          onPressed: () => setState(() => _chatImageData = null),
-                        ),
-                      ]),
-                    ),
-                    const SizedBox(height: 8),
-                  ],
-                  Row(children: [
-                    IconButton(
-                      tooltip: '上传图片',
-                      icon: const Icon(Icons.image_outlined, size: 20),
-                      color: c.textTertiary,
-                      onPressed: _pickChatImage,
-                    ),
-                    Expanded(
-                      child: TextField(
-                        controller: _chatCtrl,
-                        minLines: 1,
-                        maxLines: 3,
-                        style: TextStyle(fontSize: 13, color: c.text),
-                        decoration: InputDecoration(
-                          hintText: '输入你的问题...',
-                          hintStyle: TextStyle(fontSize: 13, color: c.hintText),
-                          filled: true,
-                          fillColor: c.inputFill,
-                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(24), borderSide: BorderSide.none),
-                          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                        ),
-                        onSubmitted: (_) => _sendChat(_state),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Container(
-                      width: 40,
-                      height: 40,
-                      decoration: BoxDecoration(
-                        gradient: c.primaryGradient,
-                        shape: BoxShape.circle,
-                      ),
-                      child: IconButton(
-                        icon: _state.chatSending
-                            ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                            : const Icon(Icons.send_rounded, size: 18, color: Colors.white),
-                        onPressed: _state.chatSending ? null : () => _sendChat(_state),
-                      ),
-                    ),
-                  ]),
+              // 上下文用量
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                child: Row(children: [
+                  _buildContextUsagePill(ctx, c, _state),
                 ]),
+              ),
+              // 输入框
+              Padding(
+                padding: EdgeInsets.fromLTRB(12, 0, 12, MediaQuery.of(ctx).padding.bottom + 8),
+                child: _buildChatInputBar(ctx, c, _state, isMobile: true),
               ),
             ]),
           ),
@@ -1102,7 +1133,8 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
       case 18:
         return const _PageScaffold(title: '墨墨词库', child: MaimemoWordbookPage());
       case 19:
-        return const _PageScaffold(title: '浏览器', child: BrowserPage());
+        // 浏览器沉浸模式：不套 _PageScaffold，页面自身就是完整浏览器界面
+        return const BrowserPage();
       case 20:
         return const SnakeGamePage();
       case 23:
@@ -1120,31 +1152,127 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
 
   // ===== AI 图标识别 =====
   /// 根据模型名称返回对应的图标 asset 路径
+  /// 兜底：所有未识别模型返回默认 MiniMax.svg，不再返回 null
   String? _getAiIconAsset(String modelName) {
     final lower = modelName.toLowerCase();
     // 按优先级匹配，越具体的越靠前
     if (lower.contains('gpt-4') || lower.contains('gpt-3.5') || lower.contains('openai')) return 'assets/ai-icons/openai.svg';
     if (lower.contains('claude') || lower.contains('anthropic')) return 'assets/ai-icons/claude.svg';
     if (lower.contains('glm') || lower.contains('chatglm') || lower.contains('zhipu') || lower.contains('智谱')) return 'assets/ai-icons/chatglm.svg';
-    if (lower.contains('qwen') || lower.contains('千问') || lower.contains('通义')) return 'assets/ai-icons/qwen.svg';
+    if (lower.contains('qwen') || lower.contains('千问') || lower.contains('通义') || lower.contains('qwq') || lower.contains('qvq')) return 'assets/ai-icons/qwen.svg';
     if (lower.contains('deepseek') || lower.contains('deep-seek')) return 'assets/ai-icons/deepseek.svg';
     if (lower.contains('gemini') || lower.contains('google')) return 'assets/ai-icons/gemini.svg';
-    if (lower.contains('doubao') || lower.contains('豆包')) return 'assets/ai-icons/doubao.svg';
-    if (lower.contains('minimax') || lower.contains('minimax')) return 'assets/ai-icons/minimax.svg';
+    if (lower.contains('doubao') || lower.contains('豆包') || lower.contains('seed-' )) return 'assets/ai-icons/doubao.svg';
+    // MiniMax / hy（参考图中 hy3 用 MiniMax logo）
+    if (lower.contains('minimax') || lower.contains('hy') || lower.contains('hy3')) return 'assets/ai-icons/minimax.svg';
     if (lower.contains('step') || lower.contains('阶跃') || lower.contains('stepfun')) return 'assets/ai-icons/stepfun.svg';
     if (lower.contains('kimi') || lower.contains('moonshot')) return 'assets/ai-icons/kimi.svg';
     if (lower.contains('baichuan') || lower.contains('百川')) return 'assets/ai-icons/baichuan.svg';
-    if (lower.contains('yi-') || lower.contains('零一')) return 'assets/ai-icons/yi.svg';
+    if (lower.contains('yi-') || lower.contains('零一') || lower.contains('yi_lite') || lower.contains('yi-large')) return 'assets/ai-icons/yi.svg';
     if (lower.contains('spark') || lower.contains('星火') || lower.contains('xunfei') || lower.contains('讯飞')) return 'assets/ai-icons/spark.svg';
     if (lower.contains('wenxin') || lower.contains('文心') || lower.contains('ernie')) return 'assets/ai-icons/wenxin.svg';
     if (lower.contains('hunyuan') || lower.contains('混元') || lower.contains('tencent')) return 'assets/ai-icons/hunyuan.svg';
-    if (lower.contains('mistral')) return 'assets/ai-icons/mistral.svg';
-    if (lower.contains('llama') || lower.contains('meta')) return 'assets/ai-icons/llama.svg';
+    if (lower.contains('mistral') || lower.contains('mixtral')) return 'assets/ai-icons/mistral.svg';
+    if (lower.contains('llama') || lower.contains('meta-')) return 'assets/ai-icons/llama.svg';
     if (lower.contains('grok') || lower.contains('xai')) return 'assets/ai-icons/grok.svg';
-    if (lower.contains('cohere')) return 'assets/ai-icons/cohere.svg';
-    if (lower.contains('perplexity')) return 'assets/ai-icons/perplexity.svg';
-    if (lower.contains('together')) return 'assets/ai-icons/together.svg';
-    return null;
+    if (lower.contains('cohere') || lower.contains('command-r')) return 'assets/ai-icons/cohere.svg';
+    if (lower.contains('perplexity') || lower.contains('sonar')) return 'assets/ai-icons/perplexity.svg';
+    if (lower.contains('together') || lower.contains('Llama-3') || lower.contains('Qwen2-')) return 'assets/ai-icons/together.svg';
+    // LongCat / Longcat / 紫东太初：暂用 mistral 作 fallback（猫形相近）
+    if (lower.contains('longcat') || lower.contains('long-cat')) return 'assets/ai-icons/mistral.svg';
+    if (lower.contains('taichu') || lower.contains('太初')) return 'assets/ai-icons/zhipu.svg';
+    // 兜底：任何未匹配都给一个通用 MiniMax 图标，不再返回 null
+    return 'assets/ai-icons/minimax.svg';
+  }
+
+  /// AI 模型品牌色（渐变首色→尾色），让每个模型 logo 都有辨识度的彩色圆底
+  (Color, Color) _aiBrandColors(String model) {
+    final lower = model.toLowerCase();
+    const def = (Color(0xFF7C3AED), Color(0xFFA78BFA)); // 默认紫
+    if (lower.contains('hy') || lower.contains('minimax')) {
+      return (const Color(0xFF00C3FF), const Color(0xFF00E0A8)); // MiniMax 青
+    }
+    if (lower.contains('glm') || lower.contains('zhipu') || lower.contains('chatglm')) {
+      return (const Color(0xFF3B82F6), const Color(0xFF22D3EE)); // 智谱 GLM 蓝绿
+    }
+    if (lower.contains('qwen') || lower.contains('千问')) {
+      return (const Color(0xFF6366F1), const Color(0xFF8B5CF6)); // 通义 紫
+    }
+    if (lower.contains('deepseek')) {
+      return (const Color(0xFF4D6BFE), const Color(0xFF8B5CF6)); // DeepSeek 蓝紫
+    }
+    if (lower.contains('kimi') || lower.contains('moonshot')) {
+      return (const Color(0xFFF59E0B), const Color(0xFFF97316)); // Kimi 橙
+    }
+    if (lower.contains('gemini') || lower.contains('google')) {
+      return (const Color(0xFF4285F4), const Color(0xFF9B72CB)); // Gemini 蓝紫
+    }
+    if (lower.contains('doubao') || lower.contains('豆包')) {
+      return (const Color(0xFF2563EB), const Color(0xFF60A5FA)); // 豆包 蓝
+    }
+    if (lower.contains('gpt') || lower.contains('openai')) {
+      return (const Color(0xFF10A37F), const Color(0xFF34D399)); // OpenAI 绿
+    }
+    if (lower.contains('step') || lower.contains('阶跃')) {
+      return (const Color(0xFFFF7A00), const Color(0xFFFFA63E)); // 阶跃 橙
+    }
+    if (lower.contains('baichuan') || lower.contains('百川')) {
+      return (const Color(0xFFEF4444), const Color(0xFFF97316)); // 百川 红橙
+    }
+    if (lower.contains('yi') || lower.contains('零一')) {
+      return (const Color(0xFF06B6D4), const Color(0xFF22D3EE)); // 零一 cyan
+    }
+    if (lower.contains('spark') || lower.contains('星火') || lower.contains('讯飞')) {
+      return (const Color(0xFF1F7AEF), const Color(0xFF60A5FA)); // 星火 蓝
+    }
+    if (lower.contains('wenxin') || lower.contains('文心') || lower.contains('ernie')) {
+      return (const Color(0xFF3B82F6), const Color(0xFF93C5FD)); // 文心 蓝
+    }
+    if (lower.contains('hunyuan') || lower.contains('混元') || lower.contains('tencent')) {
+      return (const Color(0xFF0284C7), const Color(0xFF38BDF8)); // 混元 蓝
+    }
+    if (lower.contains('mistral') || lower.contains('mixtral')) {
+      return (const Color(0xFFF97316), const Color(0xFFFBBF24)); // Mistral 橙黄
+    }
+    if (lower.contains('llama') || lower.contains('meta')) {
+      return (const Color(0xFFDC2626), const Color(0xFFF87171)); // Llama 红
+    }
+    if (lower.contains('grok') || lower.contains('xai')) {
+      return (const Color(0xFF374151), const Color(0xFF6B7280)); // Grok 深灰
+    }
+    if (lower.contains('cohere')) {
+      return (const Color(0xFF2563EB), const Color(0xFF60A5FA)); // Cohere 蓝
+    }
+    if (lower.contains('perplexity') || lower.contains('sonar')) {
+      return (const Color(0xFF0F766E), const Color(0xFF14B8A6)); // Perplexity teal
+    }
+    if (lower.contains('together')) {
+      return (const Color(0xFF7C3AED), const Color(0xFFC084FC)); // Together 紫
+    }
+    if (lower.contains('longcat')) {
+      return (const Color(0xFF3B82F6), const Color(0xFF60A5FA)); // LongCat 蓝
+    }
+    if (lower.contains('taichu') || lower.contains('太初')) {
+      return (const Color(0xFF6366F1), const Color(0xFF8B5CF6)); // 太初 紫
+    }
+    return def;
+  }
+
+  /// 渲染 AI 模型 logo：不要渐变圆底图层，只渲染图标本体。
+  /// SVG 是 currentColor 单色，直接用品牌色渲染；dark 模式下与白色 lerp 35% 提亮保证可见。
+  Widget _aiLogo(String model, {double size = 30}) {
+    final asset = _getAiIconAsset(model);
+    final (c1, _) = _aiBrandColors(model);
+    final brand = _state.darkMode ? Color.lerp(c1, Colors.white, 0.35)! : c1;
+    return asset != null
+        ? SvgPicture.asset(
+            asset,
+            width: size,
+            height: size,
+            fit: BoxFit.contain,
+            color: brand,
+          )
+        : Icon(Icons.smart_toy_outlined, size: size * 0.8, color: brand);
   }
 
   // ===== 右侧 AI 对话助手面板 =====
@@ -1172,7 +1300,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                 color: c.sidebar.withValues(alpha: s.darkMode ? 0.4 : 0.45),
                 border: Border(left: BorderSide(color: c.divider)),
               ),
-              child: _buildChatPanelContent(c, s, cfg, modelName, levelName, typeName, aiIconAsset),
+              child: Builder(builder: (panelCtx) => _buildChatPanelContent(panelCtx, c, s, cfg, modelName, levelName, typeName, aiIconAsset)),
             ),
           ))
         : Container(
@@ -1181,15 +1309,15 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
           color: Colors.transparent,
           border: Border(left: BorderSide(color: c.divider)),
         ),
-        child: _buildChatPanelContent(c, s, cfg, modelName, levelName, typeName, aiIconAsset),
+        child: Builder(builder: (panelCtx) => _buildChatPanelContent(panelCtx, c, s, cfg, modelName, levelName, typeName, aiIconAsset)),
       ),
       ),
     );
   }
 
-  Widget _buildChatPanelContent(AppColors c, AppState s, dynamic cfg, String modelName, String levelName, String typeName, String? aiIconAsset) {
+  Widget _buildChatPanelContent(BuildContext ctx, AppColors c, AppState s, dynamic cfg, String modelName, String levelName, String typeName, String? aiIconAsset) {
     return Column(children: [
-          // 头部（AI信息栏 + 操作按钮）— 透明背景 + 底部分割线
+          // 头部（AI 头像 + 标题 + 操作按钮）— 透明背景 + 底部分割线
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
             decoration: BoxDecoration(
@@ -1197,76 +1325,29 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
               border: Border(bottom: BorderSide(color: c.divider)),
             ),
             child: Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
-              // AI 头像（缩小到30px，和按钮对齐）
-              Container(
-                width: 30,
-                height: 30,
-                decoration: BoxDecoration(
-                  gradient: aiIconAsset == null ? c.primaryGradient : null,
-                  color: aiIconAsset != null ? null : c.primary,
-                  shape: BoxShape.circle,
-                  boxShadow: c.isLight
-                      ? [BoxShadow(color: c.primary.withValues(alpha: 0.22), blurRadius: 6, offset: const Offset(0, 1))]
-                      : [
-                          BoxShadow(color: const Color(0xFF8B5CF6).withValues(alpha: 0.48), blurRadius: 10, spreadRadius: 1),
-                          BoxShadow(color: const Color(0xFFA78BFA).withValues(alpha: 0.22), blurRadius: 15, spreadRadius: 2),
-                        ],
-                ),
-                child: aiIconAsset != null
-                    ? ClipOval(child: SvgPicture.asset(aiIconAsset, width: 30, height: 30, fit: BoxFit.cover,
-                        colorFilter: c.isLight ? null : const ColorFilter.mode(Color(0xFFC4B5FD), BlendMode.srcATop)))
-                    : const Center(child: Text('AI', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 12))),
-              ),
+              _aiLogo(modelName, size: 30),
               const SizedBox(width: 10),
               Expanded(
-                child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Row(children: [
-                    Flexible(
-                      child: Text(modelName, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: cfg.ready ? c.text : c.textTertiary), overflow: TextOverflow.ellipsis),
-                    ),
-                    const SizedBox(width: 2),
-                    // 底层模型切换
-                    PopupMenuButton<int>(
-                      tooltip: '切换模型',
-                      padding: EdgeInsets.zero,
-                      constraints: const BoxConstraints(),
-                      icon: Icon(Icons.swap_vert_rounded, size: 15, color: c.textTertiary),
-                      onSelected: (v) => s.selectChatProfile(v),
-                      itemBuilder: (ctx) => [
-                        PopupMenuItem(
-                          value: -1,
-                          child: Row(children: [
-                            Icon(Icons.public_rounded, size: 16, color: c.textTertiary),
-                            const SizedBox(width: 8),
-                            Expanded(child: Text('全局配置', style: TextStyle(fontSize: 13, color: c.text))),
-                            if (!s.chatApiIndependent)
-                              Icon(Icons.check_rounded, size: 16, color: kPrimary),
-                          ]),
-                        ),
-                        for (var i = 0; i < s.chatProfiles.length; i++)
-                          PopupMenuItem(
-                            value: i,
-                            child: Row(children: [
-                              Icon(Icons.smart_toy_outlined, size: 16, color: c.textTertiary),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: Text(
-                                  '${s.chatProfiles[i].label} · ${s.chatProfiles[i].config.model}',
-                                  style: TextStyle(fontSize: 13, color: c.text),
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ),
-                              if (s.chatApiIndependent && s.chatProfileIdx == i)
-                                Icon(Icons.check_rounded, size: 16, color: kPrimary),
-                            ]),
-                          ),
-                      ],
-                    ),
-                  ]),
-                ]),
+                child: Text('AI 对话助手', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: c.text), overflow: TextOverflow.ellipsis),
               ),
               const SizedBox(width: 4),
-              // 刷新按钮（与头像居中对齐）
+              Builder(builder: (wsCtx) => IconButton(
+                key: _workspaceBtnKey,
+                padding: const EdgeInsets.all(8),
+                constraints: const BoxConstraints.tightFor(width: 32, height: 32),
+                icon: Icon(
+                  s.workspacePath.isEmpty ? Icons.folder_open_outlined : Icons.folder_rounded,
+                  size: 18,
+                  color: s.workspacePath.isEmpty ? c.textTertiary : const Color(0xFF10B981),
+                ),
+                tooltip: s.workspacePath.isEmpty
+                    ? '工作区：默认（C:\\Users 下所有位置）'
+                    : '工作区：${s.workspacePath}',
+                onPressed: () {
+                  debugPrint('[workspace] tap -> _showWorkspacePicker');
+                  _showWorkspacePicker(wsCtx, c, s);
+                },
+              )),
               IconButton(
                 padding: const EdgeInsets.all(8),
                 constraints: const BoxConstraints.tightFor(width: 32, height: 32),
@@ -1274,23 +1355,29 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                 tooltip: '清空对话',
                 onPressed: () => s.clearChat(),
               ),
-              // 设置按钮（与头像居中对齐）
               Builder(builder: (btnCtx) => IconButton(
                 padding: const EdgeInsets.all(8),
                 constraints: const BoxConstraints.tightFor(width: 32, height: 32),
                 icon: Icon(Icons.tune_rounded, size: 18, color: c.textTertiary),
                 tooltip: '对话设置',
-                onPressed: () => showDialog(context: btnCtx, builder: (_) => const ChatSettingsDialog()),
+                onPressed: () => showDialog(context: btnCtx, builder: (_) => const SettingsDialog()),
               )),
             ]),
           ),
+        // 上下文用量
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+          child: Row(children: [
+            _buildContextUsagePill(ctx, c, s, anchorKey: _contextPillKey),
+          ]),
+        ),
         const SizedBox(height: 8),
         // 消息列表
         Expanded(
           child: s.chatHistory.isEmpty
               ? (cfg.ready
                   ? _buildChatWelcome(c.isLight, modelName, levelName, typeName, aiIconAsset)
-                  : _buildApiConfigPrompt(c.isLight))
+                  : _buildApiConfigPrompt(ctx, c.isLight))
               : ValueListenableBuilder<int>(
                   valueListenable: s.chatUpdateNotifier,
                   builder: (ctx, _, __) {
@@ -1316,100 +1403,9 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
           const SizedBox(height: 4),
         ],
         // 输入框
-        Container(
+        Padding(
           padding: const EdgeInsets.fromLTRB(12, 8, 16, 16),
-          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-            // 待发送图片预览
-            if (_chatImageData != null) ...[
-              Container(
-                padding: const EdgeInsets.all(6),
-                decoration: BoxDecoration(
-                  color: c.card,
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: c.divider),
-                ),
-                child: Row(mainAxisSize: MainAxisSize.min, children: [
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(6),
-                    child: Image.memory(base64Decode(_chatImageData!.split(',').last), width: 56, height: 56, fit: BoxFit.cover),
-                  ),
-                  const SizedBox(width: 8),
-                  Text('已选择图片，将随消息发送', style: TextStyle(fontSize: 12, color: c.textSecondary)),
-                  const SizedBox(width: 4),
-                  IconButton(
-                    visualDensity: VisualDensity.compact,
-                    icon: const Icon(Icons.close_rounded, size: 16),
-                    color: c.textTertiary,
-                    onPressed: () => setState(() => _chatImageData = null),
-                  ),
-                ]),
-              ),
-              const SizedBox(height: 8),
-            ],
-            Row(children: [
-              // 图片上传按钮
-              IconButton(
-                tooltip: '上传图片（也可直接拖拽图片到面板）',
-                icon: const Icon(Icons.image_outlined, size: 20),
-                color: c.textTertiary,
-                onPressed: _pickChatImage,
-              ),
-              Expanded(
-                child: Focus(
-                  onKeyEvent: (node, event) {
-                    if (event is KeyDownEvent &&
-                        event.logicalKey == LogicalKeyboardKey.keyV &&
-                        HardwareKeyboard.instance.isControlPressed) {
-                      _pasteImageFromClipboard().then((bytes) {
-                        if (bytes != null && bytes.isNotEmpty) {
-                          final dataUrl = 'data:image/png;base64,${base64Encode(bytes)}';
-                          setState(() => _chatImageData = dataUrl);
-                        }
-                      });
-                      return KeyEventResult.ignored;
-                    }
-                    return KeyEventResult.ignored;
-                  },
-                  child: TextField(
-                    controller: _chatCtrl,
-                    minLines: 1,
-                    maxLines: 3,
-                    style: TextStyle(fontSize: 13, color: c.text),
-                    decoration: InputDecoration(
-                      hintText: '',
-                      hintStyle: TextStyle(fontSize: 13, color: c.hintText),
-                      filled: true,
-                      fillColor: c.inputFill,
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(24), borderSide: BorderSide.none),
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                    ),
-                    onSubmitted: (_) => _sendChat(s),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              s.isGlassUI
-                ? GlassSendButton(
-                    onPressed: s.chatSending ? null : () => _sendChat(s),
-                    sending: s.chatSending,
-                  )
-                : Container(
-                width: 40,
-                height: 40,
-                decoration: BoxDecoration(
-                  gradient: c.primaryGradient,
-                  shape: BoxShape.circle,
-                  boxShadow: [BoxShadow(color: c.primary.withValues(alpha: 0.3), blurRadius: 8, offset: const Offset(0, 2))],
-                ),
-                child: IconButton(
-                  icon: s.chatSending
-                      ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                      : const Icon(Icons.send_rounded, size: 18, color: Colors.white),
-                  onPressed: s.chatSending ? null : () => _sendChat(s),
-                ),
-              ),
-            ]),
-          ]),
+          child: _buildChatInputBar(ctx, c, s),
         ),
       ],
     );
@@ -1422,25 +1418,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
       children: [
         // AI 欢迎消息
         Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Container(
-            width: 32,
-            height: 32,
-            decoration: BoxDecoration(
-              gradient: aiIconAsset == null ? c.primaryGradient : null,
-              color: aiIconAsset != null ? null : c.primary,
-              shape: BoxShape.circle,
-              boxShadow: c.isLight
-                  ? null
-                  : [
-                      BoxShadow(color: const Color(0xFF8B5CF6).withValues(alpha: 0.5), blurRadius: 12, spreadRadius: 1.5),
-                      BoxShadow(color: const Color(0xFFA78BFA).withValues(alpha: 0.25), blurRadius: 18, spreadRadius: 3),
-                    ],
-            ),
-            child: aiIconAsset != null
-                ? ClipOval(child: SvgPicture.asset(aiIconAsset, width: 32, height: 32, fit: BoxFit.cover,
-                    colorFilter: c.isLight ? null : const ColorFilter.mode(Color(0xFFC4B5FD), BlendMode.srcATop)))
-                : const Center(child: Text('AI', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 12))),
-          ),
+          _aiLogo(modelName, size: 32),
           const SizedBox(width: 10),
           Expanded(child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
@@ -1462,15 +1440,15 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
   }
 
   /// API 未配置时的引导气泡（整个气泡可点击，直接打开设置）
-  Widget _buildApiConfigPrompt(bool isLight) {
+  Widget _buildApiConfigPrompt(BuildContext ctx, bool isLight) {
     final c = AppColors(isLight);
     return ListView(
       padding: const EdgeInsets.symmetric(horizontal: 16),
       children: [
         GestureDetector(
           onTap: () {
-            Navigator.of(context).pop();
-            showDialog(context: context, builder: (_) => const ChatSettingsDialog());
+            Navigator.of(ctx).pop();
+            showDialog(context: ctx, builder: (_) => const SettingsDialog());
           },
           child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Container(
@@ -1528,7 +1506,14 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
   Widget _buildChatBubble(ChatMessage msg, bool isLight, {bool running = false}) {
     final c = AppColors(isLight);
     final isUser = msg.role == 'user';
-    final aiIconAsset = _getAiIconAsset(_state.effectiveChatConfig.model);
+    // AI 气泡上方的模型头像 + 名称（参考图风格）。Auto 模式下每条 AI 消息会用其所选 profile 的模型名。
+    String? aiModelName;
+    if (!isUser) {
+      aiModelName = (msg.modelLabel != null && msg.modelLabel!.isNotEmpty)
+          ? msg.modelLabel
+          : _state.effectiveChatConfig.model;
+    }
+    final aiIconAsset = aiModelName == null ? null : _getAiIconAsset(aiModelName);
     final bubble = Container(
       margin: const EdgeInsets.only(bottom: 10),
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
@@ -1569,25 +1554,6 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                   ),
             const SizedBox(height: 8),
           ],
-          // 思考过程（仿 DeepSeek「Think」折叠行：标题 + 摘要 + 可展开正文）
-          if (msg.reasoning != null && msg.reasoning!.isNotEmpty && msg.showReasoning) ...[
-            AgentThinkRow(text: msg.reasoning!, running: running, light: isLight),
-            const SizedBox(height: 6),
-          ],
-          // Agent 工具调用步骤：单行折叠行 + 命令/终端卡片（仿 deepseek ToolRow）
-          if (msg.toolSteps.isNotEmpty) ...[
-            ...msg.toolSteps.map((ts) => AgentToolRow(
-                  name: ts.name,
-                  label: ts.label,
-                  running: ts.running,
-                  done: ts.done,
-                  failed: ts.failed,
-                  output: ts.output,
-                  accent: c.primary,
-                  light: isLight,
-                )),
-            const SizedBox(height: 6),
-          ],
           // 消息内容（支持 Markdown 渲染）
           if (msg.content.isNotEmpty)
             RichText(
@@ -1601,30 +1567,82 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
     if (isUser) {
       return Align(alignment: Alignment.centerRight, child: bubble);
     }
-    // AI 气泡：左侧带图标头像
-    return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Container(
-        width: 28,
-        height: 28,
-        margin: const EdgeInsets.only(top: 4),
-        decoration: BoxDecoration(
-          gradient: aiIconAsset == null ? c.primaryGradient : null,
-          color: aiIconAsset != null ? null : c.primary,
-          shape: BoxShape.circle,
-          boxShadow: c.isLight
-              ? null
-              : [
-                  BoxShadow(color: const Color(0xFF8B5CF6).withValues(alpha: 0.48), blurRadius: 10, spreadRadius: 1),
-                  BoxShadow(color: const Color(0xFFA78BFA).withValues(alpha: 0.22), blurRadius: 15, spreadRadius: 2),
-                ],
-        ),
-        child: aiIconAsset != null
-            ? ClipOval(child: SvgPicture.asset(aiIconAsset, width: 28, height: 28, fit: BoxFit.cover,
-                colorFilter: c.isLight ? null : const ColorFilter.mode(Color(0xFFC4B5FD), BlendMode.srcATop)))
-            : const Center(child: Text('AI', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 10))),
+    // Agent 过程步骤（思考行 / 工具行 / 终端块）放在气泡外、气泡上方，
+    // 全宽无容器展示（仿 deepseek-harness：步骤不属于消息正文）。
+    final hasReasoning = msg.reasoning != null && msg.reasoning!.isNotEmpty && msg.showReasoning;
+    final hasSteps = msg.toolSteps.isNotEmpty;
+    final avatarRow = Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Padding(
+        padding: const EdgeInsets.only(top: 4),
+        child: _aiLogo(aiModelName ?? '', size: 28),
       ),
       const SizedBox(width: 8),
       Expanded(child: bubble),
+    ]);
+    // AI 消息气泡上方的模型名行（与 Reasoning / ToolSteps 独立成行，避免压住头像）
+    Widget? modelHeader;
+    if (!isUser && aiModelName != null) {
+      // 模型名小行：不再额外显示小头像（与下方 28 气泡头像重复），仅显示模型名
+      modelHeader = Padding(
+        padding: const EdgeInsets.only(left: 4, bottom: 4),
+        child: Text(
+          aiModelName!,
+          style: const TextStyle(
+            fontSize: 11,
+            color: Color(0xFFADADB8),
+            fontFeatures: [FontFeature.tabularFigures()],
+          ),
+        ),
+      );
+    }
+    if (!hasReasoning && !hasSteps) {
+      if (modelHeader == null) return avatarRow;
+      return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [modelHeader, avatarRow]);
+    }
+    // 内容尚未到达时（纯思考/工具阶段）不渲染空气泡
+    final bool showBubble = msg.content.isNotEmpty || !running;
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      if (modelHeader != null) modelHeader,
+      if (hasReasoning) ...[
+        AgentThinkRow(text: msg.reasoning!, running: running, light: isLight),
+        const SizedBox(height: 2),
+      ],
+      if (msg.todoList.isNotEmpty) ...[
+        AgentTodoList(items: msg.todoList, light: isLight),
+        const SizedBox(height: 2),
+      ],
+      if (hasSteps)
+        ...msg.toolSteps.map((ts) => ts.terminal
+            ? AgentTerminalBlock(
+                command: ts.command ?? '',
+                running: ts.running,
+                failed: ts.failed,
+                exitCode: ts.exitCode,
+                output: ts.output,
+                light: isLight,
+              )
+            : AgentToolRow(
+                name: ts.name,
+                label: ts.label,
+                running: ts.running,
+                done: ts.done,
+                failed: ts.failed,
+                input: ts.input,
+                output: ts.output,
+                light: isLight,
+              )),
+      if (hasSteps) const SizedBox(height: 2),
+      // dsh-tool-ask-user：弹问题让用户选
+      if (msg.askQuestions.isNotEmpty) ...[
+        AgentAskUserPanel(questions: msg.askQuestions, answers: msg.askAnswers, msgRef: msg, light: isLight),
+        const SizedBox(height: 4),
+      ],
+      // dsh-plan-mode：提交计划让用户审批
+      if (msg.plan != null) ...[
+        AgentPlanPanel(plan: msg.plan!, light: isLight),
+        const SizedBox(height: 4),
+      ],
+      if (showBubble) avatarRow,
     ]);
   }
 
@@ -1796,6 +1814,12 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
   final ScrollController _chatScrollCtrl = ScrollController();
   /// 待发送的图片（base64 data URL）；null 表示未选择
   String? _chatImageData;
+  /// 待发送的非图片附件文件名；null 表示未选择
+  String? _chatAttachmentName;
+  /// 待发送的文本文件内容（已读取的原始文本）；null 表示无文本附件
+  String? _chatFileText;
+  /// 本会话已附加过的文件名（供「引用对话中的文件」使用）
+  final List<String> _conversationFiles = [];
 
   /// R6: 滚动节流：仅贴近底部且距上次滚动 >300ms 时才执行
   void _scrollChatToBottom() {
@@ -1832,19 +1856,1409 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
     }
   }
 
-  /// 通过文件选择器选取图片作为待发送附件
-  Future<void> _pickChatImage() async {
+  /// 选择任意文件作为聊天附件：图片走 vision，文本文件读取内容注入，其余类型仅记文件名
+  Future<void> _pickChatFile() async {
     try {
-      final res = await FilePicker.platform.pickFiles(type: FileType.image, withData: true);
+      final res = await FilePicker.platform.pickFiles(type: FileType.any, withData: true);
       if (res == null || res.files.isEmpty) return;
       final f = res.files.first;
       final bytes = f.bytes;
+      final name = f.name;
       if (bytes == null || bytes.isEmpty) return;
-      final dataUrl = 'data:image/${_imageMime(f.name)};base64,${base64Encode(bytes)}';
-      setState(() => _chatImageData = dataUrl);
+      final lower = name.toLowerCase();
+      final isImage = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'].any((e) => lower.endsWith(e));
+      if (isImage) {
+        final dataUrl = 'data:image/${_imageMime(name)};base64,${base64Encode(bytes)}';
+        setState(() {
+          _chatImageData = dataUrl;
+          _chatFileText = null;
+        });
+        return;
+      }
+      // 文本类文件：读取内容注入给 AI
+      const textExts = ['.txt', '.md', '.json', '.dart', '.js', '.ts', '.jsx', '.tsx', '.html', '.htm', '.css', '.csv', '.xml', '.yml', '.yaml', '.log', '.py', '.java', '.c', '.cpp', '.h', '.sql'];
+      if (textExts.any((e) => lower.endsWith(e))) {
+        String text;
+        try {
+          text = utf8.decode(bytes);
+        } catch (_) {
+          text = latin1.decode(bytes);
+        }
+        setState(() {
+          _chatAttachmentName = name;
+          _chatFileText = text;
+          _chatImageData = null;
+        });
+      } else {
+        // 其他二进制文件（pdf/docx/zip 等）暂不支持解析，仅记文件名
+        setState(() {
+          _chatAttachmentName = name;
+          _chatFileText = null;
+          _chatImageData = null;
+        });
+        _showChatToast(context, '该文件类型暂不支持内容解析，将以附件名发送');
+      }
     } catch (_) {
       // 选择失败忽略
     }
+  }
+
+  /// 判断当前上下文是否为小屏 / 紧凑布局
+  bool _isCompact(BuildContext context) => MediaQuery.of(context).size.width < 640;
+
+  /// 显示 + 菜单（添加文件 / 技能 / 连接器），统一为深色浮层；技能与连接器为子页
+  void _showChatPlusMenu(BuildContext context, AppColors c, AppState s) {
+    const textSecondary = Color(0xFFADADB8);
+    const text = Color(0xFFE4E4E8);
+    const textTertiary = Color(0xFF85859A);
+
+    Widget skillIcon(ChatSkill skill) {
+      final isActive = s.activeSkill == skill.id;
+      return Container(
+        width: 32,
+        height: 32,
+        decoration: BoxDecoration(
+          color: isActive ? const Color(0xFF4C1D95).withValues(alpha: 0.25) : const Color(0xFF3D3D45),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Icon(skill.icon, size: 16, color: isActive ? const Color(0xFFA78BFA) : const Color(0xFFADADB8)),
+      );
+    }
+
+    late OverlayEntry entry;
+
+    Widget buildHeader(String title, {required VoidCallback onBack}) {
+      return Container(
+        padding: const EdgeInsets.fromLTRB(8, 8, 12, 8),
+        decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: Color(0xFF3D3D45), width: 0.5))),
+        child: Row(children: [
+          IconButton(
+            visualDensity: VisualDensity.compact,
+            icon: const Icon(Icons.arrow_back_rounded, size: 18, color: textSecondary),
+            onPressed: onBack,
+          ),
+          Text(title, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: text)),
+        ]),
+      );
+    }
+
+    StatefulBuilder contentBuilder(BuildContext ctx, void Function(void Function()) setState) {
+      var page = 'main'; // main / skills / connectors
+      return StatefulBuilder(
+        builder: (ctx, setSt) {
+          Widget body;
+          if (page == 'skills') {
+            body = Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                buildHeader('选择技能', onBack: () => setSt(() => page = 'main')),
+                Flexible(
+                  child: ListView(
+                    shrinkWrap: true,
+                    padding: EdgeInsets.zero,
+                    children: [
+                      _darkMenuItem(
+                        icon: const Icon(Icons.block_outlined, size: 20, color: textSecondary),
+                        title: '无技能',
+                        trailing: s.activeSkill.isEmpty
+                            ? const Icon(Icons.check_rounded, size: 18, color: Color(0xFF10B981))
+                            : const SizedBox(width: 18),
+                        onTap: () {
+                          s.setActiveSkill('');
+                          entry.remove();
+                          _showChatToast(context, '已清除技能');
+                        },
+                      ),
+                      const Divider(height: 1, color: Color(0xFF3D3D45)),
+                      for (final skill in kAgentToolSkills)
+                        _darkMenuItem(
+                          icon: skillIcon(skill),
+                          title: skill.name,
+                          subtitle: skill.description,
+                          trailing: s.activeSkill == skill.id
+                              ? const Icon(Icons.check_rounded, size: 18, color: Color(0xFF10B981))
+                              : const SizedBox(width: 18),
+                          onTap: () {
+                            s.setActiveSkill(skill.id);
+                            entry.remove();
+                            _showChatToast(context, '已启用技能「${skill.name}」');
+                          },
+                        ),
+                    ],
+                  ),
+                ),
+              ],
+            );
+          } else if (page == 'connectors') {
+            body = Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                buildHeader('连接器', onBack: () => setSt(() => page = 'main')),
+                StatefulBuilder(
+                  builder: (ctx2, setLocal) => _darkMenuItem(
+                    icon: Icon(Icons.travel_explore, size: 20, color: s.searchEnabled ? const Color(0xFF10B981) : textSecondary),
+                    title: '联网搜索',
+                    subtitle: '开启后 AI 可联网检索实时信息',
+                    trailing: Switch(
+                      value: s.searchEnabled,
+                      onChanged: (v) {
+                        s.setSearchEnabled(v);
+                        setLocal(() {});
+                      },
+                      activeColor: const Color(0xFF10B981),
+                    ),
+                    onTap: () {
+                      s.setSearchEnabled(!s.searchEnabled);
+                      setLocal(() {});
+                    },
+                  ),
+                ),
+                const Divider(height: 1, color: Color(0xFF3D3D45)),
+                _darkMenuItem(
+                  icon: const Icon(Icons.settings_outlined, size: 20, color: textSecondary),
+                  title: '联网搜索设置',
+                  onTap: () {
+                    entry.remove();
+                    showDialog(context: context, builder: (_) => const SettingsDialog());
+                  },
+                ),
+              ],
+            );
+          } else {
+            body = Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _darkMenuItem(
+                  icon: const Icon(Icons.attach_file_outlined, size: 20, color: textSecondary),
+                  title: '添加文件',
+                  onTap: () {
+                    entry.remove();
+                    _pickChatFile();
+                  },
+                ),
+                const Divider(height: 1, color: Color(0xFF3D3D45)),
+                _darkMenuItem(
+                  icon: const Icon(Icons.auto_fix_high_outlined, size: 20, color: textSecondary),
+                  title: '技能',
+                  trailing: s.currentSkill != null
+                      ? Container(
+                          width: 8,
+                          height: 8,
+                          decoration: const BoxDecoration(color: Color(0xFF10B981), shape: BoxShape.circle),
+                        )
+                      : const SizedBox(width: 18),
+                  onTap: () => setSt(() => page = 'skills'),
+                ),
+                const Divider(height: 1, color: Color(0xFF3D3D45)),
+                _darkMenuItem(
+                  icon: const Icon(Icons.lan_outlined, size: 20, color: textSecondary),
+                  title: '连接器',
+                  trailing: s.searchEnabled
+                      ? Container(
+                          width: 8,
+                          height: 8,
+                          decoration: const BoxDecoration(color: Color(0xFF10B981), shape: BoxShape.circle),
+                        )
+                      : const SizedBox(width: 18),
+                  onTap: () => setSt(() => page = 'connectors'),
+                ),
+              ],
+            );
+          }
+          // 抑制未使用变量警告
+          // ignore: unused_local_variable
+          final _ = textTertiary;
+          return body;
+        },
+      );
+    }
+
+    entry = _showOverlayPanel(
+      context,
+      _plusBtnKey,
+      width: 240,
+      height: 200,
+      content: contentBuilder(context, (_) {}),
+    );
+  }
+
+  void _showChatToast(BuildContext context, String text) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(text, style: const TextStyle(fontSize: 13)),
+      duration: const Duration(seconds: 2),
+      behavior: SnackBarBehavior.floating,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+    ));
+  }
+
+  /// 通用桌面端浮层：从 anchorKey 按钮位置弹出指定尺寸的深色卡片。
+  /// [content] 为浮层内容（已用 ClipRRect + Material 包裹好）。
+  /// 浮层位置默认在按钮正上方、左对齐到按钮左侧；屏幕边距不足时自动翻转到下方/右对齐。
+  /// 浮层外点击空白处自动关闭；返回 OverlayEntry 供调用方在合适时机关闭。
+  OverlayEntry _showOverlayPanel(
+    BuildContext context,
+    GlobalKey anchorKey, {
+    required double width,
+    required double height,
+    required Widget content,
+    Alignment align = Alignment.bottomLeft,
+  }) {
+    final overlay = Overlay.of(context, rootOverlay: true);
+    final renderBox = anchorKey.currentContext?.findRenderObject() as RenderBox?;
+    double popupX = 0;
+    double popupY = 0;
+    if (renderBox != null) {
+      final anchorGlobal = renderBox.localToGlobal(Offset.zero);
+      final anchorSize = renderBox.size;
+      final screenSize = MediaQuery.of(context).size;
+      // 默认浮在按钮上方；上方空间不够则改下方
+      popupX = anchorGlobal.dx;
+      popupY = anchorGlobal.dy - height - 8;
+      if (popupY < 12) popupY = anchorGlobal.dy + anchorSize.height + 8;
+      // 浮层右对齐按钮（默认）、或左对齐，按 align 决定
+      if (align == Alignment.bottomRight) {
+        popupX = anchorGlobal.dx + anchorSize.width - width;
+      } else if (align == Alignment.topRight) {
+        popupX = anchorGlobal.dx + anchorSize.width - width;
+        popupY = anchorGlobal.dy + anchorSize.height + 8;
+        if (popupY + height > screenSize.height - 12) popupY = anchorGlobal.dy - height - 8;
+      }
+      // 屏幕边界夹取
+      if (popupX < 12) popupX = 12;
+      if (popupX + width > screenSize.width - 12) popupX = screenSize.width - width - 12;
+      if (popupY + height > screenSize.height - 12) popupY = screenSize.height - height - 12;
+    }
+    late OverlayEntry entry;
+    entry = OverlayEntry(
+      builder: (ctx) => Stack(
+        children: [
+          Positioned.fill(
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () => entry.remove(),
+              child: const SizedBox.expand(),
+            ),
+          ),
+          Positioned(
+            left: popupX,
+            top: popupY,
+            width: width,
+            height: height,
+            child: TweenAnimationBuilder<double>(
+              duration: const Duration(milliseconds: 160),
+              curve: Curves.easeOutCubic,
+              tween: Tween(begin: 0.94, end: 1.0),
+              builder: (ctx, scale, child) => Opacity(
+                opacity: ((scale - 0.94) / 0.06).clamp(0.0, 1.0),
+                child: Transform.scale(
+                  scale: scale,
+                  alignment: align,
+                  child: child,
+                ),
+              ),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(16),
+                child: Material(color: const Color(0xFF2B2B32), child: content),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+    overlay.insert(entry);
+    return entry;
+  }
+
+  /// 深色菜单单行项（左侧图标 + 文字 + 右侧箭头）
+  static Widget _darkMenuItem({
+    required Widget icon,
+    required String title,
+    String? subtitle,
+    Widget? trailing,
+    VoidCallback? onTap,
+    bool danger = false,
+  }) {
+    const hover = Color(0xFF33333A);
+    const border = Color(0xFF3D3D45);
+    const text = Color(0xFFE4E4E8);
+    const textSecondary = Color(0xFFADADB8);
+    const textTertiary = Color(0xFF85859A);
+    return InkWell(
+      onTap: onTap,
+      hoverColor: hover,
+      splashColor: hover,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: border, width: 0.5))),
+        child: Row(children: [
+          SizedBox(width: 20, child: icon),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(title, style: TextStyle(fontSize: 13, color: danger ? const Color(0xFFF87171) : text)),
+                if (subtitle != null) ...[
+                  const SizedBox(height: 1),
+                  Text(subtitle, style: const TextStyle(fontSize: 11, color: textSecondary)),
+                ],
+              ],
+            ),
+          ),
+          if (trailing != null) trailing,
+          if (trailing == null) const Icon(Icons.chevron_right_rounded, size: 16, color: textTertiary),
+        ]),
+      ),
+    );
+  }
+
+  /// 权限选择弹窗（默认权限 / 允许完全访问，从权限按钮位置浮出）
+  void _showChatPermissionMenu(BuildContext context, AppColors c, AppState s) {
+    late OverlayEntry entry;
+    entry = _showOverlayPanel(
+      context,
+      _permissionBtnKey,
+      width: 280,
+      height: 200,
+      content: StatefulBuilder(
+        builder: (ctx, setLocal) => Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+              child: Row(children: const [
+                Icon(Icons.shield_outlined, size: 18, color: Color(0xFFA78BFA)),
+                SizedBox(width: 8),
+                Text('权限设置', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: Color(0xFFE4E4E8))),
+              ]),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+              child: Text(
+                '当前为默认权限，所有操作都会在安全沙箱约束内进行，超出范围会请求你的允许。',
+                style: TextStyle(fontSize: 12, color: const Color(0xFFADADB8), height: 1.5),
+              ),
+            ),
+            _darkMenuItem(
+              icon: const Icon(Icons.verified_user_outlined, size: 20, color: Color(0xFFADADB8)),
+              title: '允许完全访问',
+              trailing: Switch(
+                value: s.chatFullAccess,
+                onChanged: (v) {
+                  s.setChatFullAccess(v);
+                  setLocal(() {});
+                },
+                activeColor: const Color(0xFF10B981),
+              ),
+              onTap: () {
+                s.setChatFullAccess(!s.chatFullAccess);
+                setLocal(() {});
+              },
+            ),
+            const Divider(height: 1, color: Color(0xFF3D3D45)),
+            _darkMenuItem(
+              icon: const Icon(Icons.shield_outlined, size: 20, color: Color(0xFF10B981)),
+              title: '默认权限',
+              trailing: !s.chatFullAccess
+                  ? const Icon(Icons.check_rounded, size: 18, color: Color(0xFF10B981))
+                  : const SizedBox(width: 18),
+              onTap: () {
+                s.setChatFullAccess(false);
+                entry.remove();
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// AI 助手工作区选择器（从工作区按钮位置弹出的居中深色卡片）
+  void _showWorkspacePicker(BuildContext context, AppColors c, AppState s) {
+    debugPrint('[workspace] showDialog called');
+    final nav = Navigator.of(context, rootNavigator: true);
+    nav.push(PageRouteBuilder(
+      opaque: false,
+      barrierColor: Colors.black54,
+      barrierDismissible: true,
+      transitionDuration: const Duration(milliseconds: 120),
+      pageBuilder: (pc, __, ___) => StatefulBuilder(builder: (ctx, setSt) {
+        final hasWs = s.workspacePath.isNotEmpty;
+        final displayPath = hasWs ? s.workspacePath : r'C:\Users（默认）';
+        return Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 380),
+            child: Material(
+              color: const Color(0xFF2B2B32),
+              borderRadius: BorderRadius.circular(16),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 6),
+                      child: Row(children: [
+                        const Icon(Icons.work_outline_rounded, size: 18, color: Color(0xFF10B981)),
+                        const SizedBox(width: 8),
+                        const Expanded(
+                          child: Text('工作区',
+                              style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: Color(0xFFE4E4E8))),
+                        ),
+                        IconButton(
+                          padding: EdgeInsets.zero,
+                          icon: const Icon(Icons.close_rounded, size: 18, color: Color(0xFFADADB8)),
+                          onPressed: () => nav.pop(),
+                        ),
+                      ]),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+                      child: Row(children: [
+                        Icon(Icons.folder_rounded, size: 16, color: hasWs ? const Color(0xFF10B981) : const Color(0xFFADADB8)),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: Text(
+                            displayPath,
+                            style: TextStyle(fontSize: 12, color: hasWs ? const Color(0xFFE4E4E8) : const Color(0xFFADADB8)),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ]),
+                    ),
+                    const Padding(
+                      padding: EdgeInsets.fromLTRB(16, 0, 16, 6),
+                      child: Text(
+                        'AI 助手只能在该目录及其子目录内读写文件、执行 Shell。',
+                        style: TextStyle(fontSize: 11, color: Color(0xFF85859A), height: 1.4),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    InkWell(
+                      onTap: () async {
+                        final selected = await FilePicker.platform.getDirectoryPath(
+                          dialogTitle: '选择 AI 助手工作目录',
+                          initialDirectory: s.workspacePath.isNotEmpty ? s.workspacePath : null,
+                        );
+                        if (selected == null) return;
+                        s.setWorkspacePath(selected.replaceAll('/', '\\'));
+                        if (pc.mounted) {
+                          _showChatToast(pc, '已设置工作区：$selected');
+                          setSt(() {});
+                        }
+                      },
+                      hoverColor: const Color(0xFF33333A),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                        child: Row(children: const [
+                          Icon(Icons.create_new_folder_outlined, size: 18, color: Color(0xFFADADB8)),
+                          SizedBox(width: 10),
+                          Text('选择目录', style: TextStyle(fontSize: 14, color: Color(0xFFE4E4E8))),
+                          Spacer(),
+                          Icon(Icons.chevron_right_rounded, size: 18, color: Color(0xFF85859A)),
+                        ]),
+                      ),
+                    ),
+                    if (hasWs) ...[
+                      const Divider(height: 1, indent: 42, endIndent: 0, color: Color(0xFF3D3D45)),
+                      InkWell(
+                        onTap: () {
+                          s.setWorkspacePath('');
+                          if (pc.mounted) {
+                            _showChatToast(pc, '已恢复默认工作区');
+                            setSt(() {});
+                          }
+                        },
+                        hoverColor: const Color(0xFF33333A),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                          child: Row(children: const [
+                            Icon(Icons.restart_alt_rounded, size: 18, color: Color(0xFFF87171)),
+                            SizedBox(width: 10),
+                            Text('重置为默认', style: TextStyle(fontSize: 14, color: Color(0xFFF87171))),
+                          ]),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+      }),
+    ));
+  }
+
+  /// 模型选择器（单列紧凑版：顶部「最大上下文模式」开关；列表项 = 图标 + 模型名（白字）+ 彩色标签 + 对勾；删倍率）
+  void _showChatModelSelector(BuildContext context, AppColors c, AppState s) {
+    // ===== 视觉常量（贴近参考图：近黑底 + 胶囊 chip + 自定义绿色开关） =====
+    const surface = Color(0xFF17171C);          // 主浮层背景
+    const surfaceHighlight = Color(0xFF24242B); // 选中态背景
+    const surfaceHover = Color(0xFF1F1F25);
+    const dividerColor = Color(0xFF24242B);
+    const borderColor = Color(0xFF2D2D35);
+    const textPrimary = Color(0xFFFFFFFF);
+    const textMuted = Color(0xFF888892);
+    const accent = Color(0xFF10B981);
+
+    // 标签颜色
+    const cBlue = Color(0xFF60A5FA);
+    const cRed = Color(0xFFEF4444);
+    const cAmber = Color(0xFFF59E0B);
+    const cGreen = Color(0xFF34D399);
+
+    const popupWidth = 380.0;
+    const popupMaxHeight = 440.0;
+
+    // 胶囊 chip 标签（参考图：半透明色底 + 同色细边 + 同色文字）
+    Widget tagPill(String text, Color color) {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.13),
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(color: color.withValues(alpha: 0.45), width: 0.5),
+        ),
+        child: Text(
+          text,
+          style: TextStyle(
+            color: color,
+            fontSize: 10.5,
+            fontWeight: FontWeight.w600,
+            height: 1.2,
+            letterSpacing: 0,
+            decoration: TextDecoration.none,
+            decorationColor: Colors.transparent,
+          ),
+        ),
+      );
+    }
+
+    // Max 模式自定义开关：白色 thumb + 绿色激活态 + 圆角胶囊
+    Widget maxSwitch(bool value, ValueChanged<bool> onChanged) {
+      return GestureDetector(
+        onTap: () => onChanged(!value),
+        behavior: HitTestBehavior.opaque,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOut,
+          width: 44,
+          height: 26,
+          padding: const EdgeInsets.all(2.5),
+          decoration: BoxDecoration(
+            color: value ? accent : const Color(0xFF34343C),
+            borderRadius: BorderRadius.circular(999),
+          ),
+          child: AnimatedAlign(
+            duration: const Duration(milliseconds: 180),
+            curve: Curves.easeOut,
+            alignment: value ? Alignment.centerRight : Alignment.centerLeft,
+            child: Container(
+              width: 21,
+              height: 21,
+              decoration: BoxDecoration(
+                color: value ? Colors.white : const Color(0xFFBDBDC6),
+                shape: BoxShape.circle,
+                boxShadow: const [
+                  BoxShadow(color: Color(0x33000000), blurRadius: 2, offset: Offset(0, 1)),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    // 模型 logo：品牌色渐变圆底 + 白色图标（不裸渲染黑灰 SVG）
+    Widget modelIcon(String model) {
+      return _aiLogo(model, size: 24);
+    }
+
+    final compact = _isCompact(context);
+    final profiles = s.apiProfiles;
+    // 初始选中：useAutoModel → Auto(idx=-1)；否则按当前 apiConfig 匹配
+    int initialIdx = s.useAutoModel ? -1 : -1;
+    if (!s.useAutoModel) {
+      for (var i = 0; i < profiles.length; i++) {
+        if (profiles[i].config.url == s.apiConfig.url &&
+            profiles[i].config.key == s.apiConfig.key &&
+            profiles[i].config.model == s.apiConfig.model) {
+          initialIdx = i;
+          break;
+        }
+      }
+    }
+
+    // 行渲染（icon + 名称 + tags + 价格）
+    // - tags：来自 ApiProfile.tags（数据驱动，不硬编码）
+    // - priceText：来自 ApiProfile.priceLabel，可空
+    Widget buildRow({
+      required Widget icon,
+      required String title,
+      required String? priceLabel,
+      required bool selected,
+      required List<({String text, Color color})> tags,
+      required VoidCallback onTap,
+    }) {
+      return InkWell(
+        onTap: onTap,
+        // hover 时仅显示亮度微调（surfaceHighlight），不用 hoverColor 防止在某些
+        // 主题里出现 underline-like 视觉假象
+        hoverColor: Colors.transparent,
+        splashColor: Colors.transparent,
+        highlightColor: Colors.transparent,
+        focusColor: Colors.transparent,
+        child: Container(
+          color: selected ? surfaceHighlight : Colors.transparent,
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+          child: Row(
+            children: [
+              SizedBox(width: 22, height: 22, child: icon),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Row(
+                  children: [
+                    Flexible(
+                      child: Text(
+                        title,
+                        style: const TextStyle(
+                          fontSize: 13.5,
+                          color: textPrimary,
+                          fontWeight: FontWeight.w600,
+                          height: 1.2,
+                          decoration: TextDecoration.none,
+                          decorationColor: Colors.transparent,
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                        maxLines: 1,
+                      ),
+                    ),
+                    if (tags.isNotEmpty) const SizedBox(width: 6),
+                    ...List.generate(tags.length, (i) {
+                      final t = tags[i];
+                      return Padding(
+                        padding: EdgeInsets.only(right: i == tags.length - 1 ? 0 : 4),
+                        child: tagPill(t.text, t.color),
+                      );
+                    }),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 10),
+              SizedBox(
+                width: 48,
+                child: Text(
+                  priceLabel ?? '',
+                  textAlign: TextAlign.right,
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: (priceLabel == null || priceLabel!.isEmpty)
+                        ? textMuted
+                        : textPrimary,
+                    fontWeight: FontWeight.w600,
+                    fontFeatures: const [FontFeature.tabularFigures()],
+                    height: 1.2,
+                    decoration: TextDecoration.none,
+                    decorationColor: Colors.transparent,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    // 把 ApiProfile.tags（{text, colorValue}）转成 UI 用的 {text, color}
+    List<({String text, Color color})> profileTags(ApiProfile p) {
+      return p.tags
+          .map((t) => (text: t.text, color: Color(t.colorValue)))
+          .toList();
+    }
+
+    Widget content(int selectedIdx, bool maxMode, void Function(int, bool) onChanged) {
+      final listItems = <Widget>[
+        // 顶部 Max 模式行
+        Padding(
+          padding: const EdgeInsets.fromLTRB(14, 12, 12, 12),
+          child: Row(
+            children: [
+              // 钻石图标 + 阴影提亮，避免在深底上发暗看起来像黑图标
+              Container(
+                width: 24,
+                height: 24,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  boxShadow: const [
+                    BoxShadow(color: Color(0x55FFFFFF), blurRadius: 4, offset: Offset(0, 0)),
+                  ],
+                ),
+                child: const Icon(
+                  Icons.diamond_outlined,
+                  color: Color(0xFFFFFFFF),
+                  size: 19,
+                ),
+              ),
+              const SizedBox(width: 10),
+              const Expanded(
+                child: Text(
+                  'Max 模式',
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: textPrimary,
+                    fontWeight: FontWeight.w700,
+                    height: 1.2,
+                    decoration: TextDecoration.none,
+                    decorationColor: Colors.transparent,
+                  ),
+                ),
+              ),
+              maxSwitch(maxMode, (v) => onChanged(selectedIdx, v)),
+            ],
+          ),
+        ),
+        Container(height: 1, color: dividerColor),
+
+        // Auto 行：循环图标 + w600 文字
+        buildRow(
+          icon: Container(
+            decoration: const BoxDecoration(
+              boxShadow: [BoxShadow(color: Color(0x33FFFFFF), blurRadius: 3, offset: Offset(0, 0))],
+            ),
+            child: const Icon(Icons.autorenew_rounded, size: 22, color: textPrimary),
+          ),
+          title: 'Auto',
+          priceLabel: null,
+          selected: selectedIdx == -1,
+          tags: const [],
+          onTap: () {
+            s.enableAutoModel();
+            onChanged(-1, maxMode);
+          },
+        ),
+        Container(height: 1, color: dividerColor),
+
+        // 模型行：价格 + tags 都来自 ApiProfile 字段（不硬编码）
+        for (var i = 0; i < profiles.length; i++) ...[
+          buildRow(
+            icon: modelIcon(profiles[i].config.model),
+            title: profiles[i].config.model.isNotEmpty
+                ? profiles[i].config.model
+                : profiles[i].name,
+            priceLabel: profiles[i].priceLabel,
+            selected: selectedIdx == i,
+            tags: profileTags(profiles[i]),
+            onTap: () {
+              s.disableAutoModel();
+              s.saveApiProfiles(s.apiProfiles, i);
+              onChanged(i, maxMode);
+            },
+          ),
+          Container(height: 1, color: dividerColor),
+        ],
+
+        // 配置自定义模型
+        InkWell(
+          onTap: () {
+            Navigator.pop(context);
+            // 强制走 rootNavigator，确保从浮层触发也能弹出完整 SettingsDialog
+            // barrierColor 用 40% 半透明黑，避免看起来"全黑"
+            showDialog(
+              context: context,
+              useRootNavigator: true,
+              barrierColor: const Color(0x66000000),
+              builder: (_) => const SettingsDialog(),
+            );
+          },
+          hoverColor: Colors.transparent,
+          splashColor: Colors.transparent,
+          highlightColor: Colors.transparent,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+            child: Row(
+              children: const [
+                SizedBox(
+                  width: 22,
+                  height: 22,
+                  child: Icon(Icons.edit_outlined, color: textMuted, size: 18),
+                ),
+                SizedBox(width: 12),
+                Text(
+                  '配置自定义模型',
+                  style: TextStyle(
+                    fontSize: 13.5,
+                    color: textPrimary,
+                    fontWeight: FontWeight.w600,
+                    decoration: TextDecoration.none,
+                    decorationColor: Colors.transparent,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ];
+
+      return ConstrainedBox(
+        constraints: const BoxConstraints(maxHeight: popupMaxHeight),
+        child: ListView(
+          shrinkWrap: true,
+          padding: EdgeInsets.zero,
+          physics: const ClampingScrollPhysics(),
+          children: listItems,
+        ),
+      );
+    }
+
+    // 浮层外壳：圆角 + 黑底 + 细边 + 阴影
+    Widget chrome(Widget child) {
+      return Container(
+        decoration: BoxDecoration(
+          color: surface,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: borderColor, width: 0.5),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.45),
+              blurRadius: 24,
+              offset: const Offset(0, 12),
+            ),
+          ],
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: child,
+      );
+    }
+
+    if (compact) {
+      // 手机端：底部弹层
+      showModalBottomSheet(
+        context: context,
+        backgroundColor: Colors.transparent,
+        isScrollControlled: true,
+        builder: (ctx) {
+          return StatefulBuilder(builder: (ctx, setState) {
+            var selectedIdx = initialIdx;
+            var maxMode = s.chatThinking;
+            void onChanged(int idx, bool mode) {
+              setState(() {
+                selectedIdx = idx;
+                maxMode = mode;
+              });
+              if (mode != s.chatThinking) s.setChatThinking(mode);
+            }
+            return Container(
+              decoration: const BoxDecoration(
+                color: surface,
+                borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+              ),
+              child: SizedBox(
+                height: MediaQuery.of(context).size.height * 0.6,
+                child: chrome(content(selectedIdx, maxMode, onChanged)),
+              ),
+            );
+          });
+        },
+      );
+    } else {
+      // 桌面端：从模型按钮位置浮出
+      final renderBox =
+          _modelSelectorBtnKey.currentContext?.findRenderObject() as RenderBox?;
+      if (renderBox == null) {
+        // fallback：弹居中 Dialog
+        showDialog(
+          context: context,
+          builder: (ctx) => Dialog(
+            backgroundColor: Colors.transparent,
+            insetPadding: const EdgeInsets.all(24),
+            child: StatefulBuilder(builder: (ctx, setState) {
+              var selectedIdx = initialIdx;
+              var maxMode = s.chatThinking;
+              void onChanged(int idx, bool mode) {
+                setState(() {
+                  selectedIdx = idx;
+                  maxMode = mode;
+                });
+                if (mode != s.chatThinking) s.setChatThinking(mode);
+              }
+              return SizedBox(
+                width: popupWidth,
+                child: chrome(content(selectedIdx, maxMode, onChanged)),
+              );
+            }),
+          ),
+        );
+        return;
+      }
+
+      final anchorGlobal = renderBox.localToGlobal(Offset.zero);
+      final anchorSize = renderBox.size;
+      final screenSize = MediaQuery.of(context).size;
+      double popupX = anchorGlobal.dx + anchorSize.width - popupWidth;
+      double popupY = anchorGlobal.dy - popupMaxHeight - 8;
+      if (popupY < 8) popupY = 8;
+      if (popupX < 12) popupX = 12;
+      if (popupX + popupWidth > screenSize.width - 12) {
+        popupX = screenSize.width - popupWidth - 12;
+      }
+
+      final overlay = Overlay.of(context, rootOverlay: true);
+      late OverlayEntry entry;
+      entry = OverlayEntry(builder: (ctx) {
+        return StatefulBuilder(builder: (ctx, setState) {
+          var selectedIdx = initialIdx;
+          var maxMode = s.chatThinking;
+          void onChanged(int idx, bool mode) {
+            setState(() {
+              selectedIdx = idx;
+              maxMode = mode;
+            });
+            if (mode != s.chatThinking) s.setChatThinking(mode);
+          }
+          return Stack(
+            children: [
+              Positioned.fill(
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () => entry.remove(),
+                  child: const SizedBox.expand(),
+                ),
+              ),
+              Positioned(
+                left: popupX,
+                top: popupY,
+                width: popupWidth,
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxHeight: popupMaxHeight),
+                  child: TweenAnimationBuilder<double>(
+                    duration: const Duration(milliseconds: 160),
+                    curve: Curves.easeOutCubic,
+                    tween: Tween(begin: 0.94, end: 1.0),
+                    builder: (ctx, scale, child) => Opacity(
+                      opacity: ((scale - 0.94) / 0.06).clamp(0.0, 1.0),
+                      child: Transform.scale(
+                        scale: scale,
+                        alignment: Alignment.bottomRight,
+                        child: child,
+                      ),
+                    ),
+                    child: chrome(content(selectedIdx, maxMode, onChanged)),
+                  ),
+                ),
+              ),
+            ],
+          );
+        });
+      });
+      overlay.insert(entry);
+    }
+  }
+
+  /// 上下文用量可视化进度条：分段彩色 + 白色细分割线，点击打开详细弹窗
+  Widget _buildContextUsagePill(BuildContext context, AppColors c, AppState s, {Key? anchorKey}) {
+    final bd = s.contextTokenBreakdown();
+    final pct = bd.usedPct;
+    const colors = [
+      Color(0xFF10B981),
+      Color(0xFFF59E0B),
+      Color(0xFF8B5CF6),
+      Color(0xFF60A5FA),
+      Color(0xFFA78BFA),
+    ];
+    final values = [bd.system, bd.tools, bd.messages, bd.connectors, bd.skills];
+    final usedK = bd.formatK(bd.used);
+    final maxK = bd.formatK(bd.maxTokens);
+
+    return Expanded(
+      child: GestureDetector(
+        key: anchorKey,
+        onTap: () => _showContextUsageBreakdown(context, s),
+        child: MouseRegion(
+          cursor: SystemMouseCursors.click,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(children: [
+                Text('上下文分布', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: c.textSecondary)),
+                const Spacer(),
+                Text('${bd.formatUsedPct()} · ${usedK} / ${maxK}', style: TextStyle(fontSize: 11, color: c.textTertiary)),
+              ]),
+              const SizedBox(height: 6),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(4),
+                child: Container(
+                  height: 6,
+                  color: c.inputFill,
+                  child: Row(
+                    children: [
+                      for (var i = 0; i < values.length; i++)
+                        if (values[i] > 0 && pct > 0)
+                          Expanded(
+                            flex: ((values[i] / bd.maxTokens) * 10000).round().clamp(1, 10000),
+                            child: Container(color: colors[i]),
+                          ),
+                      if (pct < 1)
+                        Expanded(
+                          flex: (((1 - pct) * 10000).round()).clamp(1, 10000),
+                          child: const SizedBox.shrink(),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 上下文用量详细分布弹窗（按图6：顶部大百分比 + 副文字 + 白色细分割线彩色分段进度条 + 5 行圆点百分比）
+  void _showContextUsageBreakdown(BuildContext context, AppState s) {
+    final bd = s.contextTokenBreakdown();
+    // 5 个分类，按图6配色：绿/橙/紫/蓝/浅紫
+    const colors = [
+      Color(0xFF10B981), // 系统提示词（绿）
+      Color(0xFFF59E0B), // 工具及子智能体（橙）
+      Color(0xFF8B5CF6), // 对话消息（紫）
+      Color(0xFF60A5FA), // 连接器及 MCP（蓝）
+      Color(0xFFA78BFA), // 技能（浅紫）
+    ];
+    final names = ['系统提示词', '工具及子智能体', '对话消息', '连接器及 MCP', '技能'];
+    final values = [bd.system, bd.tools, bd.messages, bd.connectors, bd.skills];
+
+    _showOverlayPanel(
+      context,
+      _contextPillKey,
+      width: 360,
+      height: 380,
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // 标题区：大百分比 + 副文字
+          Container(
+            padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(crossAxisAlignment: CrossAxisAlignment.baseline, textBaseline: TextBaseline.alphabetic, children: [
+                  Text(
+                    bd.formatUsedPct(),
+                    style: const TextStyle(fontSize: 30, fontWeight: FontWeight.w800, color: Color(0xFFE4E4E8), height: 1.0),
+                  ),
+                  const SizedBox(width: 10),
+                  Text(
+                    '已使用 ${bd.formatK(bd.used)} / ${bd.formatK(bd.maxTokens)}',
+                    style: const TextStyle(fontSize: 12, color: Color(0xFFADADB8)),
+                  ),
+                ]),
+                const SizedBox(height: 4),
+                Row(children: [
+                  Text(
+                    '剩余 ${bd.formatK(bd.maxTokens - bd.used)} (${(100 - bd.usedPct * 100).toStringAsFixed(1)}%)',
+                    style: const TextStyle(fontSize: 11, color: Color(0xFF85859A)),
+                  ),
+                  if (s.chatThinking) ...[
+                    const SizedBox(width: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                      decoration: BoxDecoration(color: const Color(0xFF10B981).withValues(alpha: 0.15), borderRadius: BorderRadius.circular(4)),
+                      child: const Text('Max 模式 1M', style: TextStyle(fontSize: 10, color: Color(0xFF10B981), fontWeight: FontWeight.w600)),
+                    ),
+                  ],
+                ]),
+              ],
+            ),
+          ),
+          // 主进度条：白色细分割线分段（圆角 6，整体高度 10）
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(5),
+              child: Container(
+                height: 10,
+                color: const Color(0xFF3D3D45),
+                child: Row(
+                  children: [
+                    for (var i = 0; i < values.length; i++)
+                      if (values[i] > 0)
+                        Expanded(
+                          flex: ((values[i] / bd.maxTokens) * 10000).round().clamp(1, 10000),
+                          child: Container(color: colors[i]),
+                        ),
+                    // 剩余空间（容量空白）的暗灰色条
+                    if (bd.used < bd.maxTokens)
+                      Expanded(
+                        flex: (((bd.maxTokens - bd.used) / bd.maxTokens) * 10000).round().clamp(1, 10000),
+                        child: Container(color: const Color(0xFF3D3D45)),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          const Padding(
+            padding: EdgeInsets.fromLTRB(20, 12, 20, 0),
+            child: Text('分布', style: TextStyle(fontSize: 11, color: Color(0xFF85859A), fontWeight: FontWeight.w600)),
+          ),
+          const SizedBox(height: 4),
+          for (var i = 0; i < values.length; i++) ...[
+            InkWell(
+              onTap: () {},
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 6),
+                child: Row(children: [
+                  Container(
+                    width: 8,
+                    height: 8,
+                    decoration: BoxDecoration(color: colors[i], shape: BoxShape.circle),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(child: Text(names[i], style: const TextStyle(fontSize: 13, color: Color(0xFFE4E4E8)))),
+                  const SizedBox(width: 10),
+                  Text(bd.formatK(values[i]), style: const TextStyle(fontSize: 12, color: Color(0xFFADADB8))),
+                  const SizedBox(width: 8),
+                  SizedBox(
+                    width: 56,
+                    child: Text(
+                      bd.formatPctOf(values[i]),
+                      textAlign: TextAlign.right,
+                      style: const TextStyle(fontSize: 13, color: Color(0xFFFFFFFF), fontWeight: FontWeight.w600, fontFeatures: [FontFeature.tabularFigures()]),
+                    ),
+                  ),
+                ]),
+              ),
+            ),
+            if (i < values.length - 1) const Divider(height: 1, indent: 38, endIndent: 20, color: Color(0xFF3D3D45)),
+          ],
+        ],
+      ),
+    );
+  }
+
+  /// 当前已启用的能力标签（模式/技能/专家/工具），用于输入栏上方的状态条
+  List<String> _activeCapabilityChips(AppState s) {
+    final chips = <String>[];
+    for (final m in kChatModes) {
+      if (m.id == s.chatMode && m.id != 'chat') chips.add('模式·${m.name}');
+    }
+    final skill = s.currentSkill;
+    if (skill != null) {
+      final prefix = skill.toolName != null ? '工具·' : '技能·';
+      chips.add('$prefix${skill.name}');
+    }
+    final expert = s.currentExpert;
+    if (expert != null) chips.add('专家·${expert.name}');
+    return chips;
+  }
+
+  /// 点击能力标签的 × 时清除对应能力
+  void _clearCapability(String chip, AppState s) {
+    if (chip.startsWith('模式·')) {
+      s.setChatMode('chat');
+    } else if (chip.startsWith('技能·') || chip.startsWith('工具·')) {
+      s.setActiveSkill('');
+    } else if (chip.startsWith('专家·')) {
+      s.setActiveExpert('');
+    }
+  }
+
+  /// 新版 AI 助手聊天输入栏（桌面 + 手机通用）
+  /// 布局参考现代 AI 聊天框：顶部能力标签、中间输入区、底部工具行 + 圆形发送按钮。
+  Widget _buildChatInputBar(BuildContext context, AppColors c, AppState s, {bool isMobile = false}) {
+    final compact = _isCompact(context) || isMobile;
+    final cfg = s.effectiveChatConfig;
+    final modelLabel = cfg.ready ? cfg.model : '未配置';
+    final aiIconAsset = _getAiIconAsset(modelLabel);
+    final aiIcon = aiIconAsset != null
+        ? _aiLogo(modelLabel, size: 18)
+        : Icon(Icons.smart_toy_outlined, size: 14, color: c.text);
+
+    // 附件/图片预览条
+    Widget preview = const SizedBox.shrink();
+    if (_chatImageData != null || _chatAttachmentName != null) {
+      preview = Padding(
+        padding: const EdgeInsets.only(bottom: 8),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          if (_chatImageData != null)
+            ClipRRect(
+              borderRadius: BorderRadius.circular(6),
+              child: Image.memory(base64Decode(_chatImageData!.split(',').last), width: 48, height: 48, fit: BoxFit.cover),
+            )
+          else
+            Container(
+              width: 48,
+              height: 48,
+              decoration: BoxDecoration(color: c.inputFill, borderRadius: BorderRadius.circular(6)),
+              child: Icon(Icons.insert_drive_file_outlined, size: 20, color: c.primary),
+            ),
+          const SizedBox(width: 8),
+          Text(
+            _chatImageData != null
+                ? '已选择图片'
+                : (_chatFileText != null ? '已读取「$_chatAttachmentName」内容' : _chatAttachmentName!),
+            style: TextStyle(fontSize: 12, color: c.textSecondary),
+          ),
+          const SizedBox(width: 4),
+          IconButton(
+            visualDensity: VisualDensity.compact,
+            icon: Icon(Icons.close_rounded, size: 16, color: c.textTertiary),
+            onPressed: () => setState(() {
+              _chatImageData = null;
+              _chatAttachmentName = null;
+              _chatFileText = null;
+            }),
+          ),
+        ]),
+      );
+    }
+
+    return Container(
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+      decoration: BoxDecoration(
+        color: c.isLight ? const Color(0xFFF7F8FA) : const Color(0xFF232328),
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: c.divider),
+        boxShadow: c.isLight
+            ? [BoxShadow(color: Colors.black.withValues(alpha: 0.04), blurRadius: 10, offset: const Offset(0, 2))]
+            : [BoxShadow(color: Colors.black.withValues(alpha: 0.12), blurRadius: 10, offset: const Offset(0, 2))],
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          preview,
+          // 当前已启用的能力（技能 / 模式 / 专家 / 工具）状态条
+          if (_activeCapabilityChips(s).isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(2, 0, 2, 8),
+              child: Wrap(spacing: 6, runSpacing: 6, children: _activeCapabilityChips(s).map((chip) {
+                return Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: c.primary.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Row(mainAxisSize: MainAxisSize.min, children: [
+                    Text(chip, style: TextStyle(fontSize: 11, color: c.primary, fontWeight: FontWeight.w600)),
+                    const SizedBox(width: 2),
+                    GestureDetector(
+                      onTap: () => _clearCapability(chip, s),
+                      child: Icon(Icons.close_rounded, size: 12, color: c.primary),
+                    ),
+                  ]),
+                );
+              }).toList()),
+            ),
+          Focus(
+            onKeyEvent: (node, event) {
+              if (event is KeyDownEvent &&
+                  event.logicalKey == LogicalKeyboardKey.keyV &&
+                  HardwareKeyboard.instance.isControlPressed) {
+                _pasteImageFromClipboard().then((bytes) {
+                  if (bytes != null && bytes.isNotEmpty) {
+                    final dataUrl = 'data:image/png;base64,${base64Encode(bytes)}';
+                    setState(() => _chatImageData = dataUrl);
+                  }
+                });
+                return KeyEventResult.ignored;
+              }
+              return KeyEventResult.ignored;
+            },
+            child: TextField(
+              controller: _chatCtrl,
+              minLines: compact ? 2 : 3,
+              maxLines: compact ? 5 : 7,
+              style: TextStyle(fontSize: 14, color: c.text, height: 1.5),
+              decoration: InputDecoration(
+                hintText: '今天帮你做些什么？@ 引用文件',
+                hintStyle: TextStyle(fontSize: 14, color: c.hintText),
+                filled: false,
+                border: InputBorder.none,
+                contentPadding: const EdgeInsets.fromLTRB(4, 6, 4, 6),
+              ),
+              onSubmitted: (_) {
+                if (s.chatSending) {
+                  s.cancelChat();
+                } else {
+                  _sendChat(s);
+                }
+              },
+            ),
+          ),
+          const SizedBox(height: 10),
+          Row(children: [
+            // 左侧工具：+ / 权限
+            _ChatInputIconButton(
+              key: isMobile ? null : _plusBtnKey,
+              icon: Icons.add_rounded,
+              tooltip: '工具',
+              onPressed: () => _showChatPlusMenu(context, c, s),
+              c: c,
+            ),
+            const SizedBox(width: 4),
+            _ChatInputTextButton(
+              key: isMobile ? null : _permissionBtnKey,
+              icon: Icons.shield_outlined,
+              label: s.chatFullAccess ? '完全访问' : '默认权限',
+              onPressed: () => _showChatPermissionMenu(context, c, s),
+              c: c,
+            ),
+            const Spacer(),
+            // 右侧：模型 / 发送
+            _ChatInputTextButton(
+              key: isMobile ? null : _modelSelectorBtnKey,
+              icon: null,
+              leading: aiIcon,
+              label: modelLabel,
+              onPressed: () => _showChatModelSelector(context, c, s),
+              c: c,
+            ),
+            const SizedBox(width: 10),
+            GestureDetector(
+              onTap: () {
+                if (s.chatSending) {
+                  // 跑动中：再次点击中止 agent 循环
+                  s.cancelChat();
+                } else {
+                  _sendChat(s);
+                }
+              },
+              child: Container(
+                width: 36,
+                height: 36,
+                decoration: BoxDecoration(
+                  gradient: s.chatSending
+                      ? null
+                      : LinearGradient(
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                          colors: [c.primary, c.primary],
+                        ),
+                  color: s.chatSending ? const Color(0xFFEF4444) : null,
+                  borderRadius: BorderRadius.circular(12),
+                  boxShadow: [
+                    BoxShadow(
+                      color: (s.chatSending ? const Color(0xFFEF4444) : c.primary).withValues(alpha: 0.35),
+                      blurRadius: 8,
+                      offset: const Offset(0, 2),
+                    ),
+                  ],
+                ),
+                child: s.chatSending
+                    ? const Icon(Icons.stop_rounded, size: 18, color: Colors.white)
+                    : Icon(Icons.arrow_upward_rounded, size: 18, color: Colors.white),
+              ),
+            ),
+          ]),
+        ],
+      ),
+    );
   }
 
   /// 沉浸式全卷满分显示：用固定 150 分（四川专升本 2024/2025 真题满分）
@@ -1869,11 +3283,21 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
   void _sendChat(AppState s, {String? text}) async {
     final msg = text ?? _chatCtrl.text.trim();
     final img = _chatImageData;
-    if (msg.isEmpty && img == null) return;
+    final attach = _chatAttachmentName;
+    final fileText = _chatFileText;
+    if (msg.isEmpty && img == null && attach == null) return;
     if (text == null) _chatCtrl.clear();
-    setState(() => _chatImageData = null);
+    if (attach != null && !_conversationFiles.contains(attach)) {
+      _conversationFiles.add(attach);
+    }
+    setState(() {
+      _chatImageData = null;
+      _chatAttachmentName = null;
+      _chatFileText = null;
+    });
     final prevPage = s.page;
-    await s.sendChat(msg, imageData: img);
+    // attachmentText 为文本文件内容；无文本内容但有附件名时（如 pdf/docx），以附件名提示 AI
+    await s.sendChat(msg, imageData: img, attachmentText: fileText ?? (attach != null ? '[附件: $attach]' : null));
     // 手机端：出题后页面跳到了答题页/考场，自动关闭聊天浮层让用户看到新页面
     if (mounted && _state.uiMode == 'mobile' && _state.page != prevPage &&
         (_state.page == 1 || _state.page == 10 || _state.page == 11)) {
@@ -1891,6 +3315,80 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
         }
       });
     }
+  }
+}
+
+/// 聊天输入栏圆形图标按钮
+class _ChatInputIconButton extends StatelessWidget {
+  final IconData icon;
+  final String? tooltip;
+  final VoidCallback? onPressed;
+  final AppColors c;
+  const _ChatInputIconButton({super.key, required this.icon, this.tooltip, required this.onPressed, required this.c});
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      borderRadius: BorderRadius.circular(18),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(18),
+        onTap: onPressed,
+        child: Container(
+          width: 32,
+          height: 32,
+          decoration: BoxDecoration(
+            color: c.inputFill,
+            borderRadius: BorderRadius.circular(18),
+          ),
+          child: Icon(icon, size: 18, color: c.textTertiary),
+        ),
+      ),
+    );
+  }
+}
+
+/// 聊天输入栏文字+图标按钮
+class _ChatInputTextButton extends StatelessWidget {
+  final IconData? icon;
+  final Widget? leading;
+  final String label;
+  final VoidCallback? onPressed;
+  final AppColors c;
+  const _ChatInputTextButton({super.key, this.icon, this.leading, required this.label, required this.onPressed, required this.c});
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      borderRadius: BorderRadius.circular(16),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        onTap: onPressed,
+        child: Container(
+          height: 30,
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          decoration: BoxDecoration(
+            color: c.inputFill,
+            borderRadius: BorderRadius.circular(16),
+          ),
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            if (leading != null) ...[leading!, const SizedBox(width: 4)],
+            if (icon != null) ...[Icon(icon, size: 14, color: c.textTertiary), const SizedBox(width: 4)],
+            Flexible(
+              child: Text(
+                label,
+                style: TextStyle(fontSize: 12, color: c.textSecondary),
+                overflow: TextOverflow.ellipsis,
+                maxLines: 1,
+              ),
+            ),
+            const SizedBox(width: 2),
+            Icon(Icons.keyboard_arrow_down_rounded, size: 14, color: c.textTertiary),
+          ]),
+        ),
+      ),
+    );
   }
 }
 

@@ -326,7 +326,7 @@ class _AnswerPageState extends State<AnswerPage> {
               content: const Text('API 尚未配置，请前往设置页面中配置。'),
               actions: [
                 TextButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('取消')),
-                TextButton(onPressed: () { Navigator.of(ctx).pop(); showDialog(context: context, builder: (_) => const ChatSettingsDialog()); }, child: const Text('去设置')),
+                TextButton(onPressed: () { Navigator.of(ctx).pop(); showDialog(context: context, builder: (_) => const SettingsDialog()); }, child: const Text('去设置')),
               ],
             ),
           );
@@ -385,7 +385,7 @@ class _AnswerPageState extends State<AnswerPage> {
                             TextButton(
                               onPressed: () {
                                 Navigator.of(ctx).pop();
-                                showDialog(context: context, builder: (_) => const ChatSettingsDialog());
+                                showDialog(context: context, builder: (_) => const SettingsDialog());
                               },
                               child: const Text('去设置'),
                             ),

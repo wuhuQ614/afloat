@@ -29,6 +29,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
   late final TextEditingController _key;
   late final TextEditingController _modelCtrl;
   late String _temp;
+  late int _contextLen;
   late bool _vision;
   late bool _fullUrl;
   late String _questionMode;
@@ -46,21 +47,23 @@ class _SettingsDialogState extends State<SettingsDialog> {
   late final TextEditingController _searchKeyCtrl;
   bool _searchObscure = true;
 
-  /// 左侧设置分组：'model' | 'general' | 'account' | 'advanced'
-  String _section = 'model';
-
-  /// 是否运行在真实手机平台（Android/iOS），用于适配仅存在于桌面端的提示
-  bool get _isPhone => Platform.isAndroid || Platform.isIOS;
+  /// 设置分组：手机 'home'=入口列表页；桌面与手机子页：
+  /// 'model' 模型设置 | 'interface' 界面设置 | 'account' 账户安全 | 'advanced' 高级功能
+  String _section = 'home';
 
   @override
   void initState() {
     super.initState();
+    // 根据初始屏幕宽度决定默认展示入口页（手机）还是直接展示模型设置（桌面）
+    final width = MediaQuery.of(context).size.width;
+    _section = width < 600 ? 'home' : 'model';
     final s = AppScope.of(context);
     _editIdx = s.apiProfiles.indexWhere((p) => p.config.url == s.apiConfig.url && p.config.key == s.apiConfig.key);
     _url = TextEditingController(text: s.apiConfig.url);
     _key = TextEditingController(text: s.apiConfig.key);
     _modelCtrl = TextEditingController(text: s.apiConfig.model);
-    _temp = s.apiConfig.temperature.isEmpty ? 'default' : s.apiConfig.temperature;
+    _temp = s.apiConfig.temperature.isEmpty ? '0.3' : s.apiConfig.temperature;
+    _contextLen = s.apiConfig.contextLength > 0 ? s.apiConfig.contextLength : 200000;
     _vision = s.apiConfig.vision;
     _fullUrl = s.apiConfig.fullUrl;
     _questionMode = s.apiConfig.questionMode.isEmpty ? 'auto' : s.apiConfig.questionMode;
@@ -90,7 +93,8 @@ class _SettingsDialogState extends State<SettingsDialog> {
     _key.text = c.key;
     _modelCtrl.text = c.model;
     setState(() {
-      _temp = c.temperature.isEmpty ? 'default' : c.temperature;
+      _temp = c.temperature.isEmpty ? '0.3' : c.temperature;
+      _contextLen = c.contextLength > 0 ? c.contextLength : 200000;
       _vision = c.vision;
       _fullUrl = c.fullUrl;
       _questionMode = c.questionMode.isEmpty ? 'auto' : c.questionMode;
@@ -99,7 +103,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
   }
 
   void _saveConfig(AppState s) {
-    final c = ApiConfig(url: _url.text.trim(), key: _key.text.trim(), model: _modelCtrl.text.trim(), temperature: _temp, vision: _vision, fullUrl: _fullUrl, questionMode: _questionMode, questionSpeed: _questionSpeed);
+    final c = ApiConfig(url: _url.text.trim(), key: _key.text.trim(), model: _modelCtrl.text.trim(), temperature: _temp, vision: _vision, fullUrl: _fullUrl, questionMode: _questionMode, questionSpeed: _questionSpeed, contextLength: _contextLen);
     final profiles = List.of(s.apiProfiles);
     int activeIdx;
     if (_editIdx >= 0 && _editIdx < profiles.length) {
@@ -125,49 +129,69 @@ class _SettingsDialogState extends State<SettingsDialog> {
     final s = AppScope.of(context);
     final c = AppColors.of(context);
     final isLight = c.isLight;
-    final cardBg = isLight ? const Color(0xFFF4F4F8) : const Color(0xFF2A2A32);
-    final sidebarBg = isLight ? const Color(0xFFF4F4F8) : const Color(0xFF222228);
+    // 桌面端 SettingsDialog 容器色（dark 模式略调亮，避免"全黑"观感）
+    final cardBg = isLight ? const Color(0xFFF4F4F8) : const Color(0xFF1E1E22);
+    final sidebarBg = isLight ? const Color(0xFFF4F4F8) : const Color(0xFF18181C);
+    // 参考图二：右侧内容区白底，设置行用浅灰卡片
+    final contentBg = isLight ? const Color(0xFFFFFFFF) : const Color(0xFF232328);
 
     // 检测是否为小屏（手机）
     final screenWidth = MediaQuery.of(context).size.width;
     final isMobile = screenWidth < 600;
 
     if (isMobile) {
-      // 手机端：全屏 Tab 布局
+      if (_section == 'home') {
+        // 手机端：分组入口列表（参考样式：白底圆角卡片分组 + 右侧箭头，点击进子页）
+        return Scaffold(
+          backgroundColor: isLight ? const Color(0xFFEDEEF3) : const Color(0xFF1A1A1E),
+          appBar: AppBar(
+            backgroundColor: isLight ? const Color(0xFFEDEEF3) : const Color(0xFF1A1A1E),
+            elevation: 0,
+            titleSpacing: 4,
+            title: Text('设置', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: c.text)),
+            leading: IconButton(
+              icon: Icon(Icons.arrow_back_ios_new_rounded, size: 20, color: c.text),
+              onPressed: () => Navigator.of(context).pop(),
+            ),
+          ),
+          body: ListView(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+            children: [
+              _mobileGroup(c, const [
+                ['model', '模型设置'],
+                ['interface', '界面设置'],
+              ]),
+              const SizedBox(height: 10),
+              _mobileGroup(c, const [
+                ['account', '账户安全'],
+                ['advanced', '高级功能'],
+              ]),
+            ],
+          ),
+        );
+      }
+      // 手机端子页：返回箭头 + 分区标题 + 分区内容
+      final title = switch (_section) {
+        'model' => '模型设置',
+        'interface' => '界面设置',
+        'account' => '账户安全',
+        _ => '高级功能',
+      };
       return Scaffold(
-        backgroundColor: cardBg,
+        backgroundColor: isLight ? const Color(0xFFEDEEF3) : const Color(0xFF1A1A1E),
         appBar: AppBar(
-          backgroundColor: sidebarBg,
+          backgroundColor: isLight ? const Color(0xFFEDEEF3) : const Color(0xFF1A1A1E),
           elevation: 0,
-          title: Text('设置', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700, color: c.text)),
-          centerTitle: true,
+          titleSpacing: 4,
+          title: Text(title, style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700, color: c.text)),
           leading: IconButton(
-            icon: Icon(Icons.close_rounded, color: c.textSecondary),
-            onPressed: () => Navigator.of(context).pop(),
+            icon: Icon(Icons.arrow_back_ios_new_rounded, size: 20, color: c.text),
+            onPressed: () => setState(() => _section = 'home'),
           ),
         ),
-        body: Column(
-          children: [
-            // 顶部 Tab 栏
-            Container(
-              color: sidebarBg,
-              child: Row(
-                children: [
-                  _mobileTabItem('模型', 'model', c),
-                  _mobileTabItem('通用', 'general', c),
-                  _mobileTabItem('账户', 'account', c),
-                  _mobileTabItem('高级', 'advanced', c),
-                ],
-              ),
-            ),
-            // 内容区
-            Expanded(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
-                child: _buildSection(s, c),
-              ),
-            ),
-          ],
+        body: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+          child: _buildSection(s, c),
         ),
       );
     }
@@ -203,10 +227,13 @@ class _SettingsDialogState extends State<SettingsDialog> {
             ),
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               const SizedBox(height: 12),
-              _navItem(Icons.extension_outlined, '模型与界面', 'model', c),
-              _navItem(Icons.settings_outlined, '通用设置', 'general', c),
-              _navItem(Icons.shield_outlined, '账户安全', 'account', c),
-              _navItem(Icons.hub_outlined, '高级功能', 'advanced', c),
+              _navItem(ColorFiltered(
+                colorFilter: ColorFilter.mode(c.text, BlendMode.srcIn),
+                child: Image.asset('assets/icons/model_settings.png', width: 18, height: 18, filterQuality: FilterQuality.high),
+              ), '模型设置', 'model', c),
+              _navItem(Icon(Icons.palette_outlined, size: 18, color: c.text), '界面设置', 'interface', c),
+              _navItem(Icon(Icons.shield_outlined, size: 18, color: c.text), '账户安全', 'account', c),
+              _navItem(Icon(Icons.hub_outlined, size: 18, color: c.text), '高级功能', 'advanced', c),
               const Spacer(),
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 8),
@@ -214,51 +241,83 @@ class _SettingsDialogState extends State<SettingsDialog> {
               ),
             ]),
           ),
-          // ============ 右侧内容 ============
+          // ============ 右侧内容（参考图二：顶部标题 + 关闭按钮，卡片式设置行） ============
           Expanded(child: Container(
-            color: cardBg,
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.fromLTRB(28, 24, 28, 24),
-              child: _buildSection(s, c),
-            ),
+            color: contentBg,
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(28, 22, 16, 12),
+                child: Row(children: [
+                  Expanded(child: Text('设置', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: c.text))),
+                  IconButton(
+                    icon: Icon(Icons.close_rounded, size: 20, color: c.textSecondary),
+                    onPressed: () => Navigator.of(context).pop(),
+                  ),
+                ]),
+              ),
+              Expanded(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.fromLTRB(28, 8, 28, 24),
+                  child: _buildSection(s, c),
+                ),
+              ),
+            ]),
           )),
         ]),
       ),
     );
   }
 
-  /// 手机端 Tab 项
-  Widget _mobileTabItem(String label, String key, AppColors c) {
-    final selected = _section == key;
-    return Expanded(
-      child: GestureDetector(
+  /// 手机端分组卡片：纯白圆角，组内条目以 1px 浅色分隔线隔开（贴近参考图一）
+  Widget _mobileGroup(AppColors c, List<List<String>> entries) {
+    final isLight = c.isLight;
+    final children = <Widget>[];
+    for (var i = 0; i < entries.length; i++) {
+      children.add(_mobileEntry(c, entries[i][0], entries[i][1]));
+      if (i < entries.length - 1) {
+        children.add(Padding(
+          padding: const EdgeInsets.only(left: 16),
+          child: Divider(height: 1, thickness: 1, color: isLight ? const Color(0xFFEEEEEE) : const Color(0xFF2F2F35)),
+        ));
+      }
+    }
+    return Container(
+      decoration: BoxDecoration(
+        color: isLight ? Colors.white : const Color(0xFF232328),
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: isLight
+            ? [BoxShadow(color: Colors.black.withValues(alpha: 0.04), blurRadius: 8, offset: const Offset(0, 2))]
+            : null,
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Column(mainAxisSize: MainAxisSize.min, children: children),
+    );
+  }
+
+  /// 手机端分组条目：标题 + 右箭头
+  Widget _mobileEntry(AppColors c, String key, String label) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
         onTap: () => setState(() => _section = key),
-        child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 12),
-          decoration: BoxDecoration(
-            border: Border(
-              bottom: BorderSide(
-                color: selected ? _primary : Colors.transparent,
-                width: 2,
+        child: SizedBox(
+          height: 56,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Row(children: [
+              Expanded(
+                child: Text(label, style: TextStyle(fontSize: 15, color: c.text)),
               ),
-            ),
-          ),
-          child: Text(
-            label,
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              fontSize: 13,
-              fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
-              color: selected ? _primary : c.textSecondary,
-            ),
+              Icon(Icons.chevron_right_rounded, size: 22, color: c.textSecondary),
+            ]),
           ),
         ),
       ),
     );
   }
 
-  // ---- 左侧导航条目 ----
-  Widget _navItem(IconData icon, String label, String key, AppColors c) {
+  // ---- 左侧导航条目（参考图二：选中为灰底圆角 + 深色文字） ----
+  Widget _navItem(Widget icon, String label, String key, AppColors c) {
     final selected = _section == key;
     return Padding(
       padding: const EdgeInsets.only(bottom: 4),
@@ -268,16 +327,16 @@ class _SettingsDialogState extends State<SettingsDialog> {
           borderRadius: BorderRadius.circular(10),
           onTap: () => setState(() => _section = key),
           child: Container(
-            height: 40,
-            padding: const EdgeInsets.symmetric(horizontal: 10),
+            height: 42,
+            padding: const EdgeInsets.symmetric(horizontal: 12),
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(10),
-              color: selected ? c.primaryBg.withValues(alpha: c.isLight ? 0.75 : 0.28) : Colors.transparent,
+              color: selected ? (c.isLight ? const Color(0xFFE4E4E8) : const Color(0xFF35353C)) : Colors.transparent,
             ),
             child: Row(children: [
-              Icon(icon, size: 18, color: selected ? c.primaryText : c.textSecondary),
+              icon,
               const SizedBox(width: 10),
-              Text(label, style: TextStyle(fontSize: 13.5, fontWeight: selected ? FontWeight.w700 : FontWeight.w500, color: selected ? c.primaryText : c.textSecondary)),
+              Text(label, style: TextStyle(fontSize: 13.5, fontWeight: selected ? FontWeight.w600 : FontWeight.w500, color: c.text)),
             ]),
           ),
         ),
@@ -285,21 +344,21 @@ class _SettingsDialogState extends State<SettingsDialog> {
     );
   }
 
-  // ---- 按 section 构建右侧 ----
+  // ---- 按 section 构建右侧 / 手机子页内容 ----
   Widget _buildSection(AppState s, AppColors c) {
     switch (_section) {
-      case 'model':   return _sectionModel(s, c);
-      case 'general': return _sectionGeneral(s, c);
-      case 'account': return _sectionAccount(s, c);
-      case 'advanced':return _sectionAdvanced(s, c);
-      default: return const SizedBox.shrink();
+      case 'model':     return _sectionModelContent(s, c);
+      case 'interface': return _sectionInterfaceContent(s, c);
+      case 'account':   return _sectionAccountContent(s, c);
+      case 'advanced':  return _sectionAdvanced(s, c);
+      default:          return _sectionModelContent(s, c);
     }
   }
 
-  // ============== Section 1: 模型与界面 ==============
-  Widget _sectionModel(AppState s, AppColors c) {
+  // ============== Section: 模型设置 ==============
+  Widget _sectionModelContent(AppState s, AppColors c) {
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      _sectionTitle('模型配置', c),
+      _sectionTitle('模型设置', c),
       const SizedBox(height: 14),
       // 配置库下拉 + 删除
       Row(children: [
@@ -340,7 +399,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
       Row(children: [
         Checkbox(value: _fullUrl, onChanged: (v) => setState(() => _fullUrl = v ?? false)),
         const SizedBox(width: 4),
-        Expanded(child: Text('完整 URL（关闭时自动添加 /chat/completions）', style: TextStyle(fontSize: 12, color: c.textTertiary))),
+        Expanded(child: Text('完整 URL', style: TextStyle(fontSize: 12, color: c.textSecondary))),
       ]),
       const SizedBox(height: 12),
       // API Key（带复制 + 明/暗切换）
@@ -377,7 +436,6 @@ class _SettingsDialogState extends State<SettingsDialog> {
           value: _temp,
           decoration: _deco(c),
           items: const [
-            DropdownMenuItem(value: 'default', child: Text('厂家默认')),
             DropdownMenuItem(value: '0', child: Text('精确 (0)')),
             DropdownMenuItem(value: '0.3', child: Text('保守 (0.3)')),
             DropdownMenuItem(value: '0.7', child: Text('均衡 (0.7)')),
@@ -387,10 +445,23 @@ class _SettingsDialogState extends State<SettingsDialog> {
         ),
         c,
       ),
-      const SizedBox(height: 4),
-      Padding(
-        padding: const EdgeInsets.only(left: 4),
-        child: Text('温度值越低答案越准确、越随机度低；厂家默认最稳', style: TextStyle(fontSize: 11, color: c.textTertiary)),
+      const SizedBox(height: 12),
+      // 上下文长度
+      _labeledField(
+        '上下文长度',
+        DropdownButtonFormField<int>(
+          value: _contextLen,
+          decoration: _deco(c, hint: '默认 200K'),
+          items: const [
+            DropdownMenuItem(value: 32000, child: Text('32K')),
+            DropdownMenuItem(value: 64000, child: Text('64K')),
+            DropdownMenuItem(value: 128000, child: Text('128K')),
+            DropdownMenuItem(value: 200000, child: Text('200K（默认）')),
+            DropdownMenuItem(value: 1000000, child: Text('1000K（1M）')),
+          ],
+          onChanged: (v) => setState(() => _contextLen = v ?? _contextLen),
+        ),
+        c,
       ),
       const SizedBox(height: 12),
       // 出题策略
@@ -428,8 +499,6 @@ class _SettingsDialogState extends State<SettingsDialog> {
       _SwitchRow(
         icon: Icons.image_outlined,
         title: '图形能力',
-        subtitle: '开启后支持图片上传与 AI 识别',
-        subtitle2: '开启后支持图片上传为 AI 识别。',
         value: _vision,
         onChanged: (v) => setState(() => _vision = v),
         c: c,
@@ -453,36 +522,33 @@ class _SettingsDialogState extends State<SettingsDialog> {
           child: const Text('保存'),
         ),
       ),
-      const SizedBox(height: 26),
-      // ---- 界面与风格 ----
-      _sectionTitle('界面与风格', c),
+    ]);
+  }
+
+  // ============== Section: 界面设置（界面设置与通用设置融合，不含数据备份） ==============
+  Widget _sectionInterfaceContent(AppState s, AppColors c) {
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      _sectionTitle('界面设置', c),
       const SizedBox(height: 14),
       // 界面模式
       _settingRow('界面模式', c, child: Wrap(spacing: 10, runSpacing: 8, children: [
         _buildChip2(s.uiMode.isEmpty ? 'desktop' : s.uiMode, 'desktop', '电脑端', s, c, (v) => s.setUiMode(v)),
         _buildChip2(s.uiMode.isEmpty ? 'desktop' : s.uiMode, 'mobile', '手机端', s, c, (v) => s.setUiMode(v)),
-      ]), hint: _isPhone ? '切换后立即生效' : '切换后立即生效，也可按 F8 快速切换'),
+      ])),
       const SizedBox(height: 14),
       // 主题（第三大主题：经典 / 毛玻璃 / 深色）
       _settingRow('主题', c, child: Wrap(spacing: 10, runSpacing: 8, children: [
         _buildChip2(s.darkMode ? 'dark' : s.uiStyle, 'classic', '经典', s, c, (_) => s.setThemeStyle('classic')),
         _buildChip2(s.darkMode ? 'dark' : s.uiStyle, 'glass', '毛玻璃', s, c, (_) => s.setThemeStyle('glass')),
         _buildChip2(s.darkMode ? 'dark' : s.uiStyle, 'dark', '深色', s, c, (_) => s.setThemeStyle('dark')),
-      ]), hint: '经典与毛玻璃为浅色主题，深色为独立深色主题；也可用侧边栏月亮/太阳图标快速切换'),
+      ])),
       const SizedBox(height: 14),
       // 导航指示器
       _settingRow('导航指示器', c, child: Wrap(spacing: 10, runSpacing: 8, children: [
         _buildChip2(s.navIndicator, 'underline', '灰色下划线', s, c, (v) => s.setNavIndicator(v)),
         _buildChip2(s.navIndicator, 'pill', '紫色渐变胶囊', s, c, (v) => s.setNavIndicator(v)),
-      ]), hint: '控制侧边栏选中项的视觉表现'),
-    ]);
-  }
-
-  // ============== Section 2: 通用设置 ==============
-  Widget _sectionGeneral(AppState s, AppColors c) {
-    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      _sectionTitle('通用设置', c),
-      const SizedBox(height: 14),
+      ])),
+      const SizedBox(height: 18),
       CheckboxListTile(
         value: s.fullscreen,
         onChanged: (v) {
@@ -490,7 +556,6 @@ class _SettingsDialogState extends State<SettingsDialog> {
           Future.delayed(const Duration(milliseconds: 200), () => s.toggleFullscreen(v ?? false));
         },
         title: Text('全屏模式', style: TextStyle(fontSize: 14, color: c.text)),
-        subtitle: Text(_isPhone ? '开启后进入沉浸式全屏，隐藏状态栏与导航栏' : '开启后进入全屏，按 F11 可快速切换', style: TextStyle(fontSize: 11.5, color: c.textTertiary)),
         contentPadding: EdgeInsets.zero,
       ),
       const SizedBox(height: 6),
@@ -498,7 +563,6 @@ class _SettingsDialogState extends State<SettingsDialog> {
         value: s.powerSavingMode,
         onChanged: (v) => s.togglePowerSavingMode(v ?? false),
         title: Text('省电模式', style: TextStyle(fontSize: 14, color: c.text)),
-        subtitle: Text('开启后锁定60帧以节省电量，关闭后支持120帧高刷', style: TextStyle(fontSize: 11.5, color: c.textTertiary)),
         contentPadding: EdgeInsets.zero,
       ),
       const SizedBox(height: 6),
@@ -514,180 +578,181 @@ class _SettingsDialogState extends State<SettingsDialog> {
         contentPadding: EdgeInsets.zero,
         leading: Icon(Icons.replay_rounded, size: 20, color: c.textTertiary),
         title: Text('重新查看引导', style: TextStyle(fontSize: 14, color: c.text)),
-        subtitle: Text('再次打开首次启动的快速引导向导', style: TextStyle(fontSize: 11.5, color: c.textTertiary)),
         onTap: () { Navigator.of(context).pop(); s.resetOnboarding(); },
       ),
-      const SizedBox(height: 22),
-      _sectionTitle('数据备份', c),
-      const SizedBox(height: 6),
-      Text('备份包含 API 配置、收藏、错题本、学习记录、生词本等；API Key 敏感，请妥善保管', style: TextStyle(fontSize: 11.5, color: c.textTertiary)),
-      const SizedBox(height: 12),
-      // 一键备份：自动保存到电脑「下载」文件夹；手机保存到应用默认文件夹
-      SizedBox(
-        width: double.infinity,
-        child: FilledButton.icon(
-          onPressed: () => _backup(s),
-          icon: const Icon(Icons.save_alt, size: 16),
-          label: const Text('一键备份数据'),
-          style: FilledButton.styleFrom(backgroundColor: _primary, foregroundColor: Colors.white),
-        ),
-      ),
-      const SizedBox(height: 10),
-      Row(children: [
-        Expanded(child: OutlinedButton.icon(onPressed: () => _export(s), icon: const Icon(Icons.download, size: 16), label: const Text('导出备份'))),
-        const SizedBox(width: 10),
-        Expanded(child: OutlinedButton.icon(onPressed: () => _import(s), icon: const Icon(Icons.upload, size: 16), label: const Text('导入备份'))),
-      ]),
     ]);
   }
 
-  // ============== Section 3: 账户安全 ==============
-  Widget _sectionAccount(AppState s, AppColors c) {
+  // ============== 统一卡片容器（参考图二：图标 + 标题 + 内容） ==============
+  Widget _settingsCard({
+    required AppColors c,
+    required IconData icon,
+    required String title,
+    required Widget child,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: c.isLight ? const Color(0xFFF7F8FA) : const Color(0xFF2E2E35),
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: c.isLight ? 0.04 : 0.15),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Icon(icon, size: 22, color: _primary),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(title, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: c.text)),
+            ]),
+          ),
+        ]),
+        const SizedBox(height: 14),
+        child,
+      ]),
+    );
+  }
+
+  // ============== Section: 账户安全（含数据备份、墨墨、联网） ==============
+  Widget _sectionAccountContent(AppState s, AppColors c) {
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      _sectionTitle('账户与同步', c),
+      _sectionTitle('账户安全', c),
       const SizedBox(height: 14),
-      // 墨墨背单词同步卡片
-      Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: c.isLight ? Colors.white : const Color(0xFF33333A),
-          borderRadius: BorderRadius.circular(16),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: c.isLight ? 0.04 : 0.15),
-              blurRadius: 8,
-              offset: const Offset(0, 2),
-            ),
-          ],
-        ),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Row(children: [
-            Icon(Icons.auto_stories_outlined, size: 22, color: _primary),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text('墨墨背单词同步', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: c.text)),
-                const SizedBox(height: 2),
-                Text('将墨墨今日学习单词同步到 AFloat 墨墨词库', style: TextStyle(fontSize: 11.5, color: c.textTertiary)),
-              ]),
-            ),
-          ]),
-          const SizedBox(height: 14),
-          // Token 输入框
-          TextField(
-            controller: _maimemoTokenCtrl,
-            obscureText: _maimemoObscure,
-            style: TextStyle(fontSize: 13, color: c.text),
-            decoration: _deco(c, hint: '墨墨 App「实验功能 → 开放 API」获取').copyWith(
-              suffixIcon: Row(mainAxisSize: MainAxisSize.min, children: [
-                IconButton(
-                  tooltip: _maimemoObscure ? '显示' : '隐藏',
-                  onPressed: () => setState(() => _maimemoObscure = !_maimemoObscure),
-                  icon: Icon(_maimemoObscure ? Icons.visibility_outlined : Icons.visibility_off_outlined, size: 18, color: c.textTertiary),
-                ),
-              ]),
-            ),
-            onChanged: (_) {
-              s.setMaimemoToken(_maimemoTokenCtrl.text);
-              setState(() {});
-            },
-          ),
-          const SizedBox(height: 10),
-          // 状态行
-          if (s.maimemoToken.isNotEmpty) ...[
-            _maimemoStatusLine(s, c),
-            const SizedBox(height: 10),
-          ],
-          // 同步按钮
-          SizedBox(
-            width: double.infinity,
-            height: 42,
-            child: FilledButton(
-              style: FilledButton.styleFrom(
-                backgroundColor: _primary,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-              ),
-              onPressed: s.maimemoToken.trim().isEmpty || _maimemoBusy
-                  ? null
-                  : () => _syncMaimemo(s),
-              child: _maimemoBusy
-                  ? const SizedBox(
-                      width: 18, height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                    )
-                  : Text(
-                      s.maimemoLastSync > 0 ? '再次同步今日单词' : '同步今日单词',
-                      style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
-                    ),
-            ),
-          ),
-          if (_maimemoMsg != null) ...[
-            const SizedBox(height: 8),
-            Text(_maimemoMsg!, style: TextStyle(fontSize: 12, color: _maimemoMsg!.contains('失败') || _maimemoMsg!.contains('错误') ? const Color(0xFFDC2626) : const Color(0xFF16A34A))),
-          ],
-          const SizedBox(height: 8),
-          Text('如何获取 Token：打开墨墨背单词 App → 我的 → 更多设置 → 实验功能 → 开放 API，点击生成后复制。', style: TextStyle(fontSize: 11, color: c.textTertiary, height: 1.5)),
-        ]),
-      ),
-      const SizedBox(height: 14),
-      // 联网搜索服务卡片
-      Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: c.isLight ? Colors.white : const Color(0xFF33333A),
-          borderRadius: BorderRadius.circular(16),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: c.isLight ? 0.04 : 0.15),
-              blurRadius: 8,
-              offset: const Offset(0, 2),
-            ),
-          ],
-        ),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Row(children: [
-            Icon(Icons.travel_explore, size: 22, color: _primary),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text('联网搜索服务', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: c.text)),
-                const SizedBox(height: 2),
-                Text('让 AI 助手联网获取实时信息（百度千帆 AI 搜索组件）', style: TextStyle(fontSize: 11.5, color: c.textTertiary)),
-              ]),
-            ),
-          ]),
-          const SizedBox(height: 14),
-          TextField(
-            controller: _searchUrlCtrl,
-            style: TextStyle(fontSize: 13, color: c.text),
-            decoration: _deco(c, hint: '搜索服务地址'),
-            onChanged: (_) {
-              s.setSearchConfig(_searchUrlCtrl.text, _searchKeyCtrl.text);
-            },
-          ),
-          const SizedBox(height: 10),
-          TextField(
-            controller: _searchKeyCtrl,
-            obscureText: _searchObscure,
-            style: TextStyle(fontSize: 13, color: c.text),
-            decoration: _deco(c, hint: 'AppBuilder API Key').copyWith(
-              suffixIcon: Row(mainAxisSize: MainAxisSize.min, children: [
-                IconButton(
-                  tooltip: _searchObscure ? '显示' : '隐藏',
-                  onPressed: () => setState(() => _searchObscure = !_searchObscure),
-                  icon: Icon(_searchObscure ? Icons.visibility_outlined : Icons.visibility_off_outlined, size: 18, color: c.textTertiary),
-                ),
-              ]),
-            ),
-            onChanged: (_) {
-              s.setSearchConfig(_searchUrlCtrl.text, _searchKeyCtrl.text);
-            },
-          ),
-          const SizedBox(height: 8),
-          Text('获取 Key：百度智能云千帆 → AppBuilder → 创建应用 → 查看 API Key。每日 50 次免费调用，超出后按量计费。', style: TextStyle(fontSize: 11, color: c.textTertiary, height: 1.5)),
-        ]),
-      ),
+      _buildBackupCard(s, c),
+      const SizedBox(height: 22),
+      _buildMaimemoCard(s, c),
+      const SizedBox(height: 22),
+      _buildSearchCard(s, c),
     ]);
+  }
+
+  // ============== 数据备份卡片 ==============
+  Widget _buildBackupCard(AppState s, AppColors c) {
+    return _settingsCard(
+      c: c,
+      icon: Icons.cloud_sync_outlined,
+      title: '数据备份',
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        SizedBox(
+          width: double.infinity,
+          child: FilledButton.icon(
+            onPressed: () => _backup(s),
+            icon: const Icon(Icons.save_alt, size: 16),
+            label: const Text('一键备份数据'),
+            style: FilledButton.styleFrom(backgroundColor: _primary, foregroundColor: Colors.white),
+          ),
+        ),
+        const SizedBox(height: 10),
+        Row(children: [
+          Expanded(child: OutlinedButton.icon(onPressed: () => _export(s), icon: const Icon(Icons.download, size: 16), label: const Text('导出备份'))),
+          const SizedBox(width: 10),
+          Expanded(child: OutlinedButton.icon(onPressed: () => _import(s), icon: const Icon(Icons.upload, size: 16), label: const Text('导入备份'))),
+        ]),
+      ]),
+    );
+  }
+
+  // ============== 墨墨同步卡片 ==============
+  Widget _buildMaimemoCard(AppState s, AppColors c) {
+    return _settingsCard(
+      c: c,
+      icon: Icons.auto_stories_outlined,
+      title: '墨墨背单词同步',
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        TextField(
+          controller: _maimemoTokenCtrl,
+          obscureText: _maimemoObscure,
+          style: TextStyle(fontSize: 13, color: c.text),
+          decoration: _deco(c, hint: '墨墨 App「实验功能 → 开放 API」获取').copyWith(
+            suffixIcon: Row(mainAxisSize: MainAxisSize.min, children: [
+              IconButton(
+                tooltip: _maimemoObscure ? '显示' : '隐藏',
+                onPressed: () => setState(() => _maimemoObscure = !_maimemoObscure),
+                icon: Icon(_maimemoObscure ? Icons.visibility_outlined : Icons.visibility_off_outlined, size: 18, color: c.textTertiary),
+              ),
+            ]),
+          ),
+          onChanged: (_) {
+            s.setMaimemoToken(_maimemoTokenCtrl.text);
+            setState(() {});
+          },
+        ),
+        const SizedBox(height: 10),
+        if (s.maimemoToken.isNotEmpty) ...[
+          _maimemoStatusLine(s, c),
+          const SizedBox(height: 10),
+        ],
+        SizedBox(
+          width: double.infinity,
+          height: 42,
+          child: FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: _primary,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            ),
+            onPressed: s.maimemoToken.trim().isEmpty || _maimemoBusy
+                ? null
+                : () => _syncMaimemo(s),
+            child: _maimemoBusy
+                ? const SizedBox(
+                    width: 18, height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                  )
+                : Text(
+                    s.maimemoLastSync > 0 ? '再次同步今日单词' : '同步今日单词',
+                    style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
+                  ),
+          ),
+        ),
+        if (_maimemoMsg != null) ...[
+          const SizedBox(height: 8),
+          Text(_maimemoMsg!, style: TextStyle(fontSize: 12, color: _maimemoMsg!.contains('失败') || _maimemoMsg!.contains('错误') ? const Color(0xFFDC2626) : const Color(0xFF16A34A))),
+        ],
+      ]),
+    );
+  }
+
+  // ============== 联网搜索卡片 ==============
+  Widget _buildSearchCard(AppState s, AppColors c) {
+    return _settingsCard(
+      c: c,
+      icon: Icons.travel_explore,
+      title: '联网搜索服务',
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        TextField(
+          controller: _searchUrlCtrl,
+          style: TextStyle(fontSize: 13, color: c.text),
+          decoration: _deco(c, hint: '搜索服务地址'),
+          onChanged: (_) {
+            s.setSearchConfig(_searchUrlCtrl.text, _searchKeyCtrl.text);
+          },
+        ),
+        const SizedBox(height: 10),
+        TextField(
+          controller: _searchKeyCtrl,
+          obscureText: _searchObscure,
+          style: TextStyle(fontSize: 13, color: c.text),
+          decoration: _deco(c, hint: 'AppBuilder API Key').copyWith(
+            suffixIcon: Row(mainAxisSize: MainAxisSize.min, children: [
+              IconButton(
+                tooltip: _searchObscure ? '显示' : '隐藏',
+                onPressed: () => setState(() => _searchObscure = !_searchObscure),
+                icon: Icon(_searchObscure ? Icons.visibility_outlined : Icons.visibility_off_outlined, size: 18, color: c.textTertiary),
+              ),
+            ]),
+          ),
+          onChanged: (_) {
+            s.setSearchConfig(_searchUrlCtrl.text, _searchKeyCtrl.text);
+          },
+        ),
+      ]),
+    );
   }
 
   Widget _maimemoStatusLine(AppState s, AppColors c) {
@@ -748,6 +813,21 @@ class _SettingsDialogState extends State<SettingsDialog> {
         onChanged: (v) => s.setDevMode(v),
         c: c,
       ),
+      const SizedBox(height: 24),
+      _sectionTitle('MCP 服务器 (dsh-mcp-client)', c),
+      const SizedBox(height: 6),
+      Text(
+        '按 JSON 数组格式填写 MCP server 配置；保存后会自动拉起并把它们的工具挂给 AI。\n'
+        '示例：\n[{"name":"github","command":"npx","args":["-y","@modelcontextprotocol/server-github"],"env":{}}]',
+        style: TextStyle(fontSize: 12, color: c.textSecondary, height: 1.5),
+      ),
+      const SizedBox(height: 10),
+      _McpConfigEditor(s: s, c: c),
+      const SizedBox(height: 10),
+      if (s.mcpRegistry.clients.isNotEmpty)
+        _McpStatusPanel(s: s, c: c)
+      else if (s.mcpConfigJson.trim().isNotEmpty && s.mcpConfigJson.trim() != '[]')
+        Text('配置存在但尚未拉起 server；点保存后重启对话。', style: TextStyle(fontSize: 11, color: c.textTertiary)),
     ]);
   }
 
@@ -786,12 +866,10 @@ class _SettingsDialogState extends State<SettingsDialog> {
     ]);
   }
 
-  Widget _settingRow(String label, AppColors c, {required Widget child, String? hint}) => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+  Widget _settingRow(String label, AppColors c, {required Widget child}) => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
     Text(label, style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600, color: c.text)),
     const SizedBox(height: 8),
     child,
-    if (hint != null) const SizedBox(height: 4),
-    if (hint != null) Padding(padding: const EdgeInsets.only(left: 2), child: Text(hint, style: TextStyle(fontSize: 11, color: c.textTertiary))),
   ]);
 
   Widget _buildChip2(String current, String value, String label, AppState s, AppColors c, ValueChanged<String> onTap) {
@@ -888,54 +966,174 @@ class _SettingsDialogState extends State<SettingsDialog> {
   }
 }
 
-// 带图标 + 大开关的行（用于：图形能力、深色模式）
+// MCP 配置编辑器（高级功能下方）
+class _McpConfigEditor extends StatefulWidget {
+  final AppState s;
+  final AppColors c;
+  const _McpConfigEditor({required this.s, required this.c});
+  @override
+  State<_McpConfigEditor> createState() => _McpConfigEditorState();
+}
+
+class _McpConfigEditorState extends State<_McpConfigEditor> {
+  late TextEditingController _ctrl;
+  String? _hint;
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = TextEditingController(text: widget.s.mcpConfigJson);
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Container(
+        decoration: BoxDecoration(
+          color: widget.c.isLight ? const Color(0xFFF1F2F4) : const Color(0xFF1A1A1F),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: widget.c.divider),
+        ),
+        child: TextField(
+          controller: _ctrl,
+          maxLines: 8,
+          minLines: 4,
+          style: TextStyle(
+            fontFamily: 'monospace',
+            fontSize: 12,
+            color: widget.c.text,
+          ),
+          decoration: InputDecoration(
+            hintText: '[{"name":"...","command":"...","args":[...],"env":{}}]',
+            contentPadding: const EdgeInsets.all(12),
+            border: InputBorder.none,
+          ),
+        ),
+      ),
+      const SizedBox(height: 10),
+      Row(children: [
+        ElevatedButton.icon(
+          onPressed: () async {
+            setState(() => _hint = null);
+            try {
+              await widget.s.setMcpConfigJson(_ctrl.text);
+              if (mounted) setState(() => _hint = '✓ 已保存并尝试连接 ${widget.s.mcpRegistry.clients.length} 个 server');
+            } catch (e) {
+              if (mounted) setState(() => _hint = '保存失败：$e');
+            }
+          },
+          icon: const Icon(Icons.save_outlined, size: 16),
+          label: const Text('保存并重连'),
+          style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF10B981), foregroundColor: Colors.white),
+        ),
+        const SizedBox(width: 10),
+        OutlinedButton.icon(
+          onPressed: () async {
+            await widget.s.setMcpConfigJson('[]');
+            _ctrl.text = '[]';
+            if (mounted) setState(() => _hint = '已清空并断开所有 MCP server');
+          },
+          icon: const Icon(Icons.delete_outline, size: 16),
+          label: const Text('清空'),
+        ),
+        const SizedBox(width: 10),
+        if (_hint != null) Expanded(child: Text(_hint!, style: const TextStyle(fontSize: 11, color: Color(0xFF10B981)), overflow: TextOverflow.ellipsis)),
+      ]),
+    ]);
+  }
+}
+
+class _McpStatusPanel extends StatelessWidget {
+  final AppState s;
+  final AppColors c;
+  const _McpStatusPanel({required this.s, required this.c});
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: c.isLight ? const Color(0xFFF7F8FA) : const Color(0xFF16161A),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: const Color(0xFF10B981).withValues(alpha: 0.3)),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          const Icon(Icons.check_circle_outline, size: 16, color: Color(0xFF10B981)),
+          const SizedBox(width: 6),
+          Text('已连接 ${s.mcpRegistry.clients.length} 个 MCP server', style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+        ]),
+        const SizedBox(height: 8),
+        for (final client in s.mcpRegistry.clients) ...[
+          Padding(
+            padding: const EdgeInsets.only(top: 4, bottom: 4),
+            child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Icon(Icons.hub, size: 14, color: Color(0xFFADADB8)),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  '${client.name} (${client.serverInfo ?? "?"}) — ${client.tools.length} 个工具',
+                  style: const TextStyle(fontSize: 12),
+                ),
+              ),
+            ]),
+          ),
+          if (client.tools.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(left: 22, bottom: 6),
+              child: Wrap(spacing: 6, runSpacing: 4, children: client.tools.take(20).map((t) {
+                return Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(color: const Color(0xFF10B981).withValues(alpha: 0.12), borderRadius: BorderRadius.circular(4)),
+                  child: Text(t.name, style: const TextStyle(fontSize: 10, color: Color(0xFFA78BFA))),
+                );
+              }).toList()),
+            ),
+        ],
+      ]),
+    );
+  }
+}
+
+// 开关设置卡片行（参考图二：浅灰圆角卡片 + 粗标题 + 描述 + 绿色开关）
+const _kSwitchGreen = Color(0xFF34C77B);
+
 class _SwitchRow extends StatelessWidget {
   final IconData icon;
   final String title;
-  final String? subtitle;
-  final String? subtitle2;
   final bool value;
   final ValueChanged<bool> onChanged;
   final AppColors c;
-  const _SwitchRow({required this.icon, required this.title, this.subtitle, this.subtitle2, required this.value, required this.onChanged, required this.c});
+  const _SwitchRow({required this.icon, required this.title, required this.value, required this.onChanged, required this.c});
 
   @override
   Widget build(BuildContext context) {
     final isLight = c.isLight;
     return Container(
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.fromLTRB(16, 14, 12, 14),
+      margin: const EdgeInsets.only(bottom: 10),
       decoration: BoxDecoration(
-        color: isLight ? Colors.white : const Color(0xFF33333A),
-        borderRadius: BorderRadius.circular(14),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: isLight ? 0.04 : 0.15),
-            blurRadius: 8,
-            offset: const Offset(0, 2),
-          ),
-        ],
+        color: isLight ? const Color(0xFFFAFBFD) : const Color(0xFF2E2E35),
+        borderRadius: BorderRadius.circular(12),
       ),
       child: Row(children: [
-        Icon(icon, size: 22, color: c.textSecondary),
-        const SizedBox(width: 10),
         Expanded(
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(title, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: c.text)),
-            if (subtitle != null) ...[
-              const SizedBox(height: 2),
-              Text(subtitle!, style: TextStyle(fontSize: 11.5, color: c.textTertiary)),
-            ],
-            if (subtitle2 != null) ...[
-              const SizedBox(height: 2),
-              Text(subtitle2!, style: TextStyle(fontSize: 11, color: c.textTertiary)),
-            ],
+            Text(title, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: c.text)),
           ]),
         ),
+        const SizedBox(width: 12),
         Switch(
           value: value,
           onChanged: onChanged,
-          activeColor: _primary,
-          activeTrackColor: _primary.withValues(alpha: 0.4),
+          activeThumbColor: Colors.white,
+          activeTrackColor: _kSwitchGreen,
+          inactiveTrackColor: isLight ? const Color(0xFFE2E2E6) : const Color(0xFF3F3F46),
+          inactiveThumbColor: Colors.white,
         ),
       ]),
     );
@@ -1005,6 +1203,7 @@ class _ChatSettingsDialogState extends State<ChatSettingsDialog> {
   late final TextEditingController _key;
   late final TextEditingController _modelCtrl;
   late String _temp;
+  late int _contextLen;
   late bool _vision;
   late bool _fullUrl;
   late bool _independent;
@@ -1026,7 +1225,8 @@ class _ChatSettingsDialogState extends State<ChatSettingsDialog> {
     _url = TextEditingController(text: cfg.url);
     _key = TextEditingController(text: cfg.key);
     _modelCtrl = TextEditingController(text: cfg.model);
-    _temp = cfg.temperature.isEmpty ? 'default' : cfg.temperature;
+    _temp = cfg.temperature.isEmpty ? '0.3' : cfg.temperature;
+    _contextLen = cfg.contextLength > 0 ? cfg.contextLength : 200000;
     _vision = cfg.vision;
     _fullUrl = cfg.fullUrl;
     _independent = s.chatApiIndependent;
@@ -1052,7 +1252,8 @@ class _ChatSettingsDialogState extends State<ChatSettingsDialog> {
     _key.text = c.key;
     _modelCtrl.text = c.model;
     setState(() {
-      _temp = c.temperature.isEmpty ? 'default' : c.temperature;
+      _temp = c.temperature.isEmpty ? '0.3' : c.temperature;
+      _contextLen = c.contextLength > 0 ? c.contextLength : 200000;
       _vision = c.vision;
       _fullUrl = c.fullUrl;
     });
@@ -1067,6 +1268,7 @@ class _ChatSettingsDialogState extends State<ChatSettingsDialog> {
       temperature: _temp,
       vision: _vision,
       fullUrl: _fullUrl,
+      contextLength: _contextLen,
     );
     if (_independent) {
       // 保存到 chatProfiles
@@ -1238,7 +1440,7 @@ class _ChatSettingsDialogState extends State<ChatSettingsDialog> {
               Row(children: [
                 Checkbox(value: _fullUrl, onChanged: (v) => setState(() => _fullUrl = v ?? false)),
                 const SizedBox(width: 4),
-                Expanded(child: Text('完整 URL（关闭时自动添加 /chat/completions）', style: TextStyle(fontSize: 12, color: c.textTertiary))),
+                Expanded(child: Text('完整 URL', style: TextStyle(fontSize: 12, color: c.textSecondary))),
               ]),
               const SizedBox(height: 12),
               // API Key
@@ -1275,7 +1477,6 @@ class _ChatSettingsDialogState extends State<ChatSettingsDialog> {
                   value: _temp,
                   decoration: _deco(c),
                   items: const [
-                    DropdownMenuItem(value: 'default', child: Text('厂家默认')),
                     DropdownMenuItem(value: '0', child: Text('精确 (0)')),
                     DropdownMenuItem(value: '0.3', child: Text('保守 (0.3)')),
                     DropdownMenuItem(value: '0.7', child: Text('均衡 (0.7)')),
@@ -1285,10 +1486,23 @@ class _ChatSettingsDialogState extends State<ChatSettingsDialog> {
                 ),
                 c,
               ),
-              const SizedBox(height: 4),
-              Padding(
-                padding: const EdgeInsets.only(left: 4),
-                child: Text('温度值越低答案越准确、越随机度低；厂家默认最稳', style: TextStyle(fontSize: 11, color: c.textTertiary)),
+              const SizedBox(height: 12),
+              // 上下文长度
+              _labeledField(
+                '上下文长度',
+                DropdownButtonFormField<int>(
+                  value: _contextLen,
+                  decoration: _deco(c, hint: '默认 200K'),
+                  items: const [
+                    DropdownMenuItem(value: 32000, child: Text('32K')),
+                    DropdownMenuItem(value: 64000, child: Text('64K')),
+                    DropdownMenuItem(value: 128000, child: Text('128K')),
+                    DropdownMenuItem(value: 200000, child: Text('200K（默认）')),
+                    DropdownMenuItem(value: 1000000, child: Text('1000K（1M）')),
+                  ],
+                  onChanged: (v) => setState(() => _contextLen = v ?? _contextLen),
+                ),
+                c,
               ),
               const SizedBox(height: 12),
               // 图形能力
@@ -1307,8 +1521,6 @@ class _ChatSettingsDialogState extends State<ChatSettingsDialog> {
                   Expanded(
                     child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                       Text('图形能力', style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w700, color: c.text)),
-                      const SizedBox(height: 2),
-                      Text('开启后支持图片上传与 AI 识别', style: TextStyle(fontSize: 11, color: c.textTertiary)),
                     ]),
                   ),
                   Switch(value: _vision, onChanged: (v) => setState(() => _vision = v)),

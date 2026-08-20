@@ -472,8 +472,10 @@ class ApiConfig {
   String questionMode;
   /// 出题速度：fast=快速（关闭AI思考，直出） / normal=正常（允许AI深度思考）
   String questionSpeed;
+  /// 模型上下文窗口长度（token 数）。默认 200K；Max 模式下临时扩展到 1000K（见 AppState.chatThinking）
+  int contextLength;
 
-  ApiConfig({this.url = '', this.key = '', this.model = 'gpt-5.1', this.temperature = 'default', this.vision = true, this.fullUrl = false, this.questionMode = 'auto', this.questionSpeed = 'fast'});
+  ApiConfig({this.url = '', this.key = '', this.model = 'gpt-5.1', this.temperature = '0.3', this.vision = true, this.fullUrl = false, this.questionMode = 'auto', this.questionSpeed = 'fast', this.contextLength = 200000});
 
   bool get ready => url.isNotEmpty && key.isNotEmpty;
 
@@ -485,17 +487,18 @@ class ApiConfig {
     return '$trimmed/chat/completions';
   }
 
-  Map<String, dynamic> toJson() => {'url': url, 'key': key, 'model': model, 'temperature': temperature, 'vision': vision, 'fullUrl': fullUrl, 'questionMode': questionMode, 'questionSpeed': questionSpeed};
+  Map<String, dynamic> toJson() => {'url': url, 'key': key, 'model': model, 'temperature': temperature, 'vision': vision, 'fullUrl': fullUrl, 'questionMode': questionMode, 'questionSpeed': questionSpeed, 'contextLength': contextLength};
 
   factory ApiConfig.fromJson(Map<String, dynamic> j) => ApiConfig(
         url: (j['url'] ?? '') as String,
         key: (j['key'] ?? '') as String,
         model: (j['model'] ?? 'gpt-5.1') as String,
-        temperature: (j['temperature'] ?? 'default') as String,
+        temperature: (j['temperature'] ?? '0.3') as String,
         vision: (j['vision'] ?? true) as bool,
         fullUrl: (j['fullUrl'] ?? false) as bool,
         questionMode: (j['questionMode'] ?? 'auto') as String,
         questionSpeed: (j['questionSpeed'] ?? 'fast') as String,
+        contextLength: (j['contextLength'] as num?)?.toInt() ?? 200000,
       );
 }
 
@@ -503,17 +506,50 @@ class ApiConfig {
 class ApiProfile {
   String name;
   ApiConfig config;
+  /// 价格文字（可选，例如 "0.79x"），UI 在模型选择器右侧展示
+  String? priceLabel;
+  /// 模型旁的标签 chip（可选），用于展示「夜间加速」「限时免费」等运营标签
+  List<({String text, int colorValue})> tags;
 
-  ApiProfile({required this.name, required this.config});
+  ApiProfile({
+    required this.name,
+    required this.config,
+    this.priceLabel,
+    this.tags = const [],
+  });
 
   String get label => name.isEmpty ? config.model : name;
 
-  Map<String, dynamic> toJson() => {'name': name, 'config': config.toJson()};
+  Map<String, dynamic> toJson() => {
+        'name': name,
+        'config': config.toJson(),
+        if (priceLabel != null) 'priceLabel': priceLabel,
+        if (tags.isNotEmpty)
+          'tags': tags
+              .map((t) => {'text': t.text, 'colorValue': t.colorValue})
+              .toList(),
+      };
 
-  factory ApiProfile.fromJson(Map<String, dynamic> j) => ApiProfile(
-        name: (j['name'] ?? '') as String,
-        config: ApiConfig.fromJson((j['config'] ?? {}) as Map<String, dynamic>),
-      );
+  factory ApiProfile.fromJson(Map<String, dynamic> j) {
+    final tagList = <({String text, int colorValue})>[];
+    final rawTags = j['tags'];
+    if (rawTags is List) {
+      for (final t in rawTags) {
+        if (t is Map) {
+          final text = (t['text'] as String?) ?? '';
+          if (text.isEmpty) continue;
+          final cv = (t['colorValue'] as num?)?.toInt() ?? 0xFF60A5FA;
+          tagList.add((text: text, colorValue: cv));
+        }
+      }
+    }
+    return ApiProfile(
+      name: (j['name'] ?? '') as String,
+      config: ApiConfig.fromJson((j['config'] ?? {}) as Map<String, dynamic>),
+      priceLabel: j['priceLabel'] as String?,
+      tags: tagList,
+    );
+  }
 }
 
 /// 学习记录

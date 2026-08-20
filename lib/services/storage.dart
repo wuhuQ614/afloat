@@ -64,10 +64,11 @@ class Storage {
         url: _get('apiUrl', ''),
         key: _get('apiKey', ''),
         model: _get('apiModel', 'gpt-5.1'),
-        temperature: _get('apiTemp', 'default'),
+        temperature: _get('apiTemp', '0.3'),
         fullUrl: _getBool('apiFullUrl', false),
         questionMode: _get('apiQuestionMode', 'auto'),
         questionSpeed: _get('apiQuestionSpeed', 'fast'),
+        contextLength: _getInt('apiContextLength', 200000),
       );
 
   static void saveApiConfig(ApiConfig c) {
@@ -78,17 +79,33 @@ class Storage {
     _setBool('apiFullUrl', c.fullUrl);
     _set('apiQuestionMode', c.questionMode);
     _set('apiQuestionSpeed', c.questionSpeed);
+    _setInt('apiContextLength', c.contextLength);
   }
 
   static bool loadChatIndependent() => _getBool('chatApiIndependent', false);
   static void saveChatIndependent(bool v) => _setBool('chatApiIndependent', v);
 
+  /// AI 助手工作目录（harness 工具 fs root）。为空表示使用默认 C:\Users
+  static String loadWorkspacePath() => _get('chatWorkspacePath', '');
+  static void saveWorkspacePath(String v) => _set('chatWorkspacePath', v);
+
+  /// 会话快照：id / title / createdAt / messageCount（每次 clearChat 时保存一次）
+  static String loadChatSessions() => _get('chatSessions', '');
+  static void saveChatSessions(String json) => _set('chatSessions', json);
+  static String loadChatSessionMessages() => _get('chatSessionMessages', '');
+  static void saveChatSessionMessages(String json) => _set('chatSessionMessages', json);
+
+  /// MCP server 配置 JSON（数组，每项 {name, command, args, env}）
+  static String loadMcpConfigJson() => _get('mcpConfigJson', '[]');
+  static void saveMcpConfigJson(String v) => _set('mcpConfigJson', v);
+
   static ApiConfig loadChatConfig() => ApiConfig(
         url: _get('chatApiUrl', ''),
         key: _get('chatApiKey', ''),
         model: _get('chatApiModel', 'gpt-5.1'),
-        temperature: _get('chatApiTemp', 'default'),
+        temperature: _get('chatApiTemp', '0.3'),
         fullUrl: _getBool('chatApiFullUrl', false),
+        contextLength: _getInt('chatApiContextLength', 200000),
       );
 
   static void saveChatConfig(ApiConfig c) {
@@ -97,6 +114,7 @@ class Storage {
     _set('chatApiModel', c.model);
     _set('chatApiTemp', c.temperature);
     _setBool('chatApiFullUrl', c.fullUrl);
+    _setInt('chatApiContextLength', c.contextLength);
   }
 
   static bool loadChatShowReasoning() => _getBool('chatShowReasoning', false);
@@ -107,6 +125,20 @@ class Storage {
 
   static bool loadChatThinking() => _getBool('chatThinking', true);
   static void saveChatThinking(bool v) => _setBool('chatThinking', v);
+
+  /// 对话助手权限范围：false=默认权限（沙箱内），true=允许完全访问
+  static bool loadChatFullAccess() => _getBool('chatFullAccess', false);
+  static void saveChatFullAccess(bool v) => _setBool('chatFullAccess', v);
+
+  /// 对话助手能力状态：技能 / 模式 / 专家 / 联网开关
+  static String loadActiveSkill() => _get('activeSkill', '');
+  static void saveActiveSkill(String v) => _set('activeSkill', v);
+  static String loadChatMode() => _get('chatMode', 'chat');
+  static void saveChatMode(String v) => _set('chatMode', v);
+  static String loadActiveExpert() => _get('activeExpert', '');
+  static void saveActiveExpert(String v) => _set('activeExpert', v);
+  static bool loadSearchEnabled() => _getBool('searchEnabled', true);
+  static void saveSearchEnabled(bool v) => _setBool('searchEnabled', v);
 
   // ===== 开发者模式（显示 AI 出题思维链与输出文本） =====
   static bool loadDevMode() => _getBool('devMode', false);

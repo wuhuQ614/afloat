@@ -1,8 +1,9 @@
 /// 全局状态与核心业务逻辑（对应网页版 index.html 中的 state 与各函数）
 library;
 
+import 'dart:async';
 import 'dart:convert';
-import 'dart:io' show Directory, File, Platform, Process;
+import 'dart:io' show Directory, File, HttpClient, Platform, Process;
 import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -15,6 +16,8 @@ import 'services/maimemo_service.dart';
 import 'services/storage.dart';
 import 'services/dict_service.dart';
 import 'services/agent_service.dart';
+import 'services/chat_capabilities.dart';
+import 'services/mcp_client.dart';
 
 /// 单词跨度信息（用于词组匹配）
 class _WordSpan {
@@ -24,7 +27,7 @@ class _WordSpan {
   const _WordSpan({required this.text, required this.start, required this.end});
 }
 
-/// Agent 单次工具调用步骤（用于在 AI 气泡上方单独展示，类似大厂 Agent UI）
+/// Agent 单次工具调用步骤（用于在 AI 气泡上方单独展示，仿 deepseek ToolRow）
 class ToolStep {
   /// 工具函数名（如 "search_web"、"operate_computer"）
   String name;
@@ -36,9 +39,121 @@ class ToolStep {
   bool done;
   /// 是否执行失败（显示错误）
   bool failed;
-  /// 命令/工具执行的返回内容（终端卡片展示用，可为空）
+  /// 工具入参摘要（IN 卡片展示用，可为空）
+  String? input;
+  /// 命令/工具执行的返回内容（OUT 卡片 / 终端输出展示用，可为空）
   String? output;
-  ToolStep({required this.name, required this.label, this.running = true, this.done = false, this.failed = false, this.output});
+  /// 是否以终端块（TerminalBlock）样式展示（operate_computer 的 run_command）
+  bool terminal;
+  /// 终端块展示的命令行
+  String? command;
+  /// 终端命令退出码（失败时展示 "退出码 N"）
+  int? exitCode;
+  ToolStep({
+    required this.name,
+    required this.label,
+    this.running = true,
+    this.done = false,
+    this.failed = false,
+    this.input,
+    this.output,
+    this.terminal = false,
+    this.command,
+    this.exitCode,
+  });
+}
+
+/// AI 任务清单（dsh-tool-todo 风格）
+class TodoItem {
+  final String content;
+  final String status; // pending / in_progress / completed
+  const TodoItem({required this.content, required this.status});
+  Map<String, dynamic> toJson() => {'content': content, 'status': status};
+}
+
+/// dsh-tool-ask-user 问题
+class AskUserQuestion {
+  final String id;
+  final String question;
+  final String? header;
+  final List<AskUserOption> options;
+  final bool multiSelect;
+  const AskUserQuestion({
+    required this.id,
+    required this.question,
+    this.header,
+    required this.options,
+    this.multiSelect = false,
+  });
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'question': question,
+        if (header != null) 'header': header,
+        'options': options.map((o) => o.toJson()).toList(),
+        'multi_select': multiSelect,
+      };
+}
+
+class AskUserOption {
+  final String label;
+  final String? description;
+  const AskUserOption({required this.label, this.description});
+  Map<String, dynamic> toJson() => {'label': label, if (description != null) 'description': description};
+}
+
+/// dsh-plan-mode 计划步骤
+class PlanStep {
+  final int step;
+  final String action;
+  final List<String> tools;
+  final String? output;
+  const PlanStep({
+    required this.step,
+    required this.action,
+    this.tools = const [],
+    this.output,
+  });
+  Map<String, dynamic> toJson() => {
+        'step': step,
+        'action': action,
+        'tools': tools,
+        if (output != null) 'output': output,
+      };
+}
+
+/// dsh-plan-mode 完整计划
+class PlanSubmission {
+  final String title;
+  final String? summary;
+  final List<PlanStep> steps;
+  String status = 'pending'; // pending / approved / rejected / modified
+  String? userNote;
+  PlanSubmission({required this.title, this.summary, required this.steps});
+  Map<String, dynamic> toJson() => {
+        'title': title,
+        if (summary != null) 'summary': summary,
+        'steps': steps.map((s) => s.toJson()).toList(),
+        'status': status,
+        if (userNote != null) 'userNote': userNote,
+      };
+}
+
+/// dsh-tool-jobs 后台任务
+class BackgroundJob {
+  final String jobId;
+  final String command;
+  final String description;
+  final DateTime startedAt;
+  bool finished = false;
+  int? exitCode;
+  String stdout = '';
+  String stderr = '';
+  BackgroundJob({
+    required this.jobId,
+    required this.command,
+    required this.description,
+    required this.startedAt,
+  });
 }
 
 class ChatMessage {
@@ -55,8 +170,18 @@ class ChatMessage {
   Uint8List? _imageBytes;
   /// 当前模型无图形能力时，图片显示为黑色占位
   bool imageDark;
+  /// 本条 AI 消息使用的模型名（用于气泡上方显示）。Auto 模式时由本次 sendChat 选定。
+  String? modelLabel;
+  /// todo 工具调用产生的任务清单（dsh-tool-todo 风格）
+  List<TodoItem> todoList = [];
+  /// ask_user_question 工具产生的问题（dsh-tool-ask-user 风格）
+  List<AskUserQuestion> askQuestions = [];
+  /// 用户对 askQuestions 的实际回答
+  Map<String, List<String>> askAnswers = {};
+  /// submit_plan 工具提交的计划（dsh-plan-mode 风格）
+  PlanSubmission? plan;
 
-  ChatMessage({required this.role, required this.content, this.showReasoning = false, this.reasoningExpanded = true, this.reasoning, this.imageData, this.imageDark = false});
+  ChatMessage({required this.role, required this.content, this.showReasoning = false, this.reasoningExpanded = true, this.reasoning, this.imageData, this.imageDark = false, this.modelLabel});
 
   /// 获取解码后的图片字节（带缓存）
   Uint8List? get imageBytes {
@@ -78,6 +203,60 @@ class ExamBatchSpec {
   final String label; // 中文标签（UI 展示）
   const ExamBatchSpec(this.id, this.type, this.count, this.offset, this.label);
 }
+
+/// 上下文 token 分布（用于 UI 展示，非精确值）
+class ChatTokenBreakdown {
+  final int system;
+  final int tools;
+  final int messages;
+  final int connectors;
+  final int skills;
+  final int maxTokens;
+
+  const ChatTokenBreakdown({
+    required this.system,
+    required this.tools,
+    required this.messages,
+    required this.connectors,
+    required this.skills,
+    required this.maxTokens,
+  });
+
+  int get used => system + tools + messages + connectors + skills;
+  double get usedPct => maxTokens == 0 ? 0 : (used / maxTokens).clamp(0.0, 1.0);
+  double pctOf(int value) => maxTokens == 0 ? 0 : (value / maxTokens).clamp(0.0, 1.0);
+
+  String formatK(int value) => '${(value / 1000).toStringAsFixed(1)}K';
+
+  /// 当前占总容量百分比字符串（保留 1 位小数）
+  String formatUsedPct() => '${(usedPct * 100).toStringAsFixed(1)}%';
+
+  /// 各分类占总容量百分比字符串
+  String formatPctOf(int value) => maxTokens == 0 ? '0.0%' : '${(pctOf(value) * 100).toStringAsFixed(1)}%';
+
+  /// 各分类占"已用"比例（适合「系统提示词占 1.3%」这种行内展示）
+  String formatPctOfUsed(int value) {
+    if (used == 0) return '0.0%';
+    return '${(value / used * 100).toStringAsFixed(1)}%';
+  }
+}
+
+/// 根据模型名估算上下文窗口大小（token 数）。返回约值，用于 UI 展示。
+int estimateContextWindowByModel(String model) {
+  final m = model.toLowerCase();
+  if (m.contains('qwen3') || m.contains('qwen3-coder')) return 1000000; // 1M
+  if (m.contains('kimi') || m.contains('claude')) return 200000; // 200K
+  if (m.contains('gemini')) return 1000000;
+  if (m.contains('gpt-4')) return 128000;
+  if (m.contains('gpt-5')) return 256000;
+  if (m.contains('deepseek')) return 128000;
+  if (m.contains('glm') || m.contains('chatglm')) return 128000;
+  if (m.contains('qwen')) return 32000; // 普通 qwen 默认 32K
+  return 256000; // 默认 256K
+}
+
+/// Max 模式下扩展后的上下文窗口（token 数）
+const int kMaxModeContextWindow = 1000000; // 1M
 
 /// 全局状态 InheritedWidget，提供 AppState 给子树
 class AppScope extends InheritedWidget {
@@ -129,6 +308,16 @@ class AppState extends ChangeNotifier {
   bool chatStream = true;
   /// 对话助手"思考模式"：true 时显式开启模型深度思考（Agent 链路不再强制关闭）
   bool chatThinking = true;
+  /// 对话助手权限范围：false=默认权限（沙箱内），true=允许完全访问
+  bool chatFullAccess = false;
+  /// 当前选中的技能 id（空串 = 无技能）
+  String activeSkill = '';
+  /// 当前对话模式 id
+  String chatMode = 'chat';
+  /// 当前专家角色 id（空串 = 默认）
+  String activeExpert = '';
+  /// 联网搜索连接器开关（关闭后 search_web 工具不可用）
+  bool searchEnabled = true;
   /// 联网搜索服务配置（百度千帆 AI 搜索组件）
   String searchUrl = 'https://qianfan.baidubce.com/v2/ai_search/chat/completions';
   String searchKey = '';
@@ -276,6 +465,19 @@ class AppState extends ChangeNotifier {
     chatShowReasoning = Storage.loadChatShowReasoning();
     chatStream = Storage.loadChatStream();
     chatThinking = Storage.loadChatThinking();
+    chatFullAccess = Storage.loadChatFullAccess();
+    workspacePath = Storage.loadWorkspacePath();
+    activeSkill = Storage.loadActiveSkill();
+    mcpConfigJson = Storage.loadMcpConfigJson();
+    chatMode = Storage.loadChatMode();
+    activeExpert = Storage.loadActiveExpert();
+    // 异步：尝试连接 MCP server
+    () async {
+      try {
+        await _reconnectMcp();
+      } catch (_) {}
+    }();
+    searchEnabled = Storage.loadSearchEnabled();
     searchUrl = Storage.loadSearchUrl();
     searchKey = Storage.loadSearchKey();
     devMode = Storage.loadDevMode();
@@ -366,6 +568,10 @@ class AppState extends ChangeNotifier {
 
   /// 对话助手实际生效的配置：独立配置优先取配置库选中项，否则取旧独立配置；未开启独立时用全局配置
   ApiConfig get effectiveChatConfig {
+    // Auto 模式临时覆写：仅本次 sendChat 有效，不持久化
+    if (_effectiveChatConfigOverride != null) {
+      return _effectiveChatConfigOverride!;
+    }
     if (chatApiIndependent) {
       if (chatProfiles.isNotEmpty && chatProfileIdx >= 0 && chatProfileIdx < chatProfiles.length) {
         return chatProfiles[chatProfileIdx].config;
@@ -374,6 +580,13 @@ class AppState extends ChangeNotifier {
     }
     return apiConfig;
   }
+
+  /// Auto 模式下的临时配置覆写；每次 sendChat 入口设置，结束后清理
+  ApiConfig? _effectiveChatConfigOverride;
+  set effectiveChatConfigOverride(ApiConfig? c) {
+    _effectiveChatConfigOverride = c;
+  }
+  ApiConfig? get effectiveChatConfigOverrideValue => _effectiveChatConfigOverride;
 
   // ===== 当前题目展示 =====
   bool get isZh2En => direction == 'zh2en';
@@ -1772,8 +1985,37 @@ class AppState extends ChangeNotifier {
 
   // ===== 对话助手 =====
   bool chatSending = false;
+  /// 用户在发送按钮上再点一次时设置；agent 循环每轮检查后正常退出。
+  bool _chatAbortRequested = false;
   final ValueNotifier<int> chatUpdateNotifier = ValueNotifier<int>(0);
   int _chatThrottleTimer = 0;
+
+  /// 当前会话在「Auto」模式下选中的 profile 索引（仅当 useAutoModel=true 时有效）。
+  /// _pickAutoModel 在 sendChat 时按千问>deepseek>其他优先级抽取。
+  int autoSelectedProfileIdx = 0;
+  /// 是否处于 Auto 模式（用户从模型浮层选 Auto 项）
+  bool useAutoModel = false;
+  /// AI 助手本地工作目录。harness 工具（read/write/edit/list_dir/bash）只能在该目录及其子目录下读写。
+  /// 空字符串 = 使用默认 C:\Users 下任意位置。
+  String workspacePath = '';
+  /// 会话快照（dsh-tool-session-query 使用）：最近 50 个会话的 id/title/createdAt/messageCount + 完整消息。
+  /// 每次 clearChat 时把当前 chatHistory 持久化成一条快照。
+  List<Map<String, dynamic>> chatSessions = [];
+  List<List<Map<String, dynamic>>> chatSessionMessages = []; // 每个会话的完整消息（content + role + 时间）
+  static const int _kMaxSessions = 50;
+  /// MCP server 配置（dsh-mcp-client）：用户可在设置中编辑 JSON 配置后保存。
+  String mcpConfigJson = '[]';
+  /// MCP 工具列表（启动时从所有 server 拉取）
+  List<McpTool> mcpTools = [];
+  final McpRegistry mcpRegistry = McpRegistry();
+  /// dsh-tool-jobs 后台任务表
+  final Map<String, BackgroundJob> backgroundJobs = {};
+  /// dsh-tool-skill-filesystem 用户技能缓存（按 name → 正文）
+  final Map<String, String> userSkillsCache = {};
+  /// dsh-tool-skill-filesystem 用户技能描述缓存
+  final Map<String, String> userSkillDescriptions = {};
+  /// dsh-guard 重复工具调用历史（最近 20 条）
+  final List<Map<String, dynamic>> recentToolCalls = [];
 
   void _notifyChatUpdate() {
     final now = DateTime.now().millisecondsSinceEpoch;
@@ -1782,25 +2024,98 @@ class AppState extends ChangeNotifier {
     chatUpdateNotifier.value++;
   }
 
+  /// 进入 Auto 模式（用户从模型浮层选 Auto）
+  void enableAutoModel() {
+    useAutoModel = true;
+    notifyListeners();
+  }
+
+  /// 退出 Auto 模式（用户手动选了具体 profile）
+  void disableAutoModel() {
+    useAutoModel = false;
+    notifyListeners();
+  }
+
+  /// Auto 优先级：千问 > deepseek > 其他 > 随机
+  /// 返回应该用于本次对话的 profile 索引；若无任何 profile 则返回 -1。
+  /// 同时更新 autoSelectedProfileIdx 供 UI 显示。
+  int pickAutoProfileIdx({int? seed}) {
+    final profiles = apiProfiles;
+    if (profiles.isEmpty) {
+      autoSelectedProfileIdx = -1;
+      return -1;
+    }
+    final r = (seed ?? DateTime.now().millisecondsSinceEpoch) ^ 0xDEADBEEF;
+    int tier1 = profiles.indexWhere((p) {
+      final m = p.config.model.toLowerCase();
+      return m.contains('qwen') || m.contains('tongyi') || m.contains('dashscope');
+    });
+    if (tier1 < 0) tier1 = profiles.indexWhere((p) => p.config.model.toLowerCase().contains('deepseek'));
+    // 优先级权重：千问 0.55 / deepseek 0.30 / 其他 0.15
+    int pick;
+    final otherIdxs = [for (var i = 0; i < profiles.length; i++) if (i != tier1 && !profiles[i].config.model.toLowerCase().contains('deepseek')) i];
+    final deepseekIdxs = [for (var i = 0; i < profiles.length; i++) if (i != tier1 && profiles[i].config.model.toLowerCase().contains('deepseek')) i];
+
+    final rnd = Random(r);
+    if (rnd.nextDouble() < 0.55 && tier1 >= 0) {
+      pick = tier1;
+    } else if (deepseekIdxs.isNotEmpty && rnd.nextDouble() < 0.30 / (0.30 + 0.15)) {
+      pick = deepseekIdxs[rnd.nextInt(deepseekIdxs.length)];
+    } else if (otherIdxs.isNotEmpty) {
+      pick = otherIdxs[rnd.nextInt(otherIdxs.length)];
+    } else if (tier1 >= 0) {
+      pick = tier1;
+    } else if (deepseekIdxs.isNotEmpty) {
+      pick = deepseekIdxs[rnd.nextInt(deepseekIdxs.length)];
+    } else {
+      pick = rnd.nextInt(profiles.length);
+    }
+    autoSelectedProfileIdx = pick;
+    return pick;
+  }
+
   Future<String> sendChat(
     String text, {
     String? imageData,
+    String? attachmentText,
     void Function(String chunk)? onReasoning,
     void Function(String chunk)? onDelta,
   }) async {
     final trimmed = text.trim();
-    if (trimmed.isEmpty || chatSending) return '';
-    // 出题指令（如“出一道专升本翻译题”）本地解析处理，不占用对话 API
-    if (await _tryHandleQuestionCommand(trimmed)) return '';
+    final attachContent = (attachmentText ?? '').trim();
+    final hasAttachment = attachContent.isNotEmpty;
+    if ((trimmed.isEmpty && !hasAttachment) || chatSending) return '';
+    // 出题指令（如“出一道专升本翻译题”）本地解析处理，不占用对话 API（仅纯文本时生效）
+    if (!hasAttachment && await _tryHandleQuestionCommand(trimmed)) return '';
     chatSending = true;
+    // 开始新一轮发送：清零 abort 标志
+    _chatAbortRequested = false;
     notifyListeners();
+    // Auto 模式：发送时按优先级挑选 profile，把 effectiveChatConfig 切到所选 profile（不持久化到 global apiConfig）
+    if (useAutoModel) {
+      final idx = pickAutoProfileIdx();
+      if (idx >= 0 && idx < apiProfiles.length) {
+        effectiveChatConfigOverride = apiProfiles[idx].config;
+      }
+    }
     final cfg = effectiveChatConfig;
     final hasImage = imageData != null && imageData.isNotEmpty;
     final hasVision = hasImage && cfg.vision;
+    // 真正发送给 AI 的文本：附加文件内容拼接在用户输入之后
+    var sendText = hasAttachment
+        ? (trimmed.isEmpty
+            ? '[用户附加了文件内容]\n$attachContent'
+            : '$trimmed\n\n[用户附加的文件内容]\n$attachContent')
+        : trimmed;
+    // 若已选择技能，在 API 文本前加上技能名前缀，强化模型感知
+    final skillPrefix = activeSkillName;
+    if (skillPrefix.isNotEmpty && !sendText.startsWith('[$skillPrefix]')) {
+      sendText = '[$skillPrefix] $sendText';
+    }
     // 模型无图形能力时图片不发送（仅保留黑色占位），有图形能力时以多模态发送
     chatHistory.add(ChatMessage(
       role: 'user',
-      content: trimmed,
+      content: trimmed.isEmpty && hasAttachment ? '[附加了文件]' : trimmed,
       imageData: hasVision ? imageData : null,
       imageDark: hasImage && !hasVision,
     ));
@@ -1808,7 +2123,8 @@ class AppState extends ChangeNotifier {
 
     // 优先尝试 Agent（Function Calling）路径
     // 注意：_runAgentLoop 内部会创建占位消息并实时更新，成功后占位消息即为最终回复
-    final agentResult = await _runAgentLoop(trimmed, imageData: imageData);
+    final agentResult = await _runAgentLoop(sendText, imageData: imageData);
+    _releaseAutoOverride();
     if (agentResult != null) {
       // Agent 成功：占位消息已更新为最终回复，无需再添加
       chatSending = false;
@@ -1830,15 +2146,27 @@ class AppState extends ChangeNotifier {
         (q.english.isNotEmpty ? '英文原文：${q.english}\n' : '') +
         (userAnswer.isNotEmpty ? '用户当前作答：$userAnswer\n' : '') +
         (q.correctAnswer.isNotEmpty ? '参考答案：${q.correctAnswer}\n' : '') +
-        (q.knowledge.isNotEmpty ? '核心知识点：${q.knowledge.join('、')}\n' : '');
+        (q.knowledge.isNotEmpty ? '核心知识点：${q.knowledge.join('、')}\n' : '') +
+        buildChatContextPrompt();
     final history = chatHistory
         .where((m) => m.role != 'system')
-        .map((m) => {
-              'role': m.role == 'ai' ? 'assistant' : 'user',
-              'content': (m.role == 'user' && m.imageData != null && m.imageData!.isNotEmpty)
-                  ? ApiService.buildContent(m.content, m.imageData)
-                  : m.content,
-            })
+        .map((m) {
+          var content = (m.role == 'user' && m.imageData != null && m.imageData!.isNotEmpty)
+              ? ApiService.buildContent(m.content, m.imageData)
+              : m.content;
+          // 最后一条用户消息若有附件，把文件内容拼到消息正文里
+          if (m == chatHistory.last && hasAttachment) {
+            content = '$content\n\n[用户附加的文件内容]\n$attachContent';
+          }
+          // 最后一条用户消息若已选择技能，追加技能名前缀强化模型感知
+          if (content is String && m == chatHistory.last && skillPrefix.isNotEmpty && !content.startsWith('[$skillPrefix]')) {
+            content = '[$skillPrefix] $content';
+          }
+          return {
+            'role': m.role == 'ai' ? 'assistant' : 'user',
+            'content': content,
+          };
+        })
         .toList();
 
     String reply = '';
@@ -1847,7 +2175,7 @@ class AppState extends ChangeNotifier {
         ? ApiService.thinkingParams(effectiveChatConfig.model)
         : ApiService.noThinkingParams(effectiveChatConfig.model);
     if (chatStream && effectiveChatConfig.ready) {
-      final msg = ChatMessage(role: 'ai', content: '', showReasoning: showReasoning, reasoning: '');
+      final msg = ChatMessage(role: 'ai', content: '', showReasoning: showReasoning, reasoning: '', modelLabel: cfg.model);
       chatHistory.add(msg);
       _notifyChatUpdate();
       String rawReasoning = '';
@@ -1880,13 +2208,28 @@ class AppState extends ChangeNotifier {
       final r = await ApiService.callAI(history, prompt,
           config: effectiveChatConfig, extraParams: thinkingParams);
       reply = (r == null || r.isEmpty) ? fallbackReply(trimmed) : r;
-      chatHistory.add(ChatMessage(role: 'ai', content: reply));
+      chatHistory.add(ChatMessage(role: 'ai', content: reply, modelLabel: cfg.model));
       _notifyChatUpdate();
     }
     chatSending = false;
     notifyListeners();
     _notifyChatUpdate();
     return reply;
+  }
+
+  /// 用户在发送按钮上再次点击时调用：请求中止当前正在跑的 agent 循环。
+  /// agent 循环每轮开头检查 `_chatAbortRequested`，被请求后立即退出并保留已有占位。
+  void cancelChat() {
+    if (!chatSending) return;
+    _chatAbortRequested = true;
+    notifyListeners();
+  }
+
+  /// sendChat 收尾：清理 Auto 模式临时覆写，避免下次 sendChat 仍沿用
+  void _releaseAutoOverride() {
+    if (_effectiveChatConfigOverride != null) {
+      _effectiveChatConfigOverride = null;
+    }
   }
 
   /// 未配置 API 时的兜底回复
@@ -1929,6 +2272,24 @@ class AppState extends ChangeNotifier {
   }
 
   void clearChat() {
+    // 在清空前保存一份会话快照（dsh-tool-session-query 用）
+    if (chatHistory.isNotEmpty) {
+      final id = DateTime.now().millisecondsSinceEpoch.toString();
+      final title = chatHistory.firstWhere((m) => m.role == 'user' && m.content.isNotEmpty, orElse: () => ChatMessage(role: 'user', content: '(空)')).content.replaceAll('\n', ' ').trim();
+      chatSessions.insert(0, {
+        'id': id,
+        'title': title.length > 40 ? '${title.substring(0, 40)}...' : title,
+        'createdAt': DateTime.now().toIso8601String(),
+        'messageCount': chatHistory.length,
+      });
+      chatSessionMessages.insert(0, chatHistory.map((m) => {'role': m.role, 'content': m.content}).toList());
+      if (chatSessions.length > _kMaxSessions) {
+        chatSessions.removeRange(_kMaxSessions, chatSessions.length);
+        chatSessionMessages.removeRange(_kMaxSessions, chatSessionMessages.length);
+      }
+      Storage.saveChatSessions(jsonEncode(chatSessions));
+      Storage.saveChatSessionMessages(jsonEncode(chatSessionMessages));
+    }
     chatHistory = [];
     notifyListeners();
     _notifyChatUpdate();
@@ -2121,8 +2482,61 @@ class AppState extends ChangeNotifier {
   // ===== Agent（Function Calling）=====
 
   /// 执行单个工具调用，返回结果给 AI。所有工具都在这里分发。
+  /// 判断工具是否属于「危险操作」，默认权限（沙箱）下需要完全访问
+  bool _isDangerousTool(String name, Map<String, dynamic> args) {
+    // 直接操控电脑属于危险操作（打开文件/文件夹/应用/网址/执行命令）
+    if (name == 'operate_computer') return true;
+    // harness 风格的文件/命令工具都需要「完全访问」
+    if (name == 'write_file' || name == 'edit_file' || name == 'bash') return true;
+    // 修改设置（config_settings 的 set）需要完全访问
+    if (name == 'config_settings' && (args['action'] as String?) == 'set') return true;
+    return false;
+  }
+
+  /// harness 工具允许工作的根目录白名单。
+  /// 若 workspacePath 已设置，则路径必须以该路径为前缀；否则使用默认 C:\Users 兜底。
+  String _fsRoot() {
+    final ws = workspacePath.trim();
+    if (ws.isEmpty) return r'c:\users';
+    return ws.replaceAll('/', '\\').toLowerCase();
+  }
+
+  bool _isPathUnderFsRoot(String path) {
+    final p = path.replaceAll('/', '\\').toLowerCase();
+    return p.startsWith('${_fsRoot()}\\') && !p.contains('..');
+  }
+
+  /// 路径不是绝对路径（无盘符）时，基于工作区根目录解析为绝对路径。
+  /// 模型因此可以直接用 "src/game.ts" 这类相对路径，不必猜测完整路径，
+  /// 从而避免反复"路径越界"试探浪费轮次。含 .. 的路径原样返回，由越界检查拦截。
+  String _resolveFsPath(String raw) {
+    final p = raw.trim();
+    if (p.isEmpty || p.contains(':')) return p;
+    final rel = p.replaceAll('/', r'\').replaceFirst(RegExp(r'^\\+'), '');
+    return '${_fsRoot()}\\$rel';
+  }
+
   Future<ToolExecResult> executeTool(String name, Map<String, dynamic> args) async {
     try {
+      // 记录工具调用（dsh-guard 用）：仅保留最近 20 条
+      recentToolCalls.add({'name': name, 'args': args, 'at': DateTime.now().toIso8601String()});
+      if (recentToolCalls.length > 20) recentToolCalls.removeRange(0, recentToolCalls.length - 20);
+      // 联网搜索连接器关闭时，拦截 search_web
+      if (name == 'search_web' && !searchEnabled) {
+        return ToolExecResult(
+          content: '{"ok":false,"reason":"search_disabled"}',
+          ok: false,
+          actionLabel: '联网搜索未开启，请在「连接器」中启用',
+        );
+      }
+      // 权限控制：默认权限（沙箱）下拦截危险操作，需用户开启「完全访问」才放行
+      if (!chatFullAccess && _isDangerousTool(name, args)) {
+        return ToolExecResult(
+          content: '{"ok":false,"reason":"permission_denied"}',
+          ok: false,
+          actionLabel: '需要「完全访问」权限才能执行该操作',
+        );
+      }
       switch (name) {
         case 'generate_questions':
           return await _toolGenerateQuestions(args);
@@ -2162,8 +2576,72 @@ class AppState extends ChangeNotifier {
           return await _toolBackupData();
         case 'operate_computer':
           return _toolOperateComputer(args);
+        // ========== harness 工具：本地文件 & shell ==========
+        case 'read_file':
+          return await _toolReadFile(args);
+        case 'write_file':
+          return await _toolWriteFile(args);
+        case 'edit_file':
+          return await _toolEditFile(args);
+        case 'list_dir':
+          return await _toolListDir(args);
+        case 'bash':
+          return await _toolBash(args);
+        case 'str_replace_editor':
+          return await _toolStrReplaceEditor(args);
+        case 'run_code':
+          return await _toolRunCode(args);
+        // ========== dsh 移植工具 ==========
+        case 'todo':
+          return await _toolTodo(args);
+        case 'skill':
+          return await _toolSkill(args);
+        case 'web_fetch':
+          return await _toolWebFetch(args);
+        case 'session_query':
+          return await _toolSessionQuery(args);
+        case 'spawn_subagent':
+          return await _toolSpawnSubagent(args);
+        case 'list_mcp_tools':
+          return await _toolListMcpTools();
+        case 'call_mcp_tool':
+          return await _toolCallMcpTool(args);
+        case 'ask_user_question':
+          return await _toolAskUserQuestion(args);
+        case 'compact_conversation':
+          return await _toolCompactConversation(args);
+        case 'list_user_skills':
+          return await _toolListUserSkills();
+        case 'load_skill':
+          return await _toolLoadSkill(args);
+        case 'submit_plan':
+          return await _toolSubmitPlan(args);
+        case 'run_background_job':
+          return await _toolRunBackgroundJob(args);
+        case 'job_output':
+          return await _toolJobOutput(args);
+        case 'job_kill':
+          return await _toolJobKill(args);
+        case 'check_repeat':
+          return await _toolCheckRepeat();
         default:
-          return ToolExecResult(content: '未知工具：$name', ok: false);
+          if (name.startsWith('mcp__')) {
+          final toolName = name.substring(5);
+          // 通过 toolName 反查 server
+          for (final client in mcpRegistry.clients) {
+            for (final t in client.tools) {
+              if (t.name == toolName || t.name.replaceAll(' ', '_') == toolName) {
+                return await _toolCallMcpTool({
+                  'server_name': client.name,
+                  'tool_name': t.name,
+                  'arguments': args,
+                });
+              }
+            }
+          }
+          return ToolExecResult(content: '{"ok":false,"reason":"mcp_tool_not_found"}', ok: false, actionLabel: '未找到 MCP 工具：$toolName');
+        }
+        return ToolExecResult(content: '未知工具：$name', ok: false);
       }
     } catch (e) {
       return ToolExecResult(content: '工具执行异常：$e', ok: false);
@@ -2670,6 +3148,1222 @@ class AppState extends ChangeNotifier {
     }
   }
 
+  // ============== harness 工具实现 ==============
+
+  /// 拒绝 harness 工具：路径不在当前工作区内或包含 .. 试图跳出根目录
+  ToolExecResult _fsPermissionDenied(String reason) {
+    final root = _fsRoot();
+    return ToolExecResult(
+      content: '{"ok":false,"reason":"$reason"}',
+      ok: false,
+      actionLabel: '路径越界：仅能访问 $root 下的文件',
+    );
+  }
+
+  Future<ToolExecResult> _toolReadFile(Map<String, dynamic> args) async {
+    final raw = _resolveFsPath((args['path'] as String?)?.trim() ?? '');
+    if (raw.isEmpty) return const ToolExecResult(content: '{"ok":false,"reason":"missing_path"}', ok: false, actionLabel: '缺少文件路径');
+    if (!_isPathUnderFsRoot(raw)) return _fsPermissionDenied('path outside fs root');
+    try {
+      final f = File(raw);
+      if (!await f.exists()) return ToolExecResult(content: '{"ok":false,"reason":"not_found"}', ok: false, actionLabel: '文件不存在：$raw');
+      final size = await f.length();
+      const cap = 256 * 1024; // 256 KB 上限
+      final bytes = await f.openRead(0, cap > size ? size : cap).fold<List<int>>(<int>[], (acc, c) => acc..addAll(c));
+      final text = utf8.decode(bytes, allowMalformed: true);
+      final truncated = size > cap;
+      final body = jsonEncode({
+        'ok': true,
+        'path': raw,
+        'size': size,
+        'truncated': truncated,
+        'content': text,
+      });
+      return ToolExecResult(
+        content: body,
+        ok: true,
+        actionLabel: truncated ? '已读取 ${_humanSize(size)} (已截断到 256KB)' : '已读取 ${_humanSize(size)}',
+      );
+    } catch (e) {
+      return ToolExecResult(content: '{"ok":false,"reason":"read_failed: $e"}', ok: false);
+    }
+  }
+
+  Future<ToolExecResult> _toolWriteFile(Map<String, dynamic> args) async {
+    final raw = _resolveFsPath((args['path'] as String?)?.trim() ?? '');
+    final content = (args['content'] as String?) ?? '';
+    if (raw.isEmpty) return const ToolExecResult(content: '{"ok":false,"reason":"missing_path"}', ok: false, actionLabel: '缺少文件路径');
+    if (!_isPathUnderFsRoot(raw)) return _fsPermissionDenied('path outside fs root');
+    try {
+      final f = File(raw);
+      if (!await f.parent.exists()) {
+        await f.parent.create(recursive: true);
+      }
+      await f.writeAsString(content, flush: true);
+      final bytes = utf8.encode(content).length;
+      return ToolExecResult(
+        content: jsonEncode({'ok': true, 'path': raw, 'bytes': bytes}),
+        ok: true,
+        actionLabel: '已写入 ${_humanSize(bytes)} 到 ${_basename(raw)}',
+      );
+    } catch (e) {
+      return ToolExecResult(content: '{"ok":false,"reason":"write_failed: $e"}', ok: false);
+    }
+  }
+
+  Future<ToolExecResult> _toolEditFile(Map<String, dynamic> args) async {
+    final raw = _resolveFsPath((args['path'] as String?)?.trim() ?? '');
+    final oldText = (args['old_text'] as String?) ?? '';
+    final newText = (args['new_text'] as String?) ?? '';
+    if (raw.isEmpty || oldText.isEmpty) {
+      return const ToolExecResult(content: '{"ok":false,"reason":"missing_args"}', ok: false, actionLabel: '需要 path 和 old_text');
+    }
+    if (!_isPathUnderFsRoot(raw)) return _fsPermissionDenied('path outside fs root');
+    try {
+      final f = File(raw);
+      if (!await f.exists()) return ToolExecResult(content: '{"ok":false,"reason":"not_found"}', ok: false, actionLabel: '文件不存在：$raw');
+      final text = await f.readAsString();
+      final idx = text.indexOf(oldText);
+      if (idx < 0) {
+        return ToolExecResult(content: '{"ok":false,"reason":"old_text_not_found"}', ok: false, actionLabel: '未找到要替换的旧文本');
+      }
+      final replaced = text.substring(0, idx) + newText + text.substring(idx + oldText.length);
+      await f.writeAsString(replaced, flush: true);
+      return ToolExecResult(
+        content: jsonEncode({'ok': true, 'path': raw, 'offset': idx, 'old_len': oldText.length, 'new_len': newText.length}),
+        ok: true,
+        actionLabel: '已在 ${_basename(raw)} 替换 $idx 开始处的 ${oldText.length} 字符',
+      );
+    } catch (e) {
+      return ToolExecResult(content: '{"ok":false,"reason":"edit_failed: $e"}', ok: false);
+    }
+  }
+
+  // ============== str_replace_editor（仿 dsh-tool-str-replace-editor） ==============
+
+  /// 计算字符串在某文本中的所有偏移
+  List<int> _allMatchOffsets(String content, String search) {
+    final offsets = <int>[];
+    var offset = 0;
+    while (true) {
+      final idx = content.indexOf(search, offset);
+      if (idx < 0) break;
+      offsets.add(idx);
+      offset = idx + search.length;
+    }
+    return offsets;
+  }
+
+  /// 行号定位：给定偏移列表返回每处所在行号（1 起）
+  List<int> _lineNumbersAt(String content, List<int> offsets) {
+    var line = 1;
+    var cursor = 0;
+    return offsets.map((off) {
+      while (cursor < off) {
+        if (content[cursor] == '\n') line += 1;
+        cursor += 1;
+      }
+      return line;
+    }).toList();
+  }
+
+  /// 取文件某行区间的内容（view_range：[start, end]，end=-1 表示到文件末尾；行号 1 起）
+  String _sliceByLines(String content, int start, int end) {
+    final lines = content.split('\n');
+    if (start < 1) start = 1;
+    final from = start - 1;
+    final to = (end == -1 || end > lines.length) ? lines.length : end;
+    if (from >= lines.length) return '';
+    return lines.sublist(from, to).join('\n');
+  }
+
+  /// 给文本加行号（cat -n 风格，行号占 6 位右对齐 + tab）
+  String _numberLines(String text) {
+    final lines = text.split('\n');
+    final width = lines.length.toString().length.clamp(2, 6);
+    final buf = StringBuffer();
+    for (var i = 0; i < lines.length; i++) {
+      final n = (i + 1).toString().padLeft(width);
+      buf.writeln('$n\t${lines[i]}');
+    }
+    return buf.toString();
+  }
+
+  /// 简易 diff：返回统一 diff 字符串（- 删除 / + 新增 / 上下文 3 行）
+  String _simpleDiff(String oldText, String newText) {
+    final oldLines = oldText.split('\n');
+    final newLines = newText.split('\n');
+    final out = StringBuffer();
+    var i = 0, j = 0;
+    while (i < oldLines.length || j < newLines.length) {
+      if (i < oldLines.length && j < newLines.length && oldLines[i] == newLines[j]) {
+        out.writeln(' ${oldLines[i]}');
+        i++;
+        j++;
+      } else {
+        var matched = false;
+        // 尝试在 old 中找 newLines[j]
+        for (var k = i + 1; k < oldLines.length && k <= i + 8; k++) {
+          if (oldLines[k] == newLines[j]) {
+            for (var d = i; d < k; d++) {
+              out.writeln('-${oldLines[d]}');
+            }
+            i = k;
+            matched = true;
+            break;
+          }
+        }
+        if (!matched) {
+          // 尝试在 new 中找 oldLines[i]
+          var found = false;
+          for (var k = j + 1; k < newLines.length && k <= j + 8; k++) {
+            if (newLines[k] == oldLines[i]) {
+              for (var d = j; d < k; d++) {
+                out.writeln('+${newLines[d]}');
+              }
+              j = k;
+              found = true;
+              break;
+            }
+          }
+          if (!found) {
+            if (i < oldLines.length) out.writeln('-${oldLines[i]}');
+            if (j < newLines.length) out.writeln('+${newLines[j]}');
+            i++;
+            j++;
+          }
+        }
+      }
+    }
+    return out.toString();
+  }
+
+  /// 查看文件/目录（view 命令：文件带 cat -n 行号，目录列 2 层）
+  Future<ToolExecResult> _editorView(String raw, List<int>? range) async {
+    if (!_isPathUnderFsRoot(raw)) return _fsPermissionDenied('path outside fs root');
+    final f = File(raw);
+    final d = Directory(raw);
+    try {
+      if (await f.exists()) {
+        final text = await f.readAsString();
+        String shown = text;
+        if (range != null && range.length == 2) {
+          shown = _sliceByLines(text, range[0], range[1]);
+          final endNote = (range[1] == -1 || range[1] > text.split('\n').length) ? '（到文件末尾）' : '';
+          return ToolExecResult(
+            content: jsonEncode({
+              'ok': true,
+              'path': raw,
+              'command': 'view',
+              'range': range,
+              'range_note': '显示第 ${range[0]} 行至第 ${range[1]} 行$endNote',
+              'content': _numberLines(shown),
+            }),
+            ok: true,
+            actionLabel: '查看 ${_basename(raw)} 第 ${range[0]}-${range[1]} 行',
+          );
+        }
+        return ToolExecResult(
+          content: jsonEncode({'ok': true, 'path': raw, 'command': 'view', 'content': _numberLines(shown)}),
+          ok: true,
+          actionLabel: '已查看 ${_basename(raw)}（${shown.split('\n').length} 行）',
+        );
+      }
+      if (await d.exists()) {
+        // 列出非隐藏项，最多 2 层
+        final buf = StringBuffer();
+        var count = 0;
+        await for (final ent in d.list()) {
+          final name = _basename(ent.path);
+          if (name.startsWith('.')) continue;
+          if (ent is Directory) {
+            buf.writeln('$name/');
+            count++;
+            if (count > 200) break;
+            var sub = 0;
+            await for (final subEnt in ent.list()) {
+              final subName = _basename(subEnt.path);
+              if (subName.startsWith('.')) continue;
+              buf.writeln('  $subName${subEnt is Directory ? '/' : ''}');
+              sub++;
+              if (sub > 100) {
+                buf.writeln('  ...（更多子项未显示）');
+                break;
+              }
+            }
+          } else {
+            buf.writeln(name);
+          }
+          count++;
+          if (count > 500) {
+            buf.writeln('...（更多条目未显示）');
+            break;
+          }
+        }
+        return ToolExecResult(
+          content: jsonEncode({'ok': true, 'path': raw, 'command': 'view', 'is_dir': true, 'content': buf.toString()}),
+          ok: true,
+          actionLabel: '已列出目录 ${_basename(raw)}',
+        );
+      }
+      return ToolExecResult(content: '{"ok":false,"reason":"not_found"}', ok: false, actionLabel: '路径不存在：$raw');
+    } catch (e) {
+      return ToolExecResult(content: '{"ok":false,"reason":"view_failed: $e"}', ok: false);
+    }
+  }
+
+  /// create 命令：新建文件（已存在则拒绝）
+  Future<ToolExecResult> _editorCreate(String raw, String fileText) async {
+    if (!_isPathUnderFsRoot(raw)) return _fsPermissionDenied('path outside fs root');
+    try {
+      final f = File(raw);
+      if (await f.exists()) {
+        return ToolExecResult(
+          content: '{"ok":false,"reason":"file_exists","hint":"目标文件已存在，create 命令无法覆盖。请改用 str_replace 修改内容。"}',
+          ok: false,
+          actionLabel: '文件已存在，无法 create',
+        );
+      }
+      await f.parent.create(recursive: true);
+      await f.writeAsString(fileText, flush: true);
+      return ToolExecResult(
+        content: jsonEncode({'ok': true, 'path': raw, 'command': 'create', 'bytes': utf8.encode(fileText).length}),
+        ok: true,
+        actionLabel: '已创建 ${_basename(raw)}',
+      );
+    } catch (e) {
+      return ToolExecResult(content: '{"ok":false,"reason":"create_failed: $e"}', ok: false);
+    }
+  }
+
+  /// str_replace 命令：old_str 必须唯一匹配，否则拒绝
+  Future<ToolExecResult> _editorStrReplace(String raw, String oldStr, String newStr) async {
+    if (!_isPathUnderFsRoot(raw)) return _fsPermissionDenied('path outside fs root');
+    try {
+      final f = File(raw);
+      if (!await f.exists()) return ToolExecResult(content: '{"ok":false,"reason":"not_found"}', ok: false, actionLabel: '文件不存在：$raw');
+      final text = await f.readAsString();
+      final offsets = _allMatchOffsets(text, oldStr);
+      if (offsets.isEmpty) {
+        return ToolExecResult(
+          content: jsonEncode({
+            'ok': false,
+            'reason': 'old_str_not_found',
+            'hint': 'old_str 未在文件中找到。注意空白字符！建议先 view 查看实际内容。',
+          }),
+          ok: false,
+          actionLabel: '未找到 old_str',
+        );
+      }
+      if (offsets.length > 1) {
+        final lineNos = _lineNumbersAt(text, offsets);
+        return ToolExecResult(
+          content: jsonEncode({
+            'ok': false,
+            'reason': 'old_str_not_unique',
+            'matches': offsets.length,
+            'lines': lineNos,
+            'hint': 'old_str 在文件中出现 ${offsets.length} 次（第 ${lineNos.join("、")} 行），不唯一。请带上更多上下文使 old_str 唯一匹配。',
+          }),
+          ok: false,
+          actionLabel: 'old_str 不唯一（${offsets.length} 处匹配）',
+        );
+      }
+      final idx = offsets.first;
+      final replaced = text.substring(0, idx) + newStr + text.substring(idx + oldStr.length);
+      await f.writeAsString(replaced, flush: true);
+      final lineNo = _lineNumbersAt(text, [idx]).first;
+      return ToolExecResult(
+        content: jsonEncode({
+          'ok': true,
+          'path': raw,
+          'command': 'str_replace',
+          'line': lineNo,
+          'diff': _simpleDiff(oldStr, newStr),
+        }),
+        ok: true,
+        actionLabel: '已替换 ${_basename(raw)} 第 $lineNo 行附近文本',
+      );
+    } catch (e) {
+      return ToolExecResult(content: '{"ok":false,"reason":"replace_failed: $e"}', ok: false);
+    }
+  }
+
+  /// insert 命令：在 insert_line 之后插入 new_str
+  Future<ToolExecResult> _editorInsert(String raw, int insertLine, String newStr) async {
+    if (!_isPathUnderFsRoot(raw)) return _fsPermissionDenied('path outside fs root');
+    try {
+      final f = File(raw);
+      if (!await f.exists()) return ToolExecResult(content: '{"ok":false,"reason":"not_found"}', ok: false, actionLabel: '文件不存在：$raw');
+      final text = await f.readAsString();
+      final lines = text.split('\n');
+      final insertIdx = insertLine.clamp(0, lines.length);
+      lines.insert(insertIdx, newStr);
+      await f.writeAsString(lines.join('\n'), flush: true);
+      return ToolExecResult(
+        content: jsonEncode({
+          'ok': true,
+          'path': raw,
+          'command': 'insert',
+          'insert_after_line': insertLine,
+          'inserted': newStr,
+        }),
+        ok: true,
+        actionLabel: '已在 ${_basename(raw)} 第 $insertLine 行后插入内容',
+      );
+    } catch (e) {
+      return ToolExecResult(content: '{"ok":false,"reason":"insert_failed: $e"}', ok: false);
+    }
+  }
+
+  /// str_replace_editor 工具总入口
+  Future<ToolExecResult> _toolStrReplaceEditor(Map<String, dynamic> args) async {
+    final cmd = (args['command'] as String?)?.trim() ?? '';
+    final raw = _resolveFsPath((args['path'] as String?)?.trim() ?? '');
+    if (raw.isEmpty) return const ToolExecResult(content: '{"ok":false,"reason":"missing_path"}', ok: false, actionLabel: '缺少 path');
+    switch (cmd) {
+      case 'view':
+        final rangeRaw = args['view_range'];
+        List<int>? range;
+        if (rangeRaw is List && rangeRaw.length == 2) {
+          range = [((rangeRaw[0] as num?) ?? 1).toInt(), ((rangeRaw[1] as num?) ?? -1).toInt()];
+        }
+        return _editorView(raw, range);
+      case 'create':
+        final fileText = (args['file_text'] as String?) ?? '';
+        if (fileText.isEmpty) {
+          return const ToolExecResult(content: '{"ok":false,"reason":"missing_file_text"}', ok: false, actionLabel: 'create 需要 file_text');
+        }
+        return _editorCreate(raw, fileText);
+      case 'str_replace':
+        final oldStr = (args['old_str'] as String?) ?? '';
+        final newStr = (args['new_str'] as String?) ?? '';
+        if (oldStr.isEmpty) {
+          return const ToolExecResult(content: '{"ok":false,"reason":"missing_old_str"}', ok: false, actionLabel: 'str_replace 需要 old_str');
+        }
+        return _editorStrReplace(raw, oldStr, newStr);
+      case 'insert':
+        final insertLine = (args['insert_line'] as num?)?.toInt() ?? 1;
+        final newStr = (args['new_str'] as String?) ?? '';
+        if (newStr.isEmpty) {
+          return const ToolExecResult(content: '{"ok":false,"reason":"missing_new_str"}', ok: false, actionLabel: 'insert 需要 new_str');
+        }
+        return _editorInsert(raw, insertLine, newStr);
+      default:
+        return ToolExecResult(
+          content: '{"ok":false,"reason":"unknown_command","hint":"允许的命令：view / create / str_replace / insert"}',
+          ok: false,
+          actionLabel: '未知命令：$cmd',
+        );
+    }
+  }
+
+  Future<ToolExecResult> _toolListDir(Map<String, dynamic> args) async {
+    final raw = _resolveFsPath((args['path'] as String?)?.trim() ?? '');
+    if (raw.isEmpty) return const ToolExecResult(content: '{"ok":false,"reason":"missing_path"}', ok: false, actionLabel: '缺少目录路径');
+    if (!_isPathUnderFsRoot(raw)) return _fsPermissionDenied('path outside fs root');
+    try {
+      final dir = Directory(raw);
+      if (!await dir.exists()) return ToolExecResult(content: '{"ok":false,"reason":"not_found"}', ok: false, actionLabel: '目录不存在：$raw');
+      final entries = <Map<String, dynamic>>[];
+      await for (final ent in dir.list()) {
+        final stat = await ent.stat();
+        entries.add({
+          'name': _basename(ent.path),
+          'type': ent is Directory ? 'dir' : 'file',
+          'size': ent is Directory ? null : stat.size,
+          'modified': stat.modified.toIso8601String(),
+        });
+        if (entries.length >= 200) break; // 限制返回数量
+      }
+      return ToolExecResult(
+        content: jsonEncode({'ok': true, 'path': raw, 'count': entries.length, 'entries': entries}),
+        ok: true,
+        actionLabel: '已列出 $raw 下的 ${entries.length} 项',
+      );
+    } catch (e) {
+      return ToolExecResult(content: '{"ok":false,"reason":"list_failed: $e"}', ok: false);
+    }
+  }
+
+  Future<ToolExecResult> _toolBash(Map<String, dynamic> args) async {
+    final cmd = (args['command'] as String?)?.trim() ?? '';
+    if (cmd.isEmpty) return const ToolExecResult(content: '{"ok":false,"reason":"missing_command"}', ok: false, actionLabel: '缺少命令');
+    var timeoutMs = (args['timeout_ms'] as num?)?.toInt() ?? 30000;
+    if (timeoutMs < 1000) timeoutMs = 1000;
+    if (timeoutMs > 60000) timeoutMs = 60000;
+    try {
+      // 默认在工作区根目录执行，让 `dir src`、`tsc` 等相对命令直接可用；
+      // 否则默认 cwd 是系统目录，模型用相对路径的命令会全部失败（退出码 1）。
+      // 若工作区目录不存在（被删等），回退系统默认 cwd，不阻断命令执行。
+      final wd = Directory(_fsRoot()).existsSync() ? _fsRoot() : null;
+      final result = await Process.run(
+        'cmd',
+        ['/c', cmd],
+        runInShell: false,
+        workingDirectory: wd,
+      ).timeout(Duration(milliseconds: timeoutMs));
+      final out = result.stdout.toString();
+      final err = result.stderr.toString();
+      final body = out.length > 32 * 1024 ? out.substring(0, 32 * 1024) + '\n... [输出已截断]' : out;
+      final errBody = err.length > 32 * 1024 ? err.substring(0, 32 * 1024) + '\n... [输出已截断]' : err;
+      return ToolExecResult(
+        content: jsonEncode({'ok': result.exitCode == 0, 'exit_code': result.exitCode, 'stdout': body, 'stderr': errBody}),
+        ok: result.exitCode == 0,
+        actionLabel: result.exitCode == 0 ? '已执行命令' : '命令退出码 ${result.exitCode}',
+        exitCode: result.exitCode,
+        terminalOutput: [if (out.isNotEmpty) out, if (err.isNotEmpty) 'STDERR: $err'].join('\n'),
+      );
+    } catch (e) {
+      return ToolExecResult(content: '{"ok":false,"reason":"exec_failed: $e"}', ok: false, actionLabel: '命令执行失败');
+    }
+  }
+
+  String _basename(String path) {
+    final sep = path.contains(r'\') ? r'\' : '/';
+    final idx = path.lastIndexOf(sep);
+    return idx < 0 ? path : path.substring(idx + 1);
+  }
+
+  String _humanSize(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    return '${(bytes / 1024 / 1024).toStringAsFixed(2)} MB';
+  }
+
+  // ============== dsh 移植工具实现（第二轮 6 个） ==============
+
+  /// dsh-tool-ask-user: 让用户从选项中选
+  Future<ToolExecResult> _toolAskUserQuestion(Map<String, dynamic> args) async {
+    final raw = args['questions'];
+    if (raw is! List || raw.isEmpty) {
+      return const ToolExecResult(content: '{"ok":false,"reason":"missing_questions"}', ok: false, actionLabel: '缺少 questions');
+    }
+    final qs = <AskUserQuestion>[];
+    for (final e in raw) {
+      if (e is! Map) continue;
+      final id = ((e['id'] as String?) ?? '').trim();
+      final q = ((e['question'] as String?) ?? '').trim();
+      if (id.isEmpty || q.isEmpty) continue;
+      final header = (e['header'] as String?)?.trim();
+      final opts = <AskUserOption>[];
+      final rawOpts = e['options'];
+      if (rawOpts is List) {
+        for (final o in rawOpts) {
+          if (o is! Map) continue;
+          final lbl = ((o['label'] as String?) ?? '').trim();
+          if (lbl.isEmpty) continue;
+          opts.add(AskUserOption(label: lbl, description: (o['description'] as String?)?.trim()));
+        }
+      }
+      final multi = e['multi_select'] == true;
+      qs.add(AskUserQuestion(id: id, question: q, header: header, options: opts, multiSelect: multi));
+    }
+    if (qs.isEmpty) {
+      return const ToolExecResult(content: '{"ok":false,"reason":"no_valid_questions"}', ok: false, actionLabel: '没有有效问题');
+    }
+    for (var i = chatHistory.length - 1; i >= 0; i--) {
+      if (chatHistory[i].role == 'ai') {
+        chatHistory[i].askQuestions = qs;
+        chatHistory[i].askAnswers = {};
+        break;
+      }
+    }
+    _notifyChatUpdate();
+    final answers = <Map<String, dynamic>>[];
+    for (final q in qs) {
+      final sel = chatHistory.isNotEmpty && chatHistory.last.role == 'ai'
+          ? (chatHistory.last.askAnswers[q.id] ?? const <String>[])
+          : const <String>[];
+      answers.add({'id': q.id, 'selected': sel, 'custom': null});
+    }
+    return ToolExecResult(
+      content: jsonEncode({'ok': true, 'answers': answers, 'pending': true, 'hint': '等待 UI 层回填用户答案'}),
+      ok: true,
+      actionLabel: '已弹出问题，等待用户回答',
+    );
+  }
+
+  /// dsh-tool-compaction: 总结早期消息
+  Future<ToolExecResult> _toolCompactConversation(Map<String, dynamic> args) async {
+    final focus = (args['focus'] as String?)?.trim() ?? '';
+    var keepRecent = (args['keep_recent'] as num?)?.toInt() ?? 8;
+    if (keepRecent < 4) keepRecent = 4;
+    if (keepRecent > chatHistory.length) keepRecent = chatHistory.length ~/ 2;
+    if (chatHistory.length <= keepRecent + 2) {
+      return const ToolExecResult(content: '{"ok":false,"reason":"too_short"}', ok: false, actionLabel: '对话太短，无需压缩');
+    }
+    final cut = chatHistory.length - keepRecent;
+    final toCompact = chatHistory.sublist(0, cut);
+    final summary = await _summarizeMessages(toCompact, focus: focus);
+    final summaryMsg = ChatMessage(role: 'system', content: '【早期对话摘要】$summary');
+    chatHistory = [summaryMsg, ...chatHistory.sublist(cut)];
+    _notifyChatUpdate();
+    return ToolExecResult(
+      content: jsonEncode({'ok': true, 'compacted': toCompact.length, 'kept_recent': keepRecent, 'summary': summary}),
+      ok: true,
+      actionLabel: '已压缩 $cut 条消息为摘要',
+    );
+  }
+
+  Future<String> _summarizeMessages(List<ChatMessage> msgs, {String focus = ''}) async {
+    final cfg = effectiveChatConfig;
+    if (!cfg.ready) return '（AI 未配置，跳过摘要）';
+    final buf = StringBuffer();
+    for (final m in msgs) {
+      buf.writeln('${m.role == "user" ? "用户" : "AI"}: ${m.content}');
+    }
+    final sysHint = focus.isNotEmpty
+        ? '你是对话压缩助手。总结以下对话，重点保留：$focus。输出简洁中文，500字以内。'
+        : '你是对话压缩助手。总结以下对话的关键事实、用户偏好、已完成工作、未解决问题。输出简洁中文，500字以内。';
+    final reply = await ApiService.callAI([
+      {'role': 'system', 'content': sysHint},
+      {'role': 'user', 'content': buf.toString()},
+    ], sysHint, config: cfg, extraParams: ApiService.noThinkingParams(cfg.model));
+    return reply ?? '（摘要生成失败）';
+  }
+
+  /// dsh-tool-skill-filesystem
+  /// 候选技能根目录：用户工作区 > 默认 C:\Users > 应用当前目录 > exe 所在目录
+  List<String> _skillRoots() {
+    final roots = <String>[];
+    final ws = workspacePath.trim();
+    if (ws.isNotEmpty) roots.add(ws);
+    if (ws.toLowerCase() != r'c:\users') roots.add(r'C:\Users');
+    try {
+      roots.add(Directory.current.path);
+      roots.add(Platform.resolvedExecutable.isNotEmpty ? Directory(Platform.resolvedExecutable).parent.path : '');
+    } catch (_) {}
+    return roots.where((r) => r.isNotEmpty).toSet().toList();
+  }
+
+  Future<ToolExecResult> _toolListUserSkills() async {
+    final skills = <Map<String, String>>[];
+    final scannedDirs = <String>[];
+    for (final root in _skillRoots()) {
+      final dir = Directory('$root\\.dsh\\skills');
+      if (!await dir.exists()) continue;
+      scannedDirs.add(dir.path);
+      await for (final ent in dir.list()) {
+        if (ent is! File) continue;
+        if (!ent.path.toLowerCase().endsWith('.md')) continue;
+        try {
+          final content = await ent.readAsString();
+          final (meta, body) = _parseSkillMd(content);
+          final name = meta['name'] ?? _basename(ent.path).replaceAll(RegExp(r'\.md$', caseSensitive: false), '');
+          final desc = meta['description'] ?? '';
+          // 后扫描的目录不覆盖已存在的同名技能（工作区优先）
+          if (userSkillsCache.containsKey(name)) continue;
+          userSkillsCache[name] = body;
+          userSkillDescriptions[name] = desc;
+          skills.add({'name': name, 'description': desc, 'file': ent.path});
+        } catch (_) {}
+      }
+    }
+    if (skills.isEmpty) {
+      final rootsHint = _skillRoots().map((r) => r).join('；');
+      return ToolExecResult(
+        content: jsonEncode({'ok': true, 'count': 0, 'skills': [], 'hint': '在任意候选根目录的 .dsh\\skills 下放 *.md 文件即可（候选：$rootsHint）'}),
+        ok: true,
+        actionLabel: '未发现用户技能（已扫描 ${scannedDirs.length} 个目录）',
+      );
+    }
+    return ToolExecResult(
+      content: jsonEncode({'ok': true, 'count': skills.length, 'skills': skills}),
+      ok: true,
+      actionLabel: '发现 ${skills.length} 个用户技能',
+    );
+  }
+
+  (Map<String, String>, String) _parseSkillMd(String content) {
+    final lines = content.split('\n');
+    if (lines.isEmpty || lines.first.trim() != '---') return (const {}, content);
+    int endIdx = -1;
+    for (var i = 1; i < lines.length; i++) {
+      if (lines[i].trim() == '---') {
+        endIdx = i;
+        break;
+      }
+    }
+    if (endIdx < 0) return (<String, String>{}, content);
+    final fm = <String, String>{};
+    for (var i = 1; i < endIdx; i++) {
+      final m = RegExp(r'^([a-zA-Z_-]+):\s*(.*)$').firstMatch(lines[i]);
+      if (m != null) {
+        final k = m.group(1) ?? '';
+        final v = m.group(2) ?? '';
+        if (k.isNotEmpty) {
+          final cleaned = v.trim().replaceAll(RegExp('^["\']|["\']\$'), '');
+          fm[k] = cleaned;
+        }
+      }
+    }
+    final body = lines.sublist(endIdx + 1).join('\n').trim();
+    return (fm, body);
+  }
+
+  Future<ToolExecResult> _toolLoadSkill(Map<String, dynamic> args) async {
+    final name = (args['name'] as String?)?.trim() ?? '';
+    if (name.isEmpty) return const ToolExecResult(content: '{"ok":false,"reason":"missing_name"}', ok: false, actionLabel: '缺少 name');
+    if (!userSkillsCache.containsKey(name)) {
+      await _toolListUserSkills();
+    }
+    final body = userSkillsCache[name];
+    if (body == null) {
+      return ToolExecResult(
+        content: jsonEncode({'ok': false, 'reason': 'skill_not_found', 'available': userSkillsCache.keys.toList()}),
+        ok: false,
+        actionLabel: '未找到用户技能：$name',
+      );
+    }
+    return ToolExecResult(
+      content: jsonEncode({'ok': true, 'name': name, 'description': userSkillDescriptions[name] ?? '', 'instructions': body}),
+      ok: true,
+      actionLabel: '已加载用户技能「$name」',
+    );
+  }
+
+  /// dsh-plan-mode
+  Future<ToolExecResult> _toolSubmitPlan(Map<String, dynamic> args) async {
+    final title = (args['title'] as String?)?.trim() ?? '执行计划';
+    final summary = (args['summary'] as String?)?.trim();
+    final rawSteps = args['steps'];
+    final steps = <PlanStep>[];
+    if (rawSteps is List) {
+      for (final e in rawSteps) {
+        if (e is! Map) continue;
+        final step = (e['step'] as num?)?.toInt() ?? (steps.length + 1);
+        final action = ((e['action'] as String?) ?? '').trim();
+        if (action.isEmpty) continue;
+        final tools = (e['tools'] is List) ? (e['tools'] as List).map((x) => x.toString()).toList() : <String>[];
+        final output = (e['output'] as String?)?.trim();
+        steps.add(PlanStep(step: step, action: action, tools: tools, output: output));
+      }
+    }
+    if (steps.isEmpty) {
+      return const ToolExecResult(content: '{"ok":false,"reason":"no_steps"}', ok: false, actionLabel: '计划必须包含至少一个步骤');
+    }
+    final plan = PlanSubmission(title: title, summary: summary, steps: steps);
+    for (var i = chatHistory.length - 1; i >= 0; i--) {
+      if (chatHistory[i].role == 'ai') {
+        chatHistory[i].plan = plan;
+        break;
+      }
+    }
+    _notifyChatUpdate();
+    return ToolExecResult(
+      content: jsonEncode({'ok': true, 'plan': plan.toJson(), 'pending': true}),
+      ok: true,
+      actionLabel: '已提交计划，等待用户审批',
+    );
+  }
+
+  /// dsh-tool-jobs
+  Future<ToolExecResult> _toolRunBackgroundJob(Map<String, dynamic> args) async {
+    final cmd = (args['command'] as String?)?.trim() ?? '';
+    final desc = (args['description'] as String?)?.trim() ?? '';
+    if (cmd.isEmpty) return const ToolExecResult(content: '{"ok":false,"reason":"missing_command"}', ok: false, actionLabel: '缺少命令');
+    final jobId = DateTime.now().millisecondsSinceEpoch.toString();
+    final job = BackgroundJob(jobId: jobId, command: cmd, description: desc, startedAt: DateTime.now());
+    backgroundJobs[jobId] = job;
+    () async {
+      try {
+        final result = await Process.run('cmd', ['/c', cmd], runInShell: false);
+        job.stdout = result.stdout.toString();
+        job.stderr = result.stderr.toString();
+        job.exitCode = result.exitCode;
+        job.finished = true;
+      } catch (e) {
+        job.stderr = '$e';
+        job.finished = true;
+        job.exitCode = -1;
+      }
+      notifyListeners();
+    }();
+    return ToolExecResult(
+      content: jsonEncode({'ok': true, 'job_id': jobId, 'started_at': job.startedAt.toIso8601String()}),
+      ok: true,
+      actionLabel: '已启动后台任务 $jobId',
+    );
+  }
+
+  Future<ToolExecResult> _toolJobOutput(Map<String, dynamic> args) async {
+    final jobId = (args['job_id'] as String?)?.trim() ?? '';
+    final wait = args['wait'] != false;
+    var timeoutMs = (args['timeout_ms'] as num?)?.toInt() ?? 5000;
+    if (timeoutMs < 100) timeoutMs = 100;
+    if (timeoutMs > 60000) timeoutMs = 60000;
+    final job = backgroundJobs[jobId];
+    if (job == null) {
+      return ToolExecResult(content: jsonEncode({'ok': false, 'reason': 'job_not_found'}), ok: false, actionLabel: '未找到任务 $jobId');
+    }
+    if (wait && !job.finished) {
+      final deadline = DateTime.now().add(Duration(milliseconds: timeoutMs));
+      while (!job.finished && DateTime.now().isBefore(deadline)) {
+        await Future.delayed(const Duration(milliseconds: 100));
+      }
+    }
+    return ToolExecResult(
+      content: jsonEncode({
+        'ok': true,
+        'job_id': jobId,
+        'finished': job.finished,
+        'exit_code': job.exitCode,
+        'stdout': job.stdout,
+        'stderr': job.stderr,
+      }),
+      ok: true,
+      actionLabel: job.finished ? '任务已结束' : '任务进行中',
+    );
+  }
+
+  Future<ToolExecResult> _toolJobKill(Map<String, dynamic> args) async {
+    final jobId = (args['job_id'] as String?)?.trim() ?? '';
+    final job = backgroundJobs[jobId];
+    if (job == null) {
+      return ToolExecResult(content: jsonEncode({'ok': false, 'reason': 'job_not_found'}), ok: false, actionLabel: '未找到任务 $jobId');
+    }
+    job.finished = true;
+    job.stderr = '（用户已取消）';
+    return ToolExecResult(
+      content: jsonEncode({'ok': true, 'job_id': jobId, 'killed': true}),
+      ok: true,
+      actionLabel: '已终止任务 $jobId',
+    );
+  }
+
+  /// dsh-guard
+  Future<ToolExecResult> _toolCheckRepeat() async {
+    if (recentToolCalls.length < 2) {
+      return const ToolExecResult(content: '{"ok":true,"has_repeat":false}', ok: true, actionLabel: '无重复调用');
+    }
+    final last = recentToolCalls.last;
+    final lastKey = '${last['name']}|${jsonEncode(last['args'])}';
+    final repeats = <Map<String, dynamic>>[];
+    for (var i = recentToolCalls.length - 2; i >= 0; i--) {
+      final key = '${recentToolCalls[i]['name']}|${jsonEncode(recentToolCalls[i]['args'])}';
+      if (key == lastKey) {
+        repeats.add(recentToolCalls[i]);
+      }
+    }
+    if (repeats.isEmpty) {
+      return const ToolExecResult(content: '{"ok":true,"has_repeat":false}', ok: true, actionLabel: '最近工具调用无重复');
+    }
+    return ToolExecResult(
+      content: jsonEncode({
+        'ok': true,
+        'has_repeat': true,
+        'repeat_count': repeats.length + 1,
+        'message': '你最近 ${repeats.length + 1} 次调用了同一个工具+参数。请基于已有结果继续，不要再重复调用。',
+      }),
+      ok: true,
+      actionLabel: '检测到 ${repeats.length + 1} 次重复调用',
+    );
+  }
+
+  // ============== dsh 移植工具实现 ==============
+
+  /// 把 JS 对象字面量转成 JSON（键补引号、单引号值转双引号）：{path: "a", n: 1} → {"path":"a","n":1}
+  String _jsObjectToJson(String expr) {
+    // 简化：匹配 { ... }，把里面的裸键（前面是 { 或 , 后面是 :）加引号
+    var s = expr.trim();
+    if (!s.startsWith('{')) {
+      // 可能是普通字符串/数字，包成 value
+      return jsonEncode(_parseJsScalar(s));
+    }
+    final buf = StringBuffer();
+    var i = 0;
+    while (i < s.length) {
+      final ch = s[i];
+      if ((ch == '{' || ch == ',') && i + 1 < s.length) {
+        buf.write(ch);
+        i++;
+        // 跳过空白
+        while (i < s.length && (s[i] == ' ' || s[i] == '\n' || s[i] == '\t')) {
+          buf.write(s[i]);
+          i++;
+        }
+        // 如果下一个不是引号，则是裸键 → 加引号
+        if (i < s.length && s[i] != '"' && s[i] != "'" && s[i] != '}' && s[i] != ',') {
+          final keyStart = i;
+          while (i < s.length && s[i] != ':' && s[i] != ',' && s[i] != '}' && s[i] != ' ' && s[i] != '\n') {
+            i++;
+          }
+          final key = s.substring(keyStart, i).trim();
+          buf.write('"$key"');
+          continue;
+        }
+        buf.write(ch == ',' ? ',' : ' ');
+        continue;
+      }
+      buf.write(ch);
+      i++;
+    }
+    var out = buf.toString();
+    // 单引号字符串值 → 双引号（容错模型输出 {name: 'qwen'} 这类）
+    out = out.replaceAllMapped(RegExp(r":\s*'((?:[^'\\]|\\.)*)'"), (m) => ': "${m.group(1)!.replaceAll('"', r'\"')}"');
+    // 裸字符串值（: hello）→ 加引号
+    out = out.replaceAllMapped(RegExp(r":\s*([A-Za-z_][A-Za-z0-9_.\-/\\]*)([,}])"), (m) => ': "${m.group(1)}"${m.group(2)}');
+    return out;
+  }
+
+  dynamic _parseJsScalar(String v) {
+    final t = v.trim();
+    if (t == 'true') return true;
+    if (t == 'false') return false;
+    if (t == 'null') return null;
+    if (t.startsWith('"') && t.endsWith('"') && t.length >= 2) return t.substring(1, t.length - 1);
+    if (t.startsWith("'") && t.endsWith("'") && t.length >= 2) return t.substring(1, t.length - 1);
+    final n = num.tryParse(t);
+    if (n != null) return n;
+    return t;
+  }
+
+  /// 解析 `tools.<name>(<args>)` 调用，返回 (工具名, 参数Map) 列表
+  List<({String name, Map<String, dynamic> args})> _parseRunCodeCalls(String code) {
+    final calls = <({String name, Map<String, dynamic> args})>[];
+    // 匹配 tools.xxx({...}) 或 tools.xxx({...}).xxx 等
+    final re = RegExp(r'tools\.([a-zA-Z_][a-zA-Z0-9_]*)\s*\(\s*(\{[^{}]*(?:\{[^{}]*\}[^{}]*)*)\s*\)');
+    for (final m in re.allMatches(code)) {
+      final name = m.group(1)!;
+      final rawArgs = m.group(2)!;
+      Map<String, dynamic> args = {};
+      try {
+        final jsonStr = _jsObjectToJson(rawArgs);
+        final decoded = jsonDecode(jsonStr);
+        if (decoded is Map) {
+          args = decoded.map((k, v) => MapEntry(k.toString(), v));
+        }
+      } catch (_) {
+        // 解析失败：尝试裸值
+        try {
+          final v = _parseJsScalar(rawArgs);
+          args = {'value': v};
+        } catch (_2) {
+          args = {};
+        }
+      }
+      calls.add((name: name, args: args));
+    }
+    return calls;
+  }
+
+  /// Code Mode 执行器：解析并执行 model 编写的工具调用序列，聚合结果
+  Future<ToolExecResult> _toolRunCode(Map<String, dynamic> args) async {
+    final code = (args['code'] as String?) ?? '';
+    final desc = (args['description'] as String?)?.trim() ?? '';
+    if (code.trim().isEmpty) {
+      return const ToolExecResult(content: '{"ok":false,"reason":"missing_code"}', ok: false, actionLabel: '缺少 code');
+    }
+    // 不支持的工具列表（防递归/循环）
+    const forbidden = {'run_code', 'ask_user_question', 'submit_plan', 'spawn_subagent', 'compact_conversation'};
+    final calls = _parseRunCodeCalls(code);
+    if (calls.isEmpty) {
+      return ToolExecResult(
+        content: jsonEncode({
+          'ok': false,
+          'reason': 'no_tool_calls_parsed',
+          'hint': '代码里没有解析到 tools.<工具名>({...}) 调用。示例：const r = await tools.read_file({path: "C:/Users/x/a.txt"}); return r.content;',
+        }),
+        ok: false,
+        actionLabel: '未解析到工具调用',
+      );
+    }
+    final results = <Map<String, dynamic>>[];
+    var allOk = true;
+    for (final call in calls) {
+      if (forbidden.contains(call.name)) {
+        results.add({'tool': call.name, 'ok': false, 'error': 'run_code 内不允许调用 $call.name'});
+        allOk = false;
+        continue;
+      }
+      try {
+        final res = await executeTool(call.name, call.args);
+        results.add({'tool': call.name, 'ok': res.ok, 'label': res.actionLabel, 'result': res.content});
+        if (!res.ok) allOk = false;
+      } catch (e) {
+        results.add({'tool': call.name, 'ok': false, 'error': '$e'});
+        allOk = false;
+      }
+    }
+    // 尝试解析 return 语句，若代码里有 return <表达式> 且表达式是字面量，附加到输出
+    String? returnNote;
+    final returnRe = RegExp(r'return\s+(.+?)\s*;?\s*$', multiLine: true);
+    final rm = returnRe.firstMatch(code);
+    if (rm != null) {
+      final v = rm.group(1)!.trim();
+      if (!v.startsWith('await') && !v.startsWith('tools.') && !v.startsWith('{') && !v.startsWith('const')) {
+        returnNote = v;
+      }
+    }
+    final summary = results.map((r) {
+      final label = (r['label'] as String?) ?? r['tool'];
+      final ok = r['ok'] == true;
+      return '${ok ? "✅" : "❌"} ${r['tool']}: $label';
+    }).join('\n');
+    return ToolExecResult(
+      content: jsonEncode({
+        'ok': allOk,
+        'steps': results.length,
+        'description': desc,
+        'results': results,
+        if (returnNote != null) 'return_value': returnNote,
+      }),
+      ok: allOk,
+      actionLabel: allOk ? 'run_code 完成 ${results.length} 步' : 'run_code 完成 ${results.length} 步（有失败）',
+    );
+  }
+
+  /// dsh-tool-todo: 任务清单管理
+  Future<ToolExecResult> _toolTodo(Map<String, dynamic> args) async {
+    final raw = args['todos'];
+    if (raw is! List) {
+      return const ToolExecResult(content: '{"ok":false,"reason":"missing_todos"}', ok: false, actionLabel: '缺少 todos 数组');
+    }
+    final items = <TodoItem>[];
+    for (final e in raw) {
+      if (e is Map) {
+        final content = ((e['content'] as String?) ?? '').trim();
+        final status = ((e['status'] as String?) ?? 'pending').trim();
+        if (content.isEmpty) continue;
+        items.add(TodoItem(content: content, status: status));
+      }
+    }
+    if (items.isEmpty) {
+      return const ToolExecResult(content: '{"ok":false,"reason":"empty_todos"}', ok: false, actionLabel: 'todos 数组为空');
+    }
+    // 单 active in_progress 校验
+    final inProgressCount = items.where((t) => t.status == 'in_progress').length;
+    if (inProgressCount > 1) {
+      return ToolExecResult(
+        content: '{"ok":false,"reason":"multiple_in_progress"}',
+        ok: false,
+        actionLabel: '同一时刻只能有一个 in_progress，当前 $inProgressCount 个',
+      );
+    }
+    // 找到最近一条 AI 消息，把 todoList 写进去
+    for (var i = chatHistory.length - 1; i >= 0; i--) {
+      if (chatHistory[i].role == 'ai') {
+        chatHistory[i].todoList = items;
+        break;
+      }
+    }
+    _notifyChatUpdate();
+    return ToolExecResult(
+      content: jsonEncode({'ok': true, 'count': items.length, 'todos': items.map((t) => t.toJson()).toList()}),
+      ok: true,
+      actionLabel: '已更新任务清单（${items.length} 项，$inProgressCount 进行中）',
+    );
+  }
+
+  /// dsh-tool-skill: 加载技能完整指令
+  Future<ToolExecResult> _toolSkill(Map<String, dynamic> args) async {
+    final name = (args['name'] as String?)?.trim() ?? '';
+    if (name.isEmpty) return const ToolExecResult(content: '{"ok":false,"reason":"missing_name"}', ok: false, actionLabel: '缺少技能名');
+    ChatSkill? found;
+    for (final s in kAllChatSkills) {
+      if (s.id == name || s.name == name) {
+        found = s;
+        break;
+      }
+    }
+    if (found == null) {
+      final names = kAllChatSkills.map((s) => s.name).take(20).join('、');
+      return ToolExecResult(
+        content: '{"ok":false,"reason":"skill_not_found","available":"$names..."}',
+        ok: false,
+        actionLabel: '未找到技能：$name',
+      );
+    }
+    return ToolExecResult(
+      content: jsonEncode({
+        'ok': true,
+        'name': found.name,
+        'description': found.description,
+        'instructions': found.prompt,
+        'toolName': found.toolName,
+      }),
+      ok: true,
+      actionLabel: '已加载技能「${found.name}」',
+    );
+  }
+
+  /// dsh-tool-web (web_fetch 部分): 抓取并清理 HTML
+  Future<ToolExecResult> _toolWebFetch(Map<String, dynamic> args) async {
+    final url = (args['url'] as String?)?.trim() ?? '';
+    if (url.isEmpty) return const ToolExecResult(content: '{"ok":false,"reason":"missing_url"}', ok: false, actionLabel: '缺少 URL');
+    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+      return const ToolExecResult(content: '{"ok":false,"reason":"bad_scheme"}', ok: false, actionLabel: 'URL 必须以 http:// 或 https:// 开头');
+    }
+    var maxChars = (args['max_chars'] as num?)?.toInt() ?? 200000;
+    if (maxChars < 1000) maxChars = 1000;
+    if (maxChars > 200000) maxChars = 200000;
+    try {
+      final client = HttpClient()..connectionTimeout = const Duration(seconds: 10);
+      final req = await client.getUrl(Uri.parse(url));
+      req.headers.set('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Afloat/1.0');
+      final resp = await req.close().timeout(const Duration(seconds: 30));
+      if (resp.statusCode >= 400) {
+        return ToolExecResult(content: jsonEncode({'ok': false, 'status': resp.statusCode}), ok: false, actionLabel: 'HTTP ${resp.statusCode}');
+      }
+      final body = await resp.transform(utf8.decoder).join();
+      client.close(force: true);
+      // 简易 HTML → 文本：去 script/style、tag、合并空白
+      var text = body
+          .replaceAll(RegExp(r'<script[^>]*>[\s\S]*?</script>', caseSensitive: false), '')
+          .replaceAll(RegExp(r'<style[^>]*>[\s\S]*?</style>', caseSensitive: false), '')
+          .replaceAll(RegExp(r'<[^>]+>'), ' ')
+          .replaceAll('&nbsp;', ' ').replaceAll('&amp;', '&').replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&quot;', '"').replaceAll('&#39;', "'")
+          .replaceAll(RegExp(r'\s+'), ' ');
+      final truncated = text.length > maxChars;
+      if (truncated) text = text.substring(0, maxChars);
+      return ToolExecResult(
+        content: jsonEncode({'ok': true, 'url': url, 'length': text.length, 'truncated': truncated, 'text': text}),
+        ok: true,
+        actionLabel: truncated ? '已抓取 ${(text.length / 1024).toStringAsFixed(1)}KB (已截断)' : '已抓取 ${(text.length / 1024).toStringAsFixed(1)}KB',
+      );
+    } catch (e) {
+      return ToolExecResult(content: '{"ok":false,"reason":"fetch_failed: $e"}', ok: false, actionLabel: '抓取失败');
+    }
+  }
+
+  /// dsh-tool-session-query: 跨会话查历史
+  Future<ToolExecResult> _toolSessionQuery(Map<String, dynamic> args) async {
+    final op = (args['operation'] as String?)?.trim() ?? '';
+    final query = (args['query'] as String?)?.trim() ?? '';
+    final sessionId = (args['session_id'] as String?)?.trim() ?? '';
+    var limit = (args['limit'] as num?)?.toInt() ?? 20;
+    if (limit < 1) limit = 1;
+    if (limit > 100) limit = 100;
+    switch (op) {
+      case 'list_sessions':
+        var list = List<Map<String, dynamic>>.from(chatSessions);
+        if (query.isNotEmpty) {
+          list = list.where((s) => ((s['title'] as String?) ?? '').contains(query)).toList();
+        }
+        if (list.length > limit) list = list.sublist(0, limit);
+        return ToolExecResult(
+          content: jsonEncode({'ok': true, 'count': list.length, 'sessions': list}),
+          ok: true,
+          actionLabel: '列出最近 ${list.length} 个会话',
+        );
+      case 'search_history':
+        if (query.isEmpty) return const ToolExecResult(content: '{"ok":false,"reason":"missing_query"}', ok: false, actionLabel: 'search_history 需要 query');
+        final idx = chatSessions.indexWhere((s) => s['id'] == sessionId);
+        if (idx < 0) return ToolExecResult(content: '{"ok":false,"reason":"session_not_found"}', ok: false, actionLabel: '未找到会话 $sessionId');
+        final messages = (idx < chatSessionMessages.length) ? chatSessionMessages[idx] : <Map<String, dynamic>>[];
+        final hits = <Map<String, dynamic>>[];
+        for (var i = 0; i < messages.length; i++) {
+          final content = (messages[i]['content'] as String?) ?? '';
+          if (content.contains(query)) {
+            hits.add({'index': i, 'role': messages[i]['role'], 'snippet': content.length > 200 ? '${content.substring(0, 200)}...' : content});
+            if (hits.length >= limit) break;
+          }
+        }
+        return ToolExecResult(
+          content: jsonEncode({'ok': true, 'sessionId': sessionId, 'hits': hits.length, 'matches': hits}),
+          ok: true,
+          actionLabel: '在会话内找到 ${hits.length} 条命中',
+        );
+      case 'get_session':
+        if (sessionId.isEmpty) return const ToolExecResult(content: '{"ok":false,"reason":"missing_session_id"}', ok: false, actionLabel: 'get_session 需要 session_id');
+        final idx = chatSessions.indexWhere((s) => s['id'] == sessionId);
+        if (idx < 0) return ToolExecResult(content: '{"ok":false,"reason":"session_not_found"}', ok: false, actionLabel: '未找到会话 $sessionId');
+        final messages = (idx < chatSessionMessages.length) ? chatSessionMessages[idx] : <Map<String, dynamic>>[];
+        return ToolExecResult(
+          content: jsonEncode({'ok': true, 'sessionId': sessionId, 'messageCount': messages.length, 'messages': messages}),
+          ok: true,
+          actionLabel: '已获取会话（${messages.length} 条消息）',
+        );
+      default:
+        return ToolExecResult(content: '{"ok":false,"reason":"unknown_op:$op"}', ok: false, actionLabel: '未知操作：$op');
+    }
+  }
+
+  /// dsh-tool-subagent: 派生子 Agent
+  Future<ToolExecResult> _toolSpawnSubagent(Map<String, dynamic> args) async {
+    final task = (args['task'] as String?)?.trim() ?? '';
+    if (task.isEmpty) return const ToolExecResult(content: '{"ok":false,"reason":"missing_task"}', ok: false, actionLabel: '缺少 task');
+    final type = (args['type'] as String?)?.trim() ?? 'general';
+    final ctx = (args['context'] as String?)?.trim() ?? '';
+    // 简化：复用当前 effectiveChatConfig 跑一次 sendChat 子循环
+    try {
+      final cfg = effectiveChatConfig;
+      if (!cfg.ready) return const ToolExecResult(content: '{"ok":false,"reason":"api_not_ready"}', ok: false, actionLabel: 'AI 未配置');
+      final sysHint = switch (type) {
+        'research' => '你是研究型子 Agent。专注联网检索与综合，给出有据可查的结论。',
+        'coder' => '你是编码子 Agent。直接给可运行代码，必要时分块；完成后总结改动文件。',
+        _ => '你是一般子 Agent。聚焦子任务，完成后给出简洁回答。',
+      };
+      final prompt = '$sysHint\n\n$ctx\n\n## 子任务\n$task';
+      final reply = await ApiService.callAI([
+        {'role': 'system', 'content': prompt},
+        {'role': 'user', 'content': task},
+      ], prompt, config: cfg, extraParams: ApiService.noThinkingParams(cfg.model));
+      if (reply == null || reply.isEmpty) {
+        return const ToolExecResult(content: '{"ok":false,"reason":"empty_reply"}', ok: false, actionLabel: '子 Agent 无回复');
+      }
+      return ToolExecResult(
+        content: jsonEncode({'ok': true, 'type': type, 'reply': reply}),
+        ok: true,
+        actionLabel: '子 Agent ($type) 已完成',
+      );
+    } catch (e) {
+      return ToolExecResult(content: '{"ok":false,"reason":"$e"}', ok: false, actionLabel: '子 Agent 失败');
+    }
+  }
+
+  /// dsh-mcp-client: list_mcp_tools
+  Future<ToolExecResult> _toolListMcpTools() async {
+    if (mcpRegistry.clients.isEmpty) {
+      return ToolExecResult(
+        content: jsonEncode({'ok': true, 'servers': [], 'hint': '请在设置 → MCP 中配置 server 后重启对话'}),
+        ok: true,
+        actionLabel: 'MCP server 未连接',
+      );
+    }
+    final servers = mcpRegistry.clients.map((c) {
+      return {
+        'name': c.name,
+        'serverInfo': c.serverInfo,
+        'tools': c.tools.map((t) => {'name': t.name, 'description': t.description}).toList(),
+      };
+    }).toList();
+    return ToolExecResult(
+      content: jsonEncode({'ok': true, 'servers': servers}),
+      ok: true,
+      actionLabel: '已连接 ${servers.length} 个 MCP server，${mcpTools.length} 个工具',
+    );
+  }
+
+  /// dsh-mcp-client: call_mcp_tool
+  Future<ToolExecResult> _toolCallMcpTool(Map<String, dynamic> args) async {
+    final server = (args['server_name'] as String?)?.trim() ?? '';
+    final tool = (args['tool_name'] as String?)?.trim() ?? '';
+    final arguments = (args['arguments'] as Map?)?.cast<String, dynamic>() ?? {};
+    if (server.isEmpty || tool.isEmpty) {
+      return const ToolExecResult(content: '{"ok":false,"reason":"missing_args"}', ok: false, actionLabel: '需要 server_name + tool_name + arguments');
+    }
+    final client = mcpRegistry.clientForServer(server);
+    if (client == null) {
+      return ToolExecResult(
+        content: jsonEncode({'ok': false, 'reason': 'server_not_connected', 'server': server}),
+        ok: false,
+        actionLabel: 'MCP server $server 未连接',
+      );
+    }
+    try {
+      final result = await client.callTool(tool, arguments);
+      return ToolExecResult(
+        content: jsonEncode(result),
+        ok: result['ok'] == true,
+        actionLabel: result['ok'] == true ? '已调用 $server.$tool' : '$server.$tool 返回错误',
+      );
+    } catch (e) {
+      return ToolExecResult(content: '{"ok":false,"reason":"$e"}', ok: false, actionLabel: '调用失败');
+    }
+  }
+
   /// 直接操控电脑（仅桌面端生效）：
   ///   operation: open_file / open_folder / open_url / launch_app / run_command
   ///   target: 本地路径、应用名、网址或待执行命令
@@ -2726,9 +4420,17 @@ class AppState extends ChangeNotifier {
               ? await Process.run('cmd', ['/c', target])
               : await Process.run('/bin/sh', ['-c', target]);
           final out = r.stdout.toString().trim();
+          final err = r.stderr.toString().trim();
           detail = r.exitCode == 0
               ? '命令执行成功${out.isEmpty ? '' : '：\n$out'}'
-              : '命令执行失败：${r.stderr}';
+              : '命令执行失败（退出码 ${r.exitCode}）${err.isEmpty ? '' : '：\n$err'}';
+          return ToolExecResult(
+            content: jsonEncode({'ok': r.exitCode == 0, 'operation': op, 'target': target, 'detail': detail}),
+            ok: r.exitCode == 0,
+            actionLabel: r.exitCode == 0 ? '已运行命令' : '命令异常退出（退出码 ${r.exitCode}）',
+            exitCode: r.exitCode,
+            terminalOutput: [if (out.isNotEmpty) out, if (err.isNotEmpty) err].join('\n'),
+          );
         default:
           return ToolExecResult(content: '{"ok":false,"reason":"不支持的操作 $op"}', ok: false);
       }
@@ -2756,22 +4458,52 @@ class AppState extends ChangeNotifier {
   
     // 创建占位 AI 消息，实时更新（让用户看到 Agent 在做什么）
     // 思考过程是否显示跟随"显示思考过程"开关，关闭时不再展示思考链
-    final placeholder = ChatMessage(role: 'ai', content: '正在思考…', showReasoning: chatShowReasoning, reasoning: '');
+    final placeholder = ChatMessage(role: 'ai', content: '', showReasoning: chatShowReasoning, reasoning: '', modelLabel: cfg.model);
     chatHistory.add(placeholder);
     _notifyChatUpdate();
   
-    final tools = AgentService.toolDefinitions();
-    final actions = <String>[];
-  
-    // 动态 system prompt：注入当前题目上下文
-    final q = currentQuestion;
-    final dirDesc = isZh2En ? '中译英' : '英译中';
-    final sysPrompt = AgentService.buildSystemPrompt(
-      qType: qTypeName(q.type),
-      qLevel: levelName(q.level),
-      qText: q.text,
-      dirDesc: dirDesc,
+    final tools = AgentService.toolDefinitions(
+      mcpTools: mcpTools
+          .map((t) => {
+                'type': 'function',
+                'function': {
+                  'name': 'mcp__${t.name.replaceAll(' ', '_')}',
+                  'description': '[MCP] ${t.description ?? t.name}',
+                  'parameters': t.inputSchema,
+                },
+              })
+          .toList(),
     );
+    final actions = <String>[];
+
+    // R8/R9: 跨轮记住"上一轮调用过的所有工具名"（含 helper），用于在下一轮纯文本回复时
+    // 判断模型是否"调完工具就草草收尾"（假完成）。helper 工具（load_skill 等）不算完成任务，
+    // 核心工具调完后只回"操作已完成"等短句也算没真正作答，两种情况都强制继续。
+    const _helperTools = <String>{
+      'load_skill',
+      'list_user_skills',
+      'list_mcp_tools',
+      'session_query',
+      'compact_conversation',
+      'check_repeat',
+    };
+    List<String> lastRoundTools = <String>[];
+    // R8/R9 的"强制继续"提醒计数：最多追加 2 次。提醒语反复堆积会污染上下文，
+    // 且模型若确实只想收尾，硬逼满 12 轮最终也只会落到"操作已完成"兜底，不如接受其文本回答。
+    var nudgeCount = 0;
+    // "参数不完整请重新调用"的重试计数：最多 2 次，防止残缺参数反复重发空转满 12 轮
+    var brokenRetry = 0;
+    // R11：todo 仍有未完成项时的强制继续计数。todo 状态是权威信号（比文本猜测可靠），
+    // 单独给 3 次额度；配合 12 轮循环上限兜底，不会无限空转。
+    var todoNudge = 0;
+    // 上一轮若因 max_tokens 截断续跑，本轮不清空占位正文，在其上继续累积
+    var keepPartialContent = false;
+  
+    // 动态 system prompt：技能设定放在最前，确保覆盖 Agent 默认决策表；
+    // 当前题目不再注入提示词（已技能化：load_skill('exam-context') 获取）
+    final contextPrompt = buildChatContextPrompt();
+    final sysPrompt = (contextPrompt.isNotEmpty ? '$contextPrompt\n\n' : '') +
+        AgentService.buildSystemPrompt();
   
     // 构建 messages：从 chatHistory 读历史，但排除最后一条（刚加的 user 消息，避免重复）
     // R4 请求体瘦身：只保留最近约 16 条历史，较早消息剥离 imageData
@@ -2806,16 +4538,33 @@ class AppState extends ChangeNotifier {
     final messages = List<Map<String, dynamic>>.from(baseHistory);
   
     try {
-      // 最多循环 5 轮（防止死循环）
-      for (var round = 0; round < 5; round++) {
-        // 更新占位消息：思考中不显示工具步骤文本
-        placeholder.content = '正在思考…';
-        _notifyChatUpdate();
+      // 最多循环 12 轮（比原先 5 轮放宽，复杂多步任务不会因轮次耗尽提前收尾）
+      for (var round = 0; round < 12; round++) {
+        // R10: 用户点了发送按钮的"中止"——立即跳出循环，保留已有占位消息
+        if (_chatAbortRequested) {
+          _chatAbortRequested = false;
+          placeholder.content = placeholder.content.isEmpty ? '已中止' : placeholder.content;
+          if (actions.isNotEmpty) placeholder.content = '${placeholder.content}\n（已中止，已完成：${actions.join("、")}）';
+          _notifyChatUpdate();
+          chatSending = false;
+          notifyListeners();
+          return (reply: '已中止', actions: actions);
+        }
+        // R8: 每轮清零本轮工具名，本轮执行工具后填充，末尾赋给 lastRoundTools 供下轮判断
+        final roundTools = <String>{};
+        // 更新占位消息：思考中正文留空，进度由思考行/工具行展示。
+        // 例外：上一轮因 max_tokens 截断进入续跑时，保留已输出正文并继续追加。
+        final contentPrefix = keepPartialContent ? placeholder.content : '';
+        if (!keepPartialContent) {
+          placeholder.content = '';
+          _notifyChatUpdate();
+        }
+        keepPartialContent = false;
   
         // R1: 所有轮次全部用流式调用（streamChatWithTools 现在返回 AIResponse 含 tool_calls）
         // R2: 决策轮关闭思考以加速
         String rawReasoning = '';
-        String streamContent = '';
+        String streamContent = contentPrefix;
         final resp = await ApiService.streamChatWithTools(
           messages,
           sysPrompt,
@@ -2825,6 +4574,8 @@ class AppState extends ChangeNotifier {
           extraParams: chatThinking
               ? ApiService.thinkingParams(cfg.model)
               : ApiService.noThinkingParams(cfg.model),
+          // R7: 思考模式下 reasoning 会占用输出预算，放大 max_tokens 避免正文被截断
+          maxTokens: chatThinking ? 32768 : 16384,
           onReasoning: (chunk) {
             rawReasoning += chunk;
             placeholder.reasoning = rawReasoning;
@@ -2848,37 +4599,210 @@ class AppState extends ChangeNotifier {
           placeholder.reasoning = resp.reasoning;
           _notifyChatUpdate();
         }
+
+        // R7: 输出被 max_tokens 截断（finish_reason='length'）且没有完整工具调用：
+        // 把已输出的内容作为 assistant 消息入历史，再追加"继续"指令自动续跑，
+        // 避免长任务因输出预算耗尽而"干一半就结束"。
+        // 注意：思考模式下 reasoning 可能占满预算导致 content 为空，此时也要继续，
+        // 让模型"不要再重复思考，直接输出正文"，而不是直接判失败。
+        if (resp.finishReason == 'length' && resp.toolCalls.isEmpty) {
+          messages.add({
+            'role': 'assistant',
+            'content': resp.content ?? '',
+          });
+          messages.add({
+            'role': 'user',
+            'content': '（你的回复因输出长度限制被截断。请不要再重复之前的思考过程，'
+                '直接从中断处继续输出剩余内容或结论；如果尚未完成任务，继续调用必要的工具完成剩余步骤。）',
+          });
+          // 保留占位消息内容，让用户看到已输出的部分；并标记下一轮"继续累积"，
+          // 避免轮次开头的 placeholder.content = '' 把已输出的正文清掉。
+          placeholder.content = streamContent;
+          keepPartialContent = true;
+          _notifyChatUpdate();
+          continue;
+        }
+
+        // R8/R9: "纯文本回复"分支前先检测——上一轮如果调了工具就停下，多半是假完成。
         if (resp.toolCalls.isEmpty) {
-          // 纯文本回复，直接赋最终文本（R3: 删除假流式）
+          final replyText = (resp.content ?? '').trim();
+
+          // R8: 上一轮只调了辅助工具（load_skill/list_user_skills 等）就停 → 强制继续
+          // 提醒最多追加 2 次，避免同一提醒反复堆积污染上下文、空转满 12 轮后仍落到兜底
+          if (nudgeCount < 2 &&
+              lastRoundTools.isNotEmpty &&
+              lastRoundTools.every((n) => _helperTools.contains(n))) {
+            nudgeCount++;
+            messages.add({
+              'role': 'user',
+              'content': '（你上一轮只调用了辅助类工具（${lastRoundTools.join(", ")}），'
+                  '这只是加载/查询操作，不算完成用户的请求。'
+                  '请根据加载结果继续调用核心工具完成任务，例如：'
+                  '• 「这道题怎么做」→ 立刻调用 get_current_question 获取题目，再基于题目作答；'
+                  '• 出题相关 → 调用 generate_questions；'
+                  '• 文件/代码相关 → 调用 read_file / str_replace_editor / run_code 等；'
+                  '你必须真正做完实际工作并给出实质性回答后，再输出最终总结。'
+                  '禁止仅以「已完成：…」开头的总结作为最终回复。）',
+            });
+            _notifyChatUpdate();
+            continue;
+          }
+
+          // R9: 上一轮调过核心工具，但本轮只给了兜底短语 → 强制继续作答。
+          // 注意：不能只按长度判定（< 60 字）——简短的正常回答（如单词释义）会被误伤，
+          // 导致模型被反复追问；只有命中兜底短语特征才算假完成。
+          final hasCoreTool = lastRoundTools.any((n) => !_helperTools.contains(n));
+          if (hasCoreTool) {
+            final looksLikeStub = replyText.startsWith('操作已完成') ||
+                replyText.startsWith('已完成') ||
+                replyText.startsWith('已搞定') ||
+                (replyText.length < 60 &&
+                    (replyText.contains('完成') || replyText.contains('搞定')));
+            if (looksLikeStub && nudgeCount < 2) {
+              nudgeCount++;
+              messages.add({
+                'role': 'user',
+                'content': '（你上一轮调用的核心工具（${lastRoundTools.join(", ")}）已经返回了真实结果，'
+                    '但你这次的回复仅 " $replyText "，像兜底总结。'
+                    '请基于工具的真实返回内容，给用户一个完整、详细、自然的回答；'
+                    '禁止用"操作已完成/已完成/已搞定"等短语作为最终回复。）',
+              });
+              _notifyChatUpdate();
+              continue;
+            }
+          }
+
+          // R11: 任务清单（todo）仍有未完成项时，"说完一句就停"属于进行到一半的中断，
+          // 用 todo 状态作为权威信号强制继续，不依赖文本特征猜测。
+          // 先把模型这句未完工的陈述记入历史，避免下一轮上下文相同而重复同样的话。
+          final pendingTodos = placeholder.todoList
+              .where((t) => t.status != 'completed')
+              .map((t) => t.content)
+              .toList();
+          if (pendingTodos.isNotEmpty && replyText.isNotEmpty && todoNudge < 3) {
+            todoNudge++;
+            messages.add({
+              'role': 'assistant',
+              'content': replyText,
+            });
+            messages.add({
+              'role': 'user',
+              'content': '（任务清单中仍有 ${pendingTodos.length} 项未完成：${pendingTodos.join("；")}。'
+                  '你刚才说 "$replyText" 就停了，工作尚未做完。'
+                  '请立即继续调用工具完成剩余事项，全部完成前不要输出总结性收尾。）',
+            });
+            _notifyChatUpdate();
+            continue;
+          }
+
+          // 真正的纯文本答复 → 当作任务完成返回
           final reply = resp.content ?? '';
           await _simulateStreamOutput(placeholder, reply, actions);
           return (reply: reply, actions: actions);
         }
         // 有工具调用：把 assistant 的 tool_calls 消息加入历史
-        messages.add({
-          'role': 'assistant',
-          'content': resp.content,
-          'tool_calls': resp.toolCalls
-              .map((tc) => {
-                    'id': tc.id,
-                    'type': 'function',
-                    'function': {'name': tc.name, 'arguments': tc.arguments},
-                  })
-              .toList(),
-        });
+        // R7: 过滤掉"只有名字没有参数"的残缺 tool_call（流被截断时常见），
+        // 完整调用正常执行；残缺的不执行而是提示模型重新发起。
+        // 注意：空对象 {} 是「无参数工具」（get_current_question / next_question /
+        // toggle_favorite / get_progress / check_repeat / list_user_skills 等）的合法调用，
+        // 绝不能当作残缺调用丢弃，否则这些工具永远无法执行、循环空转直至兜底"操作已完成"。
+        // 反过来，截断的 JSON（以 { 开头但不闭合）也不能放行：parseArgs 底层的截断修复
+        // 会把它补成"半个对象"去执行，导致执行结果与用户意图不符。
+        bool _argsComplete(String argsJson) {
+          final t = argsJson.trim();
+          if (t == '{}') return true;
+          if (!t.startsWith('{') || !t.endsWith('}')) return false;
+          try {
+            final r = jsonDecode(t);
+            return r is Map<String, dynamic>;
+          } catch (_) {
+            return false;
+          }
+        }
+
+        final validCalls =
+            resp.toolCalls.where((tc) => tc.name.isNotEmpty && _argsComplete(tc.arguments)).toList();
+        final brokenCalls = resp.toolCalls.length - validCalls.length;
+
+        if (validCalls.isNotEmpty) {
+          messages.add({
+            'role': 'assistant',
+            'content': resp.content,
+            'tool_calls': validCalls
+                .map((tc) => {
+                      'id': tc.id,
+                      'type': 'function',
+                      'function': {'name': tc.name, 'arguments': tc.arguments},
+                    })
+                .toList(),
+          });
+        } else if (brokenCalls > 0) {
+          // 没有任何可执行的工具调用：若模型同时输出了文字，先把文字记入历史，
+          // 否则下一轮模型看到的上下文与本轮完全相同，会重复同样的输出（上下文污染）。
+          final attachedText = (resp.content ?? '').trim();
+          if (attachedText.isNotEmpty) {
+            messages.add({
+              'role': 'assistant',
+              'content': attachedText,
+            });
+          }
+          if (brokenRetry < 2) {
+            // 直接提示模型参数不完整，让它重新发起（最多重试 2 次）
+            brokenRetry++;
+            messages.add({
+              'role': 'user',
+              'content': '（你发起的工具调用参数不完整（缺少必要的参数），请重新调用工具，'
+                  '务必填全所有必需参数后再执行。不要回复总结性文字。）',
+            });
+            continue;
+          }
+          // 重试 2 次仍残缺：如实告知用户，不再谎报"操作已完成"
+          placeholder.content = '抱歉，工具调用多次失败（参数不完整），这次没能完成你的请求。请再试一次或换个说法。';
+          _notifyChatUpdate();
+          chatSending = false;
+          notifyListeners();
+          return (reply: placeholder.content, actions: actions);
+        }
+        if (brokenCalls > 0 && validCalls.isNotEmpty) {
+          // 部分残缺：在 tool 结果里附注，让模型知道有调用未执行
+          messages.add({
+            'role': 'tool',
+            'tool_call_id': validCalls.first.id,
+            'name': validCalls.first.name,
+            'content': '（注意：你有 ${brokenCalls} 个工具调用因参数不完整未被执行，'
+                '如仍有需要请重新发起完整调用。）',
+          });
+        }
         // 执行每个工具调用，实时更新占位消息
-        for (final tc in resp.toolCalls) {
+        for (final tc in validCalls) {
+          roundTools.add(tc.name);
           final args = AgentService.parseArgs(tc.arguments);
           // 工具执行前：在气泡上方添加"调用工具"步骤卡片（运行中）
           final runningLabel = _toolRunningLabel(tc.name, args);
-          final step = ToolStep(name: tc.name, label: runningLabel.isEmpty ? _toolDefaultLabel(tc.name) : runningLabel);
+          final isTerminal = tc.name == 'operate_computer' && (args['operation'] as String?) == 'run_command';
+          final step = ToolStep(
+            name: tc.name,
+            label: runningLabel.isEmpty ? _toolDefaultLabel(tc.name) : runningLabel,
+            input: _toolInputSummary(tc.name, args),
+            terminal: isTerminal,
+            command: isTerminal ? ((args['target'] as String?) ?? '') : null,
+          );
           placeholder.toolSteps.add(step);
           _notifyChatUpdate();
           final result = await executeTool(tc.name, args);
-          // 命令 / 联网等返回了打印内容时，保存到步骤，供终端卡片展开查看
-          if (tc.name == 'operate_computer' || tc.name == 'search_web') {
+          // 命令执行：保存退出码与原始输出，供终端块展示
+          if (isTerminal) {
+            step.exitCode = result.exitCode;
+            final raw = result.terminalOutput ?? '';
+            if (raw.isNotEmpty) step.output = raw.length > 4000 ? '${raw.substring(0, 4000)}\n…(已截断)' : raw;
+          } else if (tc.name == 'operate_computer' || tc.name == 'search_web') {
+            // 其他命令 / 联网等返回了打印内容时，保存到步骤，供 OUT 卡片展开查看
             final raw = result.content;
             if (raw.isNotEmpty) step.output = raw.length > 2400 ? '${raw.substring(0, 2400)}\n…(已截断)' : raw;
+          } else if (result.content.isNotEmpty && !result.content.startsWith('{')) {
+            // 非 JSON 的纯文本返回也放入 OUT 卡片
+            final raw = result.content;
+            step.output = raw.length > 2400 ? '${raw.substring(0, 2400)}\n…(已截断)' : raw;
           }
           // 工具执行后：更新该步骤状态与文案
           step.running = false;
@@ -2902,9 +4826,22 @@ class AppState extends ChangeNotifier {
             'content': result.content,
           });
         }
+        // 记录本轮调用的所有工具名（含 helper），供下一轮判断"是否调完工具就草草收尾"
+        lastRoundTools = roundTools.toList();
       }
-      // 超过最大轮次，用动作兜底
-      final reply = actions.isEmpty ? '操作已完成。' : '已完成：${actions.join("、")}。';
+      // 超过最大轮次的兜底：
+      // 1) 占位消息里若已有模型流式输出的真实内容（如末轮回复了文本但未走 return 分支），
+      //    直接保留，绝不能用"操作已完成"覆盖——这正是用户反馈"只会说操作已完成"的直接来源；
+      // 2) 否则按已执行动作给出总结；再否则如实说明未完成，而不是谎报"操作已完成"。
+      final existing = placeholder.content.trim();
+      final String reply;
+      if (existing.isNotEmpty) {
+        reply = existing;
+      } else if (actions.isNotEmpty) {
+        reply = '已完成：${actions.join("、")}。';
+      } else {
+        reply = '抱歉，这次处理用尽了步数仍未完成你的请求。请把需求说得更具体一些（例如指明题型、文件或页面），或再试一次。';
+      }
       await _simulateStreamOutput(placeholder, reply, actions);
       return (reply: reply, actions: actions);
     } catch (e) {
@@ -2913,6 +4850,29 @@ class AppState extends ChangeNotifier {
       _notifyChatUpdate();
       return null;
     }
+  }
+
+  /// 工具入参摘要（ToolRow 展开后的 IN 卡片），key: value 逐行排列
+  String _toolInputSummary(String name, Map<String, dynamic> args) {
+    if (args.isEmpty) return '';
+    final sb = StringBuffer();
+    args.forEach((k, v) {
+      String val;
+      if (v == null) {
+        val = '';
+      } else if (v is String) {
+        val = v;
+      } else if (v is List) {
+        val = '[${v.length} 项]';
+      } else if (v is Map) {
+        val = '{${v.length} 项}';
+      } else {
+        val = v.toString();
+      }
+      if (val.length > 240) val = '${val.substring(0, 240)}…';
+      sb.writeln('$k: $val');
+    });
+    return sb.toString().trimRight();
   }
 
   /// 工具执行中的进度文案
@@ -3528,18 +5488,251 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  void saveChatSettings({required bool independent, required ApiConfig config, required bool showReasoning, required bool stream, required bool thinking}) {
+  void saveChatSettings({required bool independent, required ApiConfig config, required bool showReasoning, required bool stream, required bool thinking, bool? fullAccess}) {
     chatApiIndependent = independent;
     chatApiConfig = config;
     chatShowReasoning = showReasoning;
     chatStream = stream;
     chatThinking = thinking;
+    if (fullAccess != null) chatFullAccess = fullAccess;
     Storage.saveChatIndependent(independent);
     Storage.saveChatConfig(config);
     Storage.saveChatShowReasoning(showReasoning);
     Storage.saveChatStream(stream);
     Storage.saveChatThinking(thinking);
+    Storage.saveChatFullAccess(chatFullAccess);
     notifyListeners();
+  }
+
+  /// 切换对话助手权限范围
+  void setChatFullAccess(bool v) {
+    if (chatFullAccess == v) return;
+    chatFullAccess = v;
+    Storage.saveChatFullAccess(v);
+    notifyListeners();
+  }
+
+  /// 设置当前技能（空串 = 清除技能）
+  void setActiveSkill(String id) {
+    activeSkill = id;
+    Storage.saveActiveSkill(id);
+    notifyListeners();
+  }
+
+  /// 设置对话模式
+  void setChatMode(String id) {
+    chatMode = id;
+    Storage.saveChatMode(id);
+    notifyListeners();
+  }
+
+  /// 设置对话思考模式（Max 模式）
+  void setChatThinking(bool v) {
+    chatThinking = v;
+    Storage.saveChatThinking(v);
+    notifyListeners();
+  }
+
+  /// 设置专家角色（空串 = 默认）
+  void setActiveExpert(String id) {
+    activeExpert = id;
+    Storage.saveActiveExpert(id);
+    notifyListeners();
+  }
+
+  /// 开关联网搜索连接器
+  void setSearchEnabled(bool v) {
+    searchEnabled = v;
+    Storage.saveSearchEnabled(v);
+    notifyListeners();
+  }
+
+  /// 设置 AI 助手工作目录（harness 工具 fs root）。
+  /// 设置后所有本地文件/Shell 工具只能在该目录及其子目录下操作。
+  /// 传空字符串恢复默认（C:\Users 下所有位置）。
+  void setWorkspacePath(String path) {
+    workspacePath = path.trim();
+    Storage.saveWorkspacePath(workspacePath);
+    notifyListeners();
+  }
+
+  /// 解析 mcpConfigJson 为配置列表
+  List<McpServerConfig> parseMcpConfigs() {
+    if (mcpConfigJson.trim().isEmpty) return const [];
+    try {
+      final list = jsonDecode(mcpConfigJson);
+      if (list is! List) return const [];
+      return list.map((e) {
+        if (e is Map) return McpServerConfig.fromJson(e.cast<String, dynamic>());
+        return null;
+      }).whereType<McpServerConfig>().toList();
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  /// 重新连接所有 MCP server（异步、不阻塞 UI）
+  Future<void> _reconnectMcp() async {
+    final configs = parseMcpConfigs();
+    if (configs.isEmpty) {
+      mcpTools = [];
+      return;
+    }
+    final tools = await mcpRegistry.connectAll(configs);
+    mcpTools = tools;
+    notifyListeners();
+  }
+
+  /// 用户编辑 MCP 配置 JSON 后调用，重新连接
+  Future<void> setMcpConfigJson(String json) async {
+    mcpConfigJson = json;
+    Storage.saveMcpConfigJson(json);
+    await _reconnectMcp();
+    notifyListeners();
+  }
+
+  /// 当前选中的技能对象（可能为 null）。同时搜索通用技能与 Agent 工具技能。
+  ChatSkill? get currentSkill {
+    for (final s in kAllChatSkills) {
+      if (s.id == activeSkill) return s;
+    }
+    return null;
+  }
+
+  /// 当前专家对象（可能为 null）
+  ChatExpert? get currentExpert {
+    for (final e in kChatExperts) {
+      if (e.id == activeExpert) return e;
+    }
+    return null;
+  }
+
+  /// 拼接当前技能 / 模式 / 专家的 system prompt 片段（注入到对话 system prompt）
+  String buildChatContextPrompt() {
+    final parts = <String>[];
+    // 工作区信息必须始终注入：模型若不知道工作区根目录，文件工具会反复"路径越界"
+    // 靠试错探路，浪费大量轮次甚至把任务拖到中断。
+    final root = _fsRoot();
+    parts.add(
+      '## 当前工作区\n'
+      '- 工作区根目录（绝对路径）：$root\n'
+      '- 文件工具（read_file / write_file / edit_file / list_dir / str_replace_editor）'
+      '支持相对路径：不以盘符开头的路径会按工作区根目录解析，例如 "src/game.ts" 即 "$root\\src\\game.ts"。\n'
+      '- 一切文件的创建与修改都必须落在该工作区内，不要猜测或试探工作区之外的路径。\n'
+      '- bash 的默认工作目录即工作区根目录；如需切换目录，用 `cd /d <绝对路径> && <命令>`。',
+    );
+    final skill = currentSkill;
+    final expert = currentExpert;
+    for (final m in kChatModes) {
+      if (m.id == chatMode && m.prompt.isNotEmpty) parts.add(m.prompt);
+    }
+    if (skill != null) {
+      parts.add(
+        '【强制启用技能：${skill.name}】\n'
+        '当前用户已明确选择「${skill.name}」技能。无论用户输入什么，你都必须优先按该技能的设定执行，'
+        '${skill.toolName != null ? '并主动调用工具 ${skill.toolName}。' : '。'}\n'
+        '技能说明：${skill.description}\n'
+        '技能指令：${skill.prompt}',
+      );
+    }
+    if (expert != null) parts.add(expert.prompt);
+    if (parts.isEmpty) return '';
+    return '\n\n## 当前能力设定（最高优先级）\n${parts.join('\n\n')}';
+  }
+
+  /// 当前激活技能的显示名称（无技能返回空串）
+  String get activeSkillName {
+    final skill = currentSkill;
+    return skill?.name ?? '';
+  }
+
+  /// 粗略估算当前对话已用 token 数（仅用于 UI 展示，非精确值）
+  int estimateChatTokens() {
+    var chars = 0;
+    for (final m in chatHistory) {
+      chars += m.content.length;
+      if (m.reasoning != null) chars += m.reasoning!.length;
+    }
+    // 中文字符约 1:2，其他字符约 1:4，取加权估算
+    final chinese = RegExp(r'[\u4e00-\u9fff]').allMatches(chatHistory.map((m) => m.content + (m.reasoning ?? '')).join()).length;
+    final other = chars - chinese;
+    return (chinese / 2).ceil() + (other / 4).ceil();
+  }
+
+  /// 上下文 token 分布（用于 UI 展示，非精确值）。窗口大小按当前模型动态估算。
+  /// 将字符数粗略换算为 token 数
+  int _charsToTokens(String text) {
+    final chinese = RegExp(r'[\u4e00-\u9fff]').allMatches(text).length;
+    final other = text.length - chinese;
+    return (chinese / 2).ceil() + (other / 4).ceil();
+  }
+
+  /// 估算当前系统提示词 token 数
+  int _estimateSystemPromptTokens() {
+    return _charsToTokens(buildChatContextPrompt());
+  }
+
+  /// 估算工具定义 token 数
+  int _estimateToolsTokens() {
+    try {
+      final json = jsonEncode(AgentService.toolDefinitions(
+        mcpTools: mcpTools
+            .map((t) => {
+                  'type': 'function',
+                  'function': {
+                    'name': 'mcp__${t.name.replaceAll(' ', '_')}',
+                    'description': '[MCP] ${t.description ?? t.name}',
+                    'parameters': t.inputSchema,
+                  },
+                })
+            .toList(),
+      ));
+      return _charsToTokens(json);
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  /// 估算连接器配置 token 数
+  int _estimateConnectorTokens() {
+    if (!searchEnabled) return 0;
+    return _charsToTokens('联网搜索: $searchUrl');
+  }
+
+  /// 获取上下文用量分布（已使用各分类 token 数）。窗口大小根据用户设置 + Max 模式动态决定。
+  ChatTokenBreakdown contextTokenBreakdown() {
+    final system = _estimateSystemPromptTokens();
+    final tools = _estimateToolsTokens();
+    final messages = estimateChatTokens();
+    final connectors = _estimateConnectorTokens();
+    // 技能/专家 prompt 已包含在 system 中，这里单拆出来用于展示
+    var skill = 0;
+    final sk = currentSkill;
+    if (sk != null) skill += _charsToTokens(sk.prompt);
+    final ex = currentExpert;
+    if (ex != null) skill += _charsToTokens(ex.prompt);
+    for (final m in kChatModes) {
+      if (m.id == chatMode && m.prompt.isNotEmpty) skill += _charsToTokens(m.prompt);
+    }
+    // 修正 system：剔除已单独统计的技能/模式/专家部分
+    final systemPure = (system - skill).clamp(0, system);
+    return ChatTokenBreakdown(
+      system: systemPure,
+      tools: tools,
+      messages: messages,
+      connectors: connectors,
+      skills: skill,
+      maxTokens: effectiveContextWindow,
+    );
+  }
+
+  /// 当前生效的上下文窗口长度（token 数）：
+  /// - Max 模式（chatThinking=true）→ 扩展到 1000K
+  /// - 否则用用户设置 apiConfig.contextLength（默认 200K）
+  int get effectiveContextWindow {
+    if (chatThinking) return kMaxModeContextWindow;
+    final userLen = apiConfig.contextLength;
+    return userLen > 0 ? userLen : 200000;
   }
 
   /// 切换深色模式
@@ -3680,6 +5873,11 @@ class AppState extends ChangeNotifier {
       chatShowReasoning = Storage.loadChatShowReasoning();
       chatStream = Storage.loadChatStream();
       chatThinking = Storage.loadChatThinking();
+      chatFullAccess = Storage.loadChatFullAccess();
+      activeSkill = Storage.loadActiveSkill();
+      chatMode = Storage.loadChatMode();
+      activeExpert = Storage.loadActiveExpert();
+      searchEnabled = Storage.loadSearchEnabled();
       searchUrl = Storage.loadSearchUrl();
       searchKey = Storage.loadSearchKey();
       devMode = Storage.loadDevMode();

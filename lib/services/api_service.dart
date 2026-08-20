@@ -27,7 +27,13 @@ class AIResponse {
   final String? content;
   final List<ToolCall> toolCalls;
   final String reasoning; // 思考过程内容（reasoning_content 字段）
-  const AIResponse({required this.content, required this.toolCalls, this.reasoning = ''});
+  final String? finishReason; // 'stop' | 'length'（输出被 max_tokens 截断）| 'tool_calls' | ...
+  const AIResponse({
+    required this.content,
+    required this.toolCalls,
+    this.reasoning = '',
+    this.finishReason,
+  });
 }
 
 class ApiService {
@@ -89,9 +95,10 @@ class ApiService {
 
   /// 厂家默认温度
   static double _defaultTemp(String model) {
+    // 统一默认 0.3（保守）
     if (model == 'deepseek-v4-pro') return 0.0;
-    if (model == 'deepseek-v4-flash') return 1.0;
-    return 0.7;
+    if (model == 'deepseek-v4-flash') return 0.3;
+    return 0.3;
   }
 
   static double _resolveTemp(ApiConfig cfg, double? override) {
@@ -321,6 +328,7 @@ class ApiService {
     double? temperature,
     List<Map<String, dynamic>>? tools,
     Map<String, dynamic>? extraParams,
+    int maxTokens = 16384,
   }) async {
     final cfg = config;
     if (cfg == null || !cfg.ready) return const AIResponse(content: null, toolCalls: []);
@@ -330,6 +338,8 @@ class ApiService {
     final tcId = <int, String>{};
     final tcName = <int, String>{};
     final tcArgs = <int, StringBuffer>{};
+    // finishReason 需在 try 外声明，供函数末尾 return 使用
+    String? finishReason;
     try {
       final body = <String, dynamic>{
         'model': _realModel(cfg.model),
@@ -346,6 +356,15 @@ class ApiService {
       }
       if (extraParams != null && extraParams.isNotEmpty) {
         body.addAll(extraParams);
+      }
+      // R7: Agent 工具循环必须给足输出预算（推理模型思考会占用大量 token，
+      // 默认 4096 很容易在长任务中触发 finish_reason='length' 截断 → 表现为"干一半就结束"）。
+      // 显式设置 max_tokens（思考模式下调用方会传更大值）；OpenAI o 系列用 max_completion_tokens。
+      final realModel = _realModel(cfg.model).toLowerCase();
+      if (realModel.startsWith('o1') || realModel.startsWith('o3') || realModel.startsWith('o4')) {
+        body.putIfAbsent('max_completion_tokens', () => maxTokens);
+      } else {
+        body.putIfAbsent('max_tokens', () => maxTokens);
       }
       final req = http.Request('POST', Uri.parse(cfg.effectiveUrl));
       req.headers.addAll({
@@ -368,7 +387,10 @@ class ApiService {
           final obj = jsonDecode(data) as Map<String, dynamic>;
           final choices = obj['choices'] as List?;
           if (choices == null || choices.isEmpty) continue;
-          final delta = (choices.first as Map<String, dynamic>)['delta'] as Map<String, dynamic>? ?? {};
+          final first = choices.first as Map<String, dynamic>;
+          final fr = first['finish_reason'] as String?;
+          if (fr != null && fr.isNotEmpty) finishReason = fr;
+          final delta = first['delta'] as Map<String, dynamic>? ?? {};
           // reasoning_content
           final reasoning = delta['reasoning_content'] as String?;
           if (reasoning != null && reasoning.isNotEmpty) {
@@ -437,6 +459,7 @@ class ApiService {
       content: content,
       toolCalls: toolCalls,
       reasoning: reasoning,
+      finishReason: finishReason,
     );
   }
 

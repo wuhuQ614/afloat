@@ -12,12 +12,27 @@ class ToolExecResult {
   final bool ok;
   /// UI 展示用的动作描述（如"已为你生成 3 道翻译题"）
   final String actionLabel;
-  const ToolExecResult({required this.content, required this.ok, this.actionLabel = ''});
+  /// 终端命令退出码（仅 operate_computer 的 run_command 有值）
+  final int? exitCode;
+  /// 终端原始输出（stdout + stderr，供 UI 终端块展示）
+  final String? terminalOutput;
+  const ToolExecResult({
+    required this.content,
+    required this.ok,
+    this.actionLabel = '',
+    this.exitCode,
+    this.terminalOutput,
+  });
 }
 
 class AgentService {
-  /// OpenAI Function Calling 格式的工具定义
-  static List<Map<String, dynamic>> toolDefinitions() => [
+  /// OpenAI Function Calling 格式的工具定义。原生工具 + MCP server 工具合并。
+  static List<Map<String, dynamic>> toolDefinitions({List<Map<String, dynamic>> mcpTools = const []}) {
+    return [..._nativeToolDefinitions(), ...mcpTools];
+  }
+
+  /// 仅返回内置工具（不含 MCP）
+  static List<Map<String, dynamic>> _nativeToolDefinitions() => [
         {
           'type': 'function',
           'function': {
@@ -347,15 +362,564 @@ class AgentService {
             },
           },
         },
+        {
+          'type': 'function',
+          'function': {
+            'name': 'str_replace_editor',
+            'description':
+                '自定义代码编辑工具（仿 Claude Code / dsh-tool-str-replace-editor）：查看、创建和编辑文件。'
+                '命令：\n'
+                '- view：查看文件（带 cat -n 行号）或目录（列 2 层）。文件可用 view_range: [start, end] 只看某行区间（end=-1 到末尾）。\n'
+                '- create：创建新文件（path 已存在则拒绝）。\n'
+                '- str_replace：精确替换文本。old_str 必须**唯一匹配**文件中的内容（出现 0 次或多次都会失败，需带足够上下文），替换后用 diff 展示变更。\n'
+                '- insert：在 insert_line 行之后插入 new_str。\n'
+                '写文件首选 view → str_replace / insert（精确改动），不要整文件重写。',
+            'parameters': {
+              'type': 'object',
+              'properties': {
+                'command': {
+                  'type': 'string',
+                  'enum': ['view', 'create', 'str_replace', 'insert'],
+                  'description': '要执行的命令：view / create / str_replace / insert',
+                },
+                'path': {
+                  'type': 'string',
+                  'description': '文件或目录路径：绝对路径，或工作区内相对路径（如 "src/game.ts"，会按工作区根目录自动解析）。',
+                },
+                'file_text': {
+                  'type': 'string',
+                  'description': 'create 命令的必填参数：要创建的文件的完整内容。',
+                },
+                'insert_line': {
+                  'type': 'integer',
+                  'description': 'insert 命令的必填参数：new_str 将插入到 insert_line 行之后。',
+                },
+                'new_str': {
+                  'type': 'string',
+                  'description': 'str_replace 命令的新文本（可选，缺省不添加）；insert 命令的必填参数（要插入的内容）。',
+                },
+                'old_str': {
+                  'type': 'string',
+                  'description': 'str_replace 命令的必填参数：文件中要替换的旧文本，必须唯一匹配。',
+                },
+                'view_range': {
+                  'type': 'array',
+                  'items': {'type': 'integer'},
+                  'description': 'view 命令可选：行号区间 [start, end]，1 起；[start, -1] 显示 start 行到文件末尾。',
+                },
+              },
+              'required': ['command', 'path'],
+            },
+          },
+        },
+        // ========== Code Mode：run_code（仿 dsh-tools/src/code-mode.ts）==========
+        {
+          'type': 'function',
+          'function': {
+            'name': 'run_code',
+            'description':
+                '执行一个 TypeScript async 函数体，通过自动生成的 SDK 一次调用多个工具（Code Mode）。'
+                '把原本需要多轮工具往返的操作合并成一轮：在 code 里写 async 函数体，用 `await tools.<工具名>(<参数对象>)` 调用'
+                '（如 `await tools.read_file({path: "..."})`、`await tools.bash({command: "dir", description: "列出目录"})`、'
+                '`await tools.str_replace_editor({command: "view", path: "..."})`）。'
+                '支持顶层 await 与 return。只有你 print 或 return 的内容会返回给模型——请做精简：'
+                '不要打印完整大文件，返回关键结果/摘要即可。'
+                '参数对象是 JS 对象字面量：键不加引号、字符串值用双引号、数字/布尔/数组/对象直接写。',
+            'parameters': {
+              'type': 'object',
+              'properties': {
+                'code': {
+                  'type': 'string',
+                  'description': 'async 函数体（无 function 声明、无外层花括号），例如：`const f = await tools.read_file({path: "a.txt"}); return f.content.length;`',
+                },
+                'description': {
+                  'type': 'string',
+                  'description': '简洁说明这个程序做什么（5-10 词），如 "统计 TODO 标记数量"。',
+                },
+              },
+              'required': ['code', 'description'],
+            },
+          },
+        },
+        // ========== harness 风格工具组（仿 deepseek-harness dsh-tool-fs / dsh-tool-bash）==========
+        {
+          'type': 'function',
+          'function': {
+            'name': 'read_file',
+            'description':
+                '读取本地文本文件的内容并返回。路径必须在当前工作区内（工作区根目录见系统提示"当前工作区"一节）；'
+                '支持相对路径：不以盘符开头的路径会按工作区根目录自动解析，例如 "src/game.ts"。'
+                '单次最多读取 256 KB，超出会被截断并提示"已截断"。',
+            'parameters': {
+              'type': 'object',
+              'properties': {
+                'path': {
+                  'type': 'string',
+                  'description': '待读取的文件路径：绝对路径或工作区内相对路径，例如 "src/game.ts"',
+                },
+              },
+              'required': ['path'],
+            },
+          },
+        },
+        {
+          'type': 'function',
+          'function': {
+            'name': 'write_file',
+            'description':
+                '把给定内容写入本地文本文件（覆盖现有内容）。需要 "完全访问" 权限。'
+                '路径必须在授权工作目录内；写入前会检查父目录是否存在，不存在则自动创建。',
+            'parameters': {
+              'type': 'object',
+              'properties': {
+                'path': {
+                  'type': 'string',
+                  'description': '目标文件路径：绝对路径或工作区内相对路径（如 "src/game.ts"）。',
+                },
+                'content': {
+                  'type': 'string',
+                  'description': '待写入的完整文件内容。',
+                },
+              },
+              'required': ['path', 'content'],
+            },
+          },
+        },
+        {
+          'type': 'function',
+          'function': {
+            'name': 'edit_file',
+            'description':
+                '在本地文本文件中按 "旧文本 → 新文本" 做一次精确字符串替换（出现多次只替换第一次）。'
+                '需要 "完全访问" 权限。常用于 "在 D:\\foo.txt 末尾追加一行 hello" 或 "把某段错误表述改成正确版本"。',
+            'parameters': {
+              'type': 'object',
+              'properties': {
+                'path': {
+                  'type': 'string',
+                  'description': '目标文件路径：绝对路径或工作区内相对路径。',
+                },
+                'old_text': {
+                  'type': 'string',
+                  'description': '文件中必须恰好存在（至少一次）的旧文本片段。',
+                },
+                'new_text': {
+                  'type': 'string',
+                  'description': '替换后的新文本片段。',
+                },
+              },
+              'required': ['path', 'old_text', 'new_text'],
+            },
+          },
+        },
+        {
+          'type': 'function',
+          'function': {
+            'name': 'list_dir',
+            'description':
+                '列出指定目录下的直接子项（不递归），返回每一项的"类型 + 名称 + 大小"三件套。'
+                '路径必须在授权工作目录内。',
+            'parameters': {
+              'type': 'object',
+              'properties': {
+                'path': {
+                  'type': 'string',
+                  'description': '目录路径：绝对路径或工作区内相对路径。',
+                },
+              },
+              'required': ['path'],
+            },
+          },
+        },
+        {
+          'type': 'function',
+          'function': {
+            'name': 'bash',
+            'description':
+                '在 Windows 上通过 cmd.exe 执行一条 shell 命令并返回 stdout/stderr 与退出码。需要 "完全访问" 权限。'
+                '每次调用都是新 shell，不保留 cwd/变量/函数——需要换工作目录请在命令前用 cd /d <dir> 一次性完成。'
+                '命令执行阻塞最长 30 秒；后台任务请自行重写为更短的子命令。',
+            'parameters': {
+              'type': 'object',
+              'properties': {
+                'command': {
+                  'type': 'string',
+                  'description': '待在 cmd.exe 下执行的完整命令；不要使用交互式命令。',
+                },
+                'description': {
+                  'type': 'string',
+                  'description': '一句话说明这条命令要做什么，便于审计。',
+                },
+                'timeout_ms': {
+                  'type': 'integer',
+                  'description': '可选超时（毫秒），1-60000，默认 30000。',
+                },
+              },
+              'required': ['command', 'description'],
+            },
+          },
+        },
+        // ========== dsh-tool-todo（仿 @deepseek-ai/dsh-tool-todo）==========
+        {
+          'type': 'function',
+          'function': {
+            'name': 'todo',
+            'description':
+                '记录和更新当前工作的结构化任务清单。**每次调用都提交完整列表**，会替换旧列表（不支持部分修改、单条编辑）。'
+                '用于规划多步任务并向用户展示进度；为每一个具体步骤建立 todo 后再开始。'
+                '**同一时刻只能有一个 todo 处于 in_progress**；一旦某项完成立刻标 completed，禁止批量完成。'
+                'trivial 单步任务可跳过。'
+                'statuses: pending（未开始）/ in_progress（进行中）/ completed（已完成）。',
+            'parameters': {
+              'type': 'object',
+              'properties': {
+                'todos': {
+                  'type': 'array',
+                  'description': '完整的 todo 列表。每条：{"content": "做什么", "status": "pending|in_progress|completed"}。必须重新提交整个列表，不是增量更新。',
+                  'items': {
+                    'type': 'object',
+                    'properties': {
+                      'content': {'type': 'string'},
+                      'status': {'type': 'string', 'enum': ['pending', 'in_progress', 'completed']},
+                    },
+                    'required': ['content', 'status'],
+                  },
+                },
+              },
+              'required': ['todos'],
+            },
+          },
+        },
+        // ========== dsh-tool-skill（仿 @deepseek-ai/dsh-tool-skill）==========
+        {
+          'type': 'function',
+          'function': {
+            'name': 'skill',
+            'description':
+                '从可用技能目录加载某个技能的完整指令。在做任何明显匹配该技能的工作前调用它，使用准确的技能名（来自技能面板的可选技能）。'
+                '返回的是该技能在工作流中应使用的完整系统级指令。',
+            'parameters': {
+              'type': 'object',
+              'properties': {
+                'name': {
+                  'type': 'string',
+                  'description': '可用技能列表中的准确名称（中文 / 英文 / id 均可）。',
+                },
+              },
+              'required': ['name'],
+            },
+          },
+        },
+        // ========== dsh-tool-web（web_fetch 仿 @deepseek-ai/dsh-tool-web）==========
+        {
+          'type': 'function',
+          'function': {
+            'name': 'web_fetch',
+            'description':
+                '抓取并解析一个 HTTP(S) URL 的正文，返回 Markdown/纯文本（去脚本/CSS）。最长 200KB；超时 30s。'
+                '用于读取具体网页内容（文档、博客、API 描述）。不适合需要登录的页面。',
+            'parameters': {
+              'type': 'object',
+              'properties': {
+                'url': {
+                  'type': 'string',
+                  'description': '完整 http(s) URL，例如 https://example.com/article。',
+                },
+                'max_chars': {
+                  'type': 'integer',
+                  'description': '可选最大字符数（默认 200000，截断时附加 [已截断]）。',
+                },
+              },
+              'required': ['url'],
+            },
+          },
+        },
+        // ========== dsh-tool-session-query（仿 @deepseek-ai/dsh-tool-session-query）==========
+        {
+          'type': 'function',
+          'function': {
+            'name': 'session_query',
+            'description':
+                '跨会话查询历史对话。操作：list_sessions（列出最近的会话简表）/ search_history（在指定会话内按关键词搜索消息）/ get_session（获取某会话的完整消息）。'
+                '用于回顾之前与 AI 的对话、查找之前讨论过的题目或知识点。',
+            'parameters': {
+              'type': 'object',
+              'properties': {
+                'operation': {
+                  'type': 'string',
+                  'enum': ['list_sessions', 'search_history', 'get_session'],
+                  'description': '操作类型',
+                },
+                'query': {
+                  'type': 'string',
+                  'description': 'search_history 时必填：关键词；list_sessions 时可选：按标题前缀过滤。',
+                },
+                'session_id': {
+                  'type': 'string',
+                  'description': 'get_session / search_history 时必填：会话标识（可从 list_sessions 的 id 字段拿到）。',
+                },
+                'limit': {
+                  'type': 'integer',
+                  'description': '返回条数上限，默认 20。',
+                },
+              },
+              'required': ['operation'],
+            },
+          },
+        },
+        // ========== dsh-tool-subagent（仿 @deepseek-ai/dsh-tool-subagent）==========
+        {
+          'type': 'function',
+          'function': {
+            'name': 'spawn_subagent',
+            'description':
+                '派生一个隔离的子 Agent 处理子任务。子 Agent 拥有自己的对话历史和上下文，能调用工具（取决于当前权限）。'
+                'type=general 用于自由问答；type=research 用于联网检索并汇总；type=coder 用于写/改代码。'
+                '结果作为 JSON 字符串返回：{"reply": "...", "actions": [...]}。',
+            'parameters': {
+              'type': 'object',
+              'properties': {
+                'task': {
+                  'type': 'string',
+                  'description': '子任务的清晰描述，包括目标、输入、期望输出格式。',
+                },
+                'type': {
+                  'type': 'string',
+                  'enum': ['general', 'research', 'coder'],
+                  'description': '子 Agent 类型。默认 general。',
+                },
+                'context': {
+                  'type': 'string',
+                  'description': '可选背景信息（被嵌入到子 Agent 的 system prompt 前）。',
+                },
+              },
+              'required': ['task'],
+            },
+          },
+        },
+        // ========== dsh-mcp-client（仿 @deepseek-ai/dsh-mcp-client）==========
+        // 用户在设置里填 mcp_servers，AppState 启动时拉起这些 server 并把它们的 tools 合并进来。
+        // 这里仅注册一个空的 list_mcp_tools 占位（实际 MCP 工具列表是动态拼接的）。
+        {
+          'type': 'function',
+          'function': {
+            'name': 'list_mcp_tools',
+            'description':
+                '列出当前已连接的 MCP server 提供的所有工具。返回 {"servers": [{"name": "...", "tools": [{"name": "...", "description": "..."}]}]}。'
+                '需要在设置中配置 MCP server 后才返回非空结果。',
+            'parameters': {
+              'type': 'object',
+              'properties': {},
+            },
+          },
+        },
+        {
+          'type': 'function',
+          'function': {
+            'name': 'call_mcp_tool',
+            'description':
+                '调用某个 MCP server 上的工具。server_name 是 list_mcp_tools 返回的 server 名；tool_name 是该 server 暴露的工具名；arguments 是该工具的参数对象。',
+            'parameters': {
+              'type': 'object',
+              'properties': {
+                'server_name': {'type': 'string'},
+                'tool_name': {'type': 'string'},
+                'arguments': {
+                  'type': 'object',
+                  'description': '该 MCP 工具的参数对象，键值对。',
+                  'additionalProperties': true,
+                },
+              },
+              'required': ['server_name', 'tool_name', 'arguments'],
+            },
+          },
+        },
+        // ========== dsh-tool-ask-user（仿 @deepseek-ai/dsh-tool-ask-user）==========
+        {
+          'type': 'function',
+          'function': {
+            'name': 'ask_user_question',
+            'description':
+                '当你需要用户做选择、确认或补全缺失信息时调用，给用户一个或多个问题，每个问题带 2-4 个选项（推荐项放第一并加 "(Recommended)"）。'
+                '返回 {"answers": [{id, selected: [...], custom}]}，selected 是选项 label 数组，custom 是用户自由文本（可选）。',
+            'parameters': {
+              'type': 'object',
+              'properties': {
+                'questions': {
+                  'type': 'array',
+                  'description': '要问用户的问题列表。',
+                  'items': {
+                    'type': 'object',
+                    'properties': {
+                      'id': {'type': 'string', 'description': '问题唯一 id，会在答案里回显。'},
+                      'question': {'type': 'string'},
+                      'header': {'type': 'string', 'description': '短标题（如 "选择模式"）。'},
+                      'options': {
+                        'type': 'array',
+                        'items': {
+                          'type': 'object',
+                          'properties': {
+                            'label': {'type': 'string'},
+                            'description': {'type': 'string'},
+                          },
+                        },
+                      },
+                      'multi_select': {'type': 'boolean', 'description': '是否可多选，默认 false。'},
+                    },
+                    'required': ['id', 'question'],
+                  },
+                },
+              },
+              'required': ['questions'],
+            },
+          },
+        },
+        // ========== dsh-tool-compaction（仿 @deepseek-ai/dsh-tool-compaction）==========
+        {
+          'type': 'function',
+          'function': {
+            'name': 'compact_conversation',
+            'description':
+                '把当前对话的早期消息压缩成一段简洁的摘要，保留关键事实（用户偏好、之前的结论、关键参数）。'
+                '当消息列表变长、token 使用率接近上限（>80%）时主动调用。'
+                '保留最近 N 条消息（默认 8），其余用一次模型调用总结。',
+            'parameters': {
+              'type': 'object',
+              'properties': {
+                'focus': {
+                  'type': 'string',
+                  'description': '要重点保留的信息，例如 "保留我的生词本偏好" / "保留代码改动列表"。',
+                },
+                'keep_recent': {
+                  'type': 'integer',
+                  'description': '保留最近 N 条消息原样（默认 8）。',
+                },
+              },
+            },
+          },
+        },
+        // ========== dsh-tool-skill-filesystem（仿 @deepseek-ai/dsh-skill-filesystem）==========
+        {
+          'type': 'function',
+          'function': {
+            'name': 'list_user_skills',
+            'description':
+                '列出当前工作区下 ".dsh/skills" 目录中的所有用户自定义技能（Markdown 文件，YAML frontmatter 含 name/description）。'
+                '用于发现用户在文件系统里放的技能，然后可调用 load_skill 加载完整指令。',
+            'parameters': {'type': 'object', 'properties': {}},
+          },
+        },
+        {
+          'type': 'function',
+          'function': {
+            'name': 'load_skill',
+            'description':
+                '加载一个用户自定义技能（来自 .dsh/skills/*.md）的完整指令正文（去掉 YAML frontmatter）。',
+            'parameters': {
+              'type': 'object',
+              'properties': {
+                'name': {'type': 'string', 'description': '技能的 name 或文件名（不含扩展名）。'},
+              },
+              'required': ['name'],
+            },
+          },
+        },
+        // ========== dsh-plan-mode（仿 @deepseek-ai/dsh-plan-mode）==========
+        {
+          'type': 'function',
+          'function': {
+            'name': 'submit_plan',
+            'description':
+                '提交一份完整计划让用户审批。计划是一组有序步骤，每步说明做什么、用什么工具、产出什么。'
+                '用户看到完整计划后选择：批准 → AI 按计划执行 / 修改 → AI 根据反馈调整 / 拒绝 → AI 重新规划。',
+            'parameters': {
+              'type': 'object',
+              'properties': {
+                'title': {'type': 'string', 'description': '计划标题。'},
+                'summary': {'type': 'string', 'description': '一句话总结（50 字内）。'},
+                'steps': {
+                  'type': 'array',
+                  'items': {
+                    'type': 'object',
+                    'properties': {
+                      'step': {'type': 'integer'},
+                      'action': {'type': 'string', 'description': '这一步做什么。'},
+                      'tools': {
+                        'type': 'array',
+                        'items': {'type': 'string'},
+                        'description': '将用到的工具名列表。',
+                      },
+                      'output': {'type': 'string', 'description': '这一步的产出（如 "修改 foo.txt"、"生成 3 道题"）。'},
+                    },
+                    'required': ['step', 'action'],
+                  },
+                },
+              },
+              'required': ['title', 'steps'],
+            },
+          },
+        },
+        // ========== dsh-tool-jobs（仿 @deepseek-ai/dsh-tool-jobs）==========
+        {
+          'type': 'function',
+          'function': {
+            'name': 'run_background_job',
+            'description':
+                '把一个 bash 命令作为后台任务跑，立即返回 job_id。AI 后续用 job_output 看进度、job_kill 终止。'
+                '适合长时间任务（编译、安装、训练）。',
+            'parameters': {
+              'type': 'object',
+              'properties': {
+                'command': {'type': 'string'},
+                'description': {'type': 'string'},
+              },
+              'required': ['command', 'description'],
+            },
+          },
+        },
+        {
+          'type': 'function',
+          'function': {
+            'name': 'job_output',
+            'description': '获取后台任务的最新输出（stdout + stderr + 退出码）。',
+            'parameters': {
+              'type': 'object',
+              'properties': {
+                'job_id': {'type': 'string'},
+                'wait': {'type': 'boolean', 'description': '是否阻塞等待任务结束（默认 true）。'},
+                'timeout_ms': {'type': 'integer', 'description': '阻塞最多多少毫秒（默认 5000）。'},
+              },
+              'required': ['job_id'],
+            },
+          },
+        },
+        {
+          'type': 'function',
+          'function': {
+            'name': 'job_kill',
+            'description': '终止一个后台任务。',
+            'parameters': {
+              'type': 'object',
+              'properties': {'job_id': {'type': 'string'}},
+              'required': ['job_id'],
+            },
+          },
+        },
+        // ========== dsh-guard（仿 @deepseek-ai/dsh-repeat-tool-reminder）==========
+        {
+          'type': 'function',
+          'function': {
+            'name': 'check_repeat',
+            'description':
+                '检查最近的工具调用是否有重复（同一工具+同一参数）。如果发现重复，会在响应里指出，'
+                'AI 应该停止重复调用，转而基于已有结果继续。如果你的最近调用没有重复，可直接忽略返回。',
+            'parameters': {'type': 'object', 'properties': {}},
+          },
+        },
       ];
 
   /// Agent 系统 prompt（动态生成，注入当前题目上下文，避免 AI 凭空猜测）
-  static String buildSystemPrompt({
-    required String qType,
-    required String qLevel,
-    required String qText,
-    required String dirDesc,
-  }) {
+  static String buildSystemPrompt() {
     return '''你是 AFloat，一个英语学习 Agent 助手。你能通过工具调用直接帮用户执行操作，也能回答英语问题。
 
 ## 工具使用决策（关键）
@@ -369,7 +933,7 @@ class AgentService {
 | "全卷/模拟考试/套卷/76题" | generate_full_exam |
 | "xx什么意思/怎么读/怎么用"（xx是英文单词） | lookup_word |
 | "剖析/分析单词/标注释义" | analyze_words |
-| "这道题/当前题目是什么" | get_current_question |
+| "这道题/当前题目是什么/这道题怎么做/考什么内容" | get_current_question（直接工具调用，永远可用）；如果工作区已加载 exam-context / 「当前题目」等相关技能，则 load_skill 按技能指引作答（技能可封装更丰富的应答策略） |
 | "换一道/下一题" | next_question |
 | "收藏" | toggle_favorite |
 | "进度/正确率/学得怎么样" | get_progress |
@@ -383,6 +947,21 @@ class AgentService {
 | "实时信息、新闻、天气、联网核实" | search_web |
 | "备份数据、导出备份" | backup_data |
 | "打开某文件/文件夹/软件/网页，执行某条命令" | operate_computer |
+| "读/写/编辑本地文件，列目录，执行 shell 命令" | read_file / write_file / edit_file / list_dir / bash（需要"完全访问"） |
+| "查看带行号的代码、创建文件、精确替换/插入（coding 场景优先）" | str_replace_editor（view/create/str_replace/insert） |
+| "一次性连续执行多个工具（多步文件操作合并）" | run_code（Code Mode：`await tools.<工具名>({...})`） |
+| "下一步拆解多步任务" | todo（按 dsh-tool-todo 规则：单 in_progress，每次提交完整列表） |
+| "按某技能的具体指令工作" | skill（先用 list_mcp_tools 看可选技能名，或者直接传中文名） |
+| "抓取网页内容（已去除脚本样式）" | web_fetch |
+| "查找之前对话、列出会话清单" | session_query |
+| "派生子 Agent 处理子任务（research/coder/general）" | spawn_subagent |
+| "调用任意 MCP server 提供的工具（需先 list_mcp_tools）" | list_mcp_tools / call_mcp_tool |
+| "需要用户做选择/确认/补全信息" | ask_user_question（先列 2-4 个选项，推荐项加 (Recommended)） |
+| "对话太长，token 接近上限（>80%）" | compact_conversation（保留最近 N 条，旧的总结成摘要） |
+| "用户想用工作区里的自定义技能（.dsh/skills/*.md）" | list_user_skills / load_skill |
+| "复杂多步任务开始前" | submit_plan（先让用户审批整个计划） |
+| "跑长时间命令（编译/训练/下载）" | run_background_job → job_output / job_kill |
+| "怀疑自己在重复同一个工具调用" | check_repeat |
 
 **重要**：
 - 用户说"出题"但没指明题型 → 调 generate_questions，type 用 "translation"（翻译题最常见），并在回复里告知可指定其他题型
@@ -406,12 +985,23 @@ class AgentService {
 - 补全对话(dialogue)：`{"dialogue": "对话", "questions": [{"question": "问题", "answer": "答案", "analysis": "解析"}]}`（可退化为翻译题结构）
 - 若某题产出不规范或字段缺失，也直接按以上字段提交，系统会自动归一化修复并放入答题区。
 
-## 当前题目上下文（已注入，无需调用 get_current_question）
-- 题型：$qType（$dirDesc）
-- 难度：$qLevel
-- 题目内容：$qText
+## 当前题目（工具优先，技能可选）
+- **直接获取**（推荐）：调用 `get_current_question` 工具获取当前题目（type/level/text/direction），无需任何前置条件，永远可用。
+- **技能包装**（可选）：工作区中如果加载了 exam-context / 「当前题目」等技能，可先 `list_user_skills` 检查是否命中，命中后 `load_skill` 按技能指引作答（技能可封装更细致的应答模板，但不可强依赖）。
+- 任何情况下不要凭记忆编造题目内容；获取失败必须如实说明。
+
+## 防提前收尾（关键）
+- 多步任务中，**只要还有未完成的子任务，就必须继续调用工具，禁止输出总结性文字提前结束**。
+- 每轮工具调用后重新评估进度：还有剩余工作 → 立即继续下一步工具调用；全部完成 → 才输出最终总结。
+- 如果某次工具调用失败，修复参数重试或换工具，不要放弃。
+- 当输出可能较长时，拆分为多轮完成，每轮聚焦一部分，避免一次性输出过长被截断。
+- **辅助类工具（load_skill / list_user_skills / session_query / compact_conversation / check_repeat）不等于任务完成**。这些只是查询/加载动作，必须根据加载结果继续调用核心工具（如 get_current_question / read_file / 答题/出题工具），再基于真实数据作答。**绝对禁止**只调完辅助工具就输出"已完成：…"作为最终回复。
+- 把"已完成：xxx"这种总结性文字作为最终回复前，**自检一遍**：用户提出的核心问题得到了实际执行工具的回答吗？纯粹"加载技能"不算已回答。
 
 ## 回复风格
+你的工具使用习惯：
+- 写文件首选 read_file → edit_file（精确替换），其次 write_file（整段覆盖）
+- bash 每次都是新 shell，不要假设 cwd；需要时显式写 `cd /d <dir> && <cmd>`
 - 中文提问用中文回复，英文提问用英文回复
 - 工具调用后用简洁友好的语言总结结果，不要重复原始 JSON
 - 不要编造工具没有的能力

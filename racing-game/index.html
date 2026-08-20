@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>极速赛车 Racing Game</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="game-container">
+    <h1>🏎️ 极速赛车</h1>
+    <canvas id="gameCanvas" width="400" height="600"></canvas>
+    <div id="hud">
+      <div class="hud-item">得分: <span id="score">0</span></div>
+      <div class="hud-item">速度: <span id="speed">0</span> km/h</div>
+      <div class="hud-item">最高分: <span id="best">0</span></div>
+    </div>
+    <div id="overlay">
+      <div id="overlay-content">
+        <h2 id="overlay-title">🚦 准备出发</h2>
+        <p id="overlay-text">按 <b>← →</b> 或 <b>A D</b> 控制左右<br/>按 <b>↑ ↓</b> 或 <b>W S</b> 加减速<br/>避开障碍物，坚持越久得分越高！</p>
+        <button id="startBtn">开始游戏</button>
+      </div>
+    </div>
+  </div>
+  <script src="game.js"></script>
+</body>
+</html>
