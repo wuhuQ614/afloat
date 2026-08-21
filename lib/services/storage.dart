@@ -99,6 +99,35 @@ class Storage {
   static String loadMcpConfigJson() => _get('mcpConfigJson', '[]');
   static void saveMcpConfigJson(String v) => _set('mcpConfigJson', v);
 
+  // ===== 技能商店：自定义技能 + 禁用名单 =====
+  static List<Map<String, dynamic>> loadCustomSkills() {
+    final raw = _get('customSkills', '[]');
+    try {
+      final list = jsonDecode(raw);
+      if (list is! List) return const [];
+      return list.whereType<Map>().map((e) => e.cast<String, dynamic>()).toList();
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  static void saveCustomSkills(List<Map<String, dynamic>> v) =>
+      _set('customSkills', jsonEncode(v));
+
+  static List<String> loadSkillsDisabledIds() {
+    final raw = _get('skillsDisabledIds', '[]');
+    try {
+      final list = jsonDecode(raw);
+      if (list is! List) return const [];
+      return list.map((e) => e.toString()).toList();
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  static void saveSkillsDisabledIds(List<String> v) =>
+      _set('skillsDisabledIds', jsonEncode(v));
+
   static ApiConfig loadChatConfig() => ApiConfig(
         url: _get('chatApiUrl', ''),
         key: _get('chatApiKey', ''),

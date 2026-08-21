@@ -2032,8 +2032,6 @@ class AppState extends ChangeNotifier {
   final Map<String, String> userSkillDescriptions = {};
   /// dsh-guard 重复工具调用历史（最近 20 条）
   final List<Map<String, dynamic>> recentToolCalls = [];
-  /// R13: 同一命令连续失败计数（命令文本 → 连续失败次数），每次对话开始清零
-  final Map<String, int> _cmdFailStreak = {};
 
   void _notifyChatUpdate() {
     final now = DateTime.now().millisecondsSinceEpoch;
@@ -2103,6 +2101,8 @@ class AppState extends ChangeNotifier {
     final attachContent = (attachmentText ?? '').trim();
     final hasAttachment = attachContent.isNotEmpty;
     if ((trimmed.isEmpty && !hasAttachment) || chatSending) return '';
+    // 出题指令（如“出一道专升本翻译题”）本地解析处理，不占用对话 API（仅纯文本时生效）
+    if (!hasAttachment && await _tryHandleQuestionCommand(trimmed)) return '';
     chatSending = true;
     // 开始新一轮发送：清零 abort 标志
     _chatAbortRequested = false;
@@ -2311,17 +2311,188 @@ class AppState extends ChangeNotifier {
     _notifyChatUpdate();
   }
 
-  // ===== Agent 出题工具统一接管 =====
-  // 历史版本曾在本类内用正则解析用户文本并直接调 `pickQuestionsFromBank` /
-  // `generateQuestions` / `generateFullExam`，导致对话消息绕过 Agent Function Calling
-  // 流程直接出题。现已删除：一切出题/题库抽取/套卷生成都必须由 Agent 调用
-  // `generate_questions` / `submit_generated_questions` / `generate_full_exam` 工具。
+  // ===== 对话出题指令（“动手功能”：对话中直接要求出题） =====
+
+  /// 出题指令触发词：必须含明确的出题意图动词（后接数量/量词），避免误伤普通问答
+  /// （如“这道题是 AI 生成的吗？”“出题失败了怎么办？”）
+  static final RegExp _cmdTriggerRe = RegExp(
+      r'给我出|帮我出|考考我|来[一二两三几\d]*[道个份篇套]|出[一二两三几\d]*[道个份篇套]|做[一二两三几\d]+道|生成[一二两三几\d]*[道个份篇套]|模拟[卷题]');
+
+  /// 疑问/求助句式：命中则视为普通问答，不作为出题指令
+  static final RegExp _cmdQuestionRe = RegExp(r'[吗么？?]|怎么|为什么|如何|失败');
+
+  /// 题型关键词 → selectedType 映射（按优先级排列，套卷/混合优先于单题型）
+  static final List<(RegExp, String)> _cmdTypeMap = [
+    (RegExp(r'套卷|模拟卷|混合|综合|模拟'), 'mixed'),
+    (RegExp(r'阅读'), 'reading'),
+    (RegExp(r'语法'), 'grammar'),
+    (RegExp(r'选择|单选'), 'choice'),
+    (RegExp(r'写作|作文'), 'writing'),
+    (RegExp(r'翻译'), 'translation'),
+  ];
+
+  /// 难度关键词 → selectedLevel 映射（未提及时沿用当前 selectedLevel）
+  static final List<(RegExp, String)> _cmdLevelMap = [
+    (RegExp(r'专升本'), 'zsb'),
+    (RegExp(r'四级|CET-?4|cet-?4'), 'cet4'),
+    (RegExp(r'简单|容易|基础'), 'easy'),
+    (RegExp(r'困难|较难|难'), 'hard'),
+    (RegExp(r'中等|普通'), 'medium'),
+  ];
+
+  /// 数量：中文数字/多位阿拉伯数字/“几” + 量词（道/个/份/篇/套）；“几”视为 3
+  static final RegExp _cmdCountRe = RegExp(r'([一两二三四五六七八九]+|\d+|几)\s*[道个份篇套]');
+
+  static const Map<String, int> _cmdNumMap = {
+    '一': 1, '两': 2, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9, '几': 3,
+  };
+
+  /// 解析出题指令；不构成指令时返回 null（走原有对话流程）
+  ({String type, String? level, int count})? _parseQuestionCommand(String text) {
+    // 疑问/求助句式（含“吗/？”“怎么”“失败”等）一律视为普通问答
+    if (_cmdQuestionRe.hasMatch(text)) return null;
+    if (!_cmdTriggerRe.hasMatch(text)) return null;
+    String? type;
+    for (final (re, t) in _cmdTypeMap) {
+      if (re.hasMatch(text)) {
+        type = t;
+        break;
+      }
+    }
+    // “题”字兜底：有出题意图但未指明题型时沿用当前题型；完全无“题/卷”字样则不视为出题指令
+    if (type == null) {
+      if (!text.contains('题') && !text.contains('卷')) return null;
+      type = selectedType;
+    }
+    String? level;
+    for (final (re, l) in _cmdLevelMap) {
+      if (re.hasMatch(text)) {
+        level = l;
+        break;
+      }
+    }
+    var count = 1;
+    final m = _cmdCountRe.firstMatch(text);
+    if (m != null) {
+      final c = m.group(1)!;
+      if (c == '几') {
+        count = 3;
+      } else {
+        // 多位阿拉伯数字直接解析；单个中文数字查表；其余兜底 1
+        count = int.tryParse(c) ?? _cmdNumMap[c] ?? 1;
+      }
+    }
+    if (count < 1) count = 1;
+    if (count > 10) count = 10;
+    return (type: type, level: level, count: count);
+  }
+
+  /// 尝试以出题指令处理用户消息；命中返回 true，否则返回 false 由原对话流程接手
+  Future<bool> _tryHandleQuestionCommand(String text) async {
+    // 互斥：学习页/其他入口正在 AI 出题时不受理新指令，避免竞争 generatedQuestions
+    if (generating) return false;
+    final cmd = _parseQuestionCommand(text);
+    if (cmd == null) return false;
+
+    final type = cmd.type;
+    final level = cmd.level ?? selectedLevel;
+    final count = cmd.count;
+    final typeLabel = type == 'mixed' ? '综合套卷' : qTypeName(qTypeFrom(type));
+    final levelLabel = levelName(level);
+
+    // 记录用户指令到对话历史
+    chatHistory.add(ChatMessage(role: 'user', content: text));
+    _notifyChatUpdate();
+
+    // 分支零：综合全卷（76题/7题型）→ 走沉浸考场流程，不进入普通答题区
+    if (type == 'mixed' || text.contains('全卷') || text.contains('专升本') && (text.contains('综合') || text.contains('76') || text.contains('套卷') || text.contains('模拟考试') || text.contains('考场'))) {
+      selectedLevel = level;
+      // 上一轮全卷仍在生成中：提示用户等待，避免重入导致新卷卡死在加载屏
+      if (examGeneratingBatch) {
+        _addChatAiReply('上一份全卷仍在生成中，请等它完成（或等失败横幅出现）后再次发起。');
+        notifyListeners();
+        return true;
+      }
+      if (!apiConfig.ready) {
+        _addChatAiReply('专升本【综合模拟全卷】需要调用 AI 出题接口，但当前尚未完成 AI 配置。请在 设置 → AI 接口 中配置后重试。');
+        notifyListeners();
+        return true;
+      }
+      generatingFullExam = true;
+      chatSending = true;
+      notifyListeners();
+      _addChatAiReply('正在为你生成一套完整的【专升本综合模拟全卷】（7大题型，76题，满分150分，考试时间120分钟）。出题时间较长（约40s~2min），请耐心等待…');
+      final ok = await generateFullExam(customReq: '用户自定义要求：$text');
+      generatingFullExam = false;
+      chatSending = false;
+      if (ok && currentExamPaper != null) {
+        // 生成成功已置 examPendingConfirm=true，主界面监听到后弹出确认弹窗
+        _addChatAiReply('✅ 全卷已生成完成！共 ${currentExamPaper!.totalQuestions} 题。请确认进入考场（弹窗已为你准备好）。');
+      } else {
+        _addChatAiReply('抱歉，全卷生成失败（AI 服务无响应或返回格式有误）。请稍后重试，或检查 API 接口是否可用。');
+      }
+      notifyListeners();
+      return true;
+    }
+
+    // 分支一：翻译题优先从题库抽取（题库仅含 translation 题）
+    if (type == 'translation') {
+      // 题库难度值只有 easy/medium/hard：cet4 对标 medium+hard 池，zsb 对标 medium 池
+      final bankLevels = switch (level) {
+        'cet4' => const ['medium', 'hard'],
+        'zsb' => const ['medium'],
+        _ => [level],
+      };
+      final picked = pickQuestionsFromBank(QType.translation, bankLevels, count);
+      if (picked.isNotEmpty) {
+        selectedType = 'translation';
+        selectedLevel = level;
+        generatedQuestions = picked;
+        generatedQuestionIdx = 0;
+        loadGeneratedQuestion();
+        _gotoAnswerPage();
+        _addChatAiReply('已为你从题库抽取 ${picked.length} 道【$levelLabel 翻译题】，已放入答题区'
+            '${picked.length > 1 ? '，点击“换一道”可做下一道' : ''}。开始作答吧，完成后点击“提交答案”我来批改！');
+        return true;
+      }
+      // 题库无匹配时继续走下方 AI 生成
+    }
+
+    // 分支二：AI 生成（其他题型 / 题库无匹配 / 套卷）
+    selectedType = type;
+    selectedLevel = level;
+    if (!apiConfig.ready) {
+      _addChatAiReply('题库中暂无匹配的【$levelLabel $typeLabel】，且 AI 出题服务尚未配置，无法为你生成新题。请先在 设置 → AI 接口 中完成配置后再试。');
+      return true;
+    }
+    chatSending = true;
+    notifyListeners();
+    _addChatAiReply('正在为你生成 $count 道【$levelLabel $typeLabel】，请稍候…');
+    final ok = await generateQuestions(count: count, customReq: '');
+    chatSending = false;
+    if (ok) {
+      _gotoAnswerPage();
+      _addChatAiReply('已为你准备好 ${generatedQuestions.length} 道【$levelLabel $typeLabel】，已放入答题区'
+          '${generatedQuestions.length > 1 ? '，点击“换一道”可做下一道' : ''}。加油！');
+    } else {
+      _addChatAiReply('抱歉，【$levelLabel $typeLabel】生成失败（AI 服务无响应或返回格式有误），请检查 API 配置后重试。');
+    }
+    notifyListeners();
+    return true;
+  }
 
   /// 出题成功后切换到答题页并重置作答内容
   void _gotoAnswerPage() {
     textAnswerValue = '';
     page = 1;
     notifyListeners();
+  }
+
+  /// 向对话历史追加一条助手回复并触发 UI 更新
+  void _addChatAiReply(String content) {
+    chatHistory.add(ChatMessage(role: 'ai', content: content));
+    notifyListeners();
+    _notifyChatUpdate();
   }
 
   // ===== Agent（Function Calling）=====
@@ -3051,7 +3222,7 @@ class AppState extends ChangeNotifier {
       return ToolExecResult(
         content: jsonEncode({'ok': true, 'path': raw, 'bytes': bytes}),
         ok: true,
-        actionLabel: '已写入 ${_humanSize(bytes)} 到 $raw',
+        actionLabel: '已写入 ${_humanSize(bytes)} 到 ${_basename(raw)}',
       );
     } catch (e) {
       return ToolExecResult(content: '{"ok":false,"reason":"write_failed: $e"}', ok: false);
@@ -3436,20 +3607,6 @@ class AppState extends ChangeNotifier {
   Future<ToolExecResult> _toolBash(Map<String, dynamic> args) async {
     final cmd = (args['command'] as String?)?.trim() ?? '';
     if (cmd.isEmpty) return const ToolExecResult(content: '{"ok":false,"reason":"missing_command"}', ok: false, actionLabel: '缺少命令');
-    // R13: 同一条命令连续失败 2 次后直接熔断，避免重复执行烧光工具轮次
-    final streak = _cmdFailStreak[cmd] ?? 0;
-    if (streak >= 2) {
-      return ToolExecResult(
-        content: jsonEncode({
-          'ok': false,
-          'reason': 'repeat_failure_blocked',
-          'hint': '这条命令已连续失败 $streak 次，本次未再执行。请更换思路：改用其他命令、'
-              '检查 PATH/完整路径/参数写法，或直接向用户说明该操作在本机无法完成。',
-        }),
-        ok: false,
-        actionLabel: '重复失败命令已拦截',
-      );
-    }
     var timeoutMs = (args['timeout_ms'] as num?)?.toInt() ?? 30000;
     if (timeoutMs < 1000) timeoutMs = 1000;
     if (timeoutMs > 60000) timeoutMs = 60000;
@@ -3464,37 +3621,12 @@ class AppState extends ChangeNotifier {
         runInShell: false,
         workingDirectory: wd,
       ).timeout(Duration(milliseconds: timeoutMs));
-      // R13 修复：失败连击此前只读不写，熔断从未生效（模型可无限重试同一条
-      // 失败命令烧光工具轮次）。现在成功清零、失败累加，连败 2 次后拦截。
-      if (result.exitCode == 0) {
-        _cmdFailStreak.remove(cmd);
-      } else {
-        _cmdFailStreak[cmd] = streak + 1;
-      }
       final out = result.stdout.toString();
       final err = result.stderr.toString();
       final body = out.length > 32 * 1024 ? out.substring(0, 32 * 1024) + '\n... [输出已截断]' : out;
       final errBody = err.length > 32 * 1024 ? err.substring(0, 32 * 1024) + '\n... [输出已截断]' : err;
-      final payload = <String, dynamic>{
-        'ok': result.exitCode == 0,
-        'exit_code': result.exitCode,
-        'stdout': body,
-        'stderr': errBody,
-      };
-      final hint = _windowsCmdHint(result.exitCode, err);
-      if (hint.isNotEmpty) payload['hint'] = hint;
-      // R14: 命令不存在（9009）时主动解析首 token 的真实路径给模型。
-      // GUI 启动的应用可能拿不到登录后才新增的 PATH 项（装了 node 仍 9009），
-      // 光说"改用完整路径"模型并不知道路径是什么，只会反复换写法空转。
-      final notFound = result.exitCode == 9009 ||
-          err.contains('不是内部或外部命令') ||
-          err.toLowerCase().contains('is not recognized');
-      if (notFound) {
-        final resolved = await _resolveCmdPathHint(cmd);
-        if (resolved.isNotEmpty) payload['path_hint'] = resolved;
-      }
       return ToolExecResult(
-        content: jsonEncode(payload),
+        content: jsonEncode({'ok': result.exitCode == 0, 'exit_code': result.exitCode, 'stdout': body, 'stderr': errBody}),
         ok: result.exitCode == 0,
         actionLabel: result.exitCode == 0 ? '已执行命令' : '命令退出码 ${result.exitCode}',
         exitCode: result.exitCode,
@@ -3503,61 +3635,6 @@ class AppState extends ChangeNotifier {
     } catch (e) {
       return ToolExecResult(content: '{"ok":false,"reason":"exec_failed: $e"}', ok: false, actionLabel: '命令执行失败');
     }
-  }
-
-  /// R14: 9009（命令不存在）时解析命令首 token 的真实路径：
-  /// 先 `where` 查 PATH，再探测 node/npm/npx/git 的常见安装目录（绕过 PATH，
-  /// 应对"已安装但 GUI 应用拿不到新 PATH"的场景）。找到就把完整路径直接给
-  /// 模型；找不到则明确告知不可用、禁止再试，避免一轮轮撞同一堵墙。
-  Future<String> _resolveCmdPathHint(String cmd) async {
-    final first = cmd.split(RegExp(r'[\s&|<>]+')).first.trim();
-    if (first.isEmpty || first.length > 64) return '';
-    try {
-      final r = await Process.run('cmd', ['/c', 'where $first'])
-          .timeout(const Duration(seconds: 5));
-      final out = r.stdout.toString().trim();
-      if (r.exitCode == 0 && out.isNotEmpty) {
-        final path = out.split('\n').first.trim();
-        return '已定位「$first」的实际路径：$path。请直接用该完整路径调用'
-            '（路径含空格时用双引号包裹整段路径），不要再用裸命令名重试。';
-      }
-    } catch (_) {}
-    // 常见安装位置探测
-    final probeDirs = <String>[
-      r'C:\Program Files\nodejs',
-      r'C:\Program Files (x86)\nodejs',
-      r'C:\Program Files\Git\cmd',
-      r'C:\Program Files\Git\bin',
-    ];
-    final local = Platform.environment['LOCALAPPDATA'] ?? '';
-    if (local.isNotEmpty) probeDirs.add('$local\\Programs\\nodejs');
-    for (final d in probeDirs) {
-      for (final name in <String>['$first.exe', '$first.cmd', '$first.bat']) {
-        final p = '$d\\$name';
-        if (File(p).existsSync()) {
-          return '已定位「$first」的实际路径：$p。请直接用该完整路径调用'
-              '（路径含空格时用双引号包裹整段路径），不要再用裸命令名重试。';
-        }
-      }
-    }
-    return '「$first」在本机不可用（PATH 与常见安装目录均未找到）。'
-        '请改用其他方式完成该步骤（如应用内置工具或 PowerShell 命令），不要再重试该命令。';
-  }
-
-  /// R12: Windows 命令失败的纠正性提示（写入 tool 结果，引导模型换正确写法）
-  String _windowsCmdHint(int exitCode, String err) {
-    if (exitCode == 0) return '';
-    final e = err.toLowerCase();
-    if (exitCode == 9009 || e.contains('不是内部或外部命令') || e.contains('is not recognized')) {
-      return '命令不存在（退出码 9009）。本机是 Windows cmd 环境，常见原因与正确写法：'
-          '• 误用了 Linux 命令：ls→dir，cat→type，touch→type nul>文件，rm→del，cp→copy，mv→move，grep→findstr，pwd→cd，which→where，ps→tasklist；'
-          '• 程序未加入 PATH：请改用完整路径调用，或先用 where 确认；'
-          '• 不要重复执行同一条失败命令，先换正确写法。';
-    }
-    if (e.contains('语法不正确') || e.contains('the syntax of the command is incorrect')) {
-      return 'cmd 语法错误：Windows 命令行不支持 Linux shell 语法（; 连接、单引号、重定向写法不同），请改用 cmd 兼容写法。';
-    }
-    return '';
   }
 
   String _basename(String path) {
@@ -4531,9 +4608,6 @@ class AppState extends ChangeNotifier {
           .toList(),
     );
     final actions = <String>[];
-    // R15: 本轮循环中执行失败的 bash 命令清单（去重）。轮次耗尽时写进最终回复，
-    // 让用户"继续"后的下一轮能看到哪些路走不通，而不是原样重撞同一堵墙。
-    final failedCmds = <String>[];
 
     // R8/R9: 跨轮记住"上一轮调用过的所有工具名"（含 helper），用于在下一轮纯文本回复时
     // 判断模型是否"调完工具就草草收尾"（假完成）。helper 工具（load_skill 等）不算完成任务，
@@ -4903,11 +4977,6 @@ class AppState extends ChangeNotifier {
           if (result.actionLabel.isNotEmpty) {
             actions.add(result.actionLabel);
           }
-          // R15: 记录失败的 bash 命令，供轮次耗尽时的"如实进度报告"使用
-          if (tc.name == 'bash' && !result.ok) {
-            final c = (args['command'] as String?) ?? '';
-            if (c.isNotEmpty && !failedCmds.contains(c)) failedCmds.add(c);
-          }
           _notifyChatUpdate();
           messages.add({
             'role': 'tool',
@@ -4922,29 +4991,11 @@ class AppState extends ChangeNotifier {
       // 超过最大轮次的兜底：
       // 1) 占位消息里若已有模型流式输出的真实内容（如末轮回复了文本但未走 return 分支），
       //    直接保留，绝不能用"操作已完成"覆盖——这正是用户反馈"只会说操作已完成"的直接来源；
-      // 2) R15: todo 未清空或有失败命令时，说明任务只做到一半——必须如实报告进度
-      //    （已完成项 + 待办项 + 失败命令），并写入最终回复进入 chatHistory，
-      //    这样用户回复"继续"后下一轮能看到完整进度，而不是失忆地重来；
-      // 3) 只有 todo 已清空且无失败命令时才可以说"已完成"。
-      final pendingTodos = placeholder.todoList
-          .where((t) => t.status != 'completed')
-          .map((t) => t.content)
-          .toList();
+      // 2) 否则按已执行动作给出总结；再否则如实说明未完成，而不是谎报"操作已完成"。
       final existing = placeholder.content.trim();
       final String reply;
       if (existing.isNotEmpty) {
         reply = existing;
-      } else if (pendingTodos.isNotEmpty || failedCmds.isNotEmpty) {
-        final sb = StringBuffer('本轮步数已用完，任务还没做完。');
-        sb.write('已完成：${actions.isEmpty ? "无" : actions.join("、")}。');
-        if (pendingTodos.isNotEmpty) {
-          sb.write('任务清单还有 ${pendingTodos.length} 项未完成：${pendingTodos.join("；")}。');
-        }
-        if (failedCmds.isNotEmpty) {
-          sb.write('以下命令执行失败（请换思路，不要原样重试）：${failedCmds.take(5).join("；")}。');
-        }
-        sb.write('回复“继续”我会接着完成剩余部分。');
-        reply = sb.toString();
       } else if (actions.isNotEmpty) {
         reply = '已完成：${actions.join("、")}。';
       } else {

@@ -45,6 +45,9 @@ final class SnakeSnapshot extends Struct {
 
   @Double()
   external double tickMs;
+
+  @Int32()
+  external int invincible;
 }
 
 /// C++ 逻辑库句柄
@@ -65,6 +68,7 @@ class SnakeLogic {
 
   late final void Function(Pointer<Void>) _destroy;
   late final void Function(Pointer<Void>) _start;
+  late final void Function(Pointer<Void>) _revive;
   late final void Function(Pointer<Void>) _togglePause;
   late final void Function(Pointer<Void>, int, int) _turn;
   late final void Function(Pointer<Void>, double) _advance;
@@ -88,6 +92,8 @@ class SnakeLogic {
         void Function(Pointer<Void>)>('snake_destroy');
     _start = _lib.lookupFunction<Void Function(Pointer<Void>),
         void Function(Pointer<Void>)>('snake_start');
+    _revive = _lib.lookupFunction<Void Function(Pointer<Void>),
+        void Function(Pointer<Void>)>('snake_revive');
     _togglePause = _lib.lookupFunction<Void Function(Pointer<Void>),
         void Function(Pointer<Void>)>('snake_toggle_pause');
     _turn = _lib.lookupFunction<Void Function(Pointer<Void>, Int32, Int32),
@@ -111,6 +117,9 @@ class SnakeLogic {
 
   /// 重新开始
   void start() => _start(_state);
+
+  /// 复活（原地复活，短暂无敌）
+  void revive() => _revive(_state);
 
   /// 暂停/继续
   void togglePause() => _togglePause(_state);

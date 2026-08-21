@@ -1,6 +1,7 @@
 /// 全局设置弹窗：左侧导航栏 + 右侧分区
 library;
 
+import 'dart:convert' show jsonDecode, jsonEncode;
 import 'dart:io';
 import 'dart:math';
 import 'package:file_picker/file_picker.dart';
@@ -11,10 +12,11 @@ import '../models.dart';
 import '../state.dart';
 import '../theme_colors.dart' show kPrimary, AppColors;
 import 'learn_page.dart' show AppScope;
+import '../services/skill_store.dart' show AgentSkill;
 
 const _primary = kPrimary;
 
-const _models = ['gpt-5.1', 'gpt-5.1-instant', 'gpt-5.5', 'gpt-4o', 'deepseek-v4-flash', 'deepseek-v4-pro'];
+const _models = ['gpt-5.1', 'gpt-5.1-instant', 'gpt-5.5', 'gpt-4o', 'deepseek-v4-flash', 'deepseek-v4-pro', 'kimi', 'longcat'];
 
 class SettingsDialog extends StatefulWidget {
   const SettingsDialog({super.key});
@@ -163,6 +165,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
               ]),
               const SizedBox(height: 10),
               _mobileGroup(c, const [
+                ['skills', '技能管理'],
                 ['account', '账户安全'],
                 ['advanced', '高级功能'],
               ]),
@@ -174,6 +177,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
       final title = switch (_section) {
         'model' => '模型设置',
         'interface' => '界面设置',
+        'skills' => '技能管理',
         'account' => '账户安全',
         _ => '高级功能',
       };
@@ -232,6 +236,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
                 child: Image.asset('assets/icons/model_settings.png', width: 18, height: 18, filterQuality: FilterQuality.high),
               ), '模型设置', 'model', c),
               _navItem(Icon(Icons.palette_outlined, size: 18, color: c.text), '界面设置', 'interface', c),
+              _navItem(Icon(Icons.auto_awesome_outlined, size: 18, color: c.text), '技能管理', 'skills', c),
               _navItem(Icon(Icons.shield_outlined, size: 18, color: c.text), '账户安全', 'account', c),
               _navItem(Icon(Icons.hub_outlined, size: 18, color: c.text), '高级功能', 'advanced', c),
               const Spacer(),
@@ -349,6 +354,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
     switch (_section) {
       case 'model':     return _sectionModelContent(s, c);
       case 'interface': return _sectionInterfaceContent(s, c);
+      case 'skills':    return _sectionSkillsContent(s, c);
       case 'account':   return _sectionAccountContent(s, c);
       case 'advanced':  return _sectionAdvanced(s, c);
       default:          return _sectionModelContent(s, c);
@@ -801,6 +807,246 @@ class _SettingsDialogState extends State<SettingsDialog> {
     }
   }
 
+  // ============== Section: 技能管理 ==============
+  Widget _sectionSkillsContent(AppState s, AppColors c) {
+    final skills = s.skillStore.all;
+    final enabledCount = skills.where((sk) => sk.enabled).length;
+    // 按分类分组（保持插入顺序）
+    final groups = <String, List<AgentSkill>>{};
+    for (final sk in skills) {
+      groups.putIfAbsent(sk.category, () => []).add(sk);
+    }
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Row(children: [
+        Expanded(child: _sectionTitle('技能管理', c)),
+        ElevatedButton.icon(
+          onPressed: () => _showAddSkillDialog(s, c),
+          icon: const Icon(Icons.add_rounded, size: 16),
+          label: const Text('添加技能', style: TextStyle(fontSize: 12.5)),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: _primary,
+            foregroundColor: Colors.white,
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+          ),
+        ),
+      ]),
+      const SizedBox(height: 6),
+      Text(
+        '共 ${skills.length} 个技能，已启用 $enabledCount 个。技能仅在 AI 需要时才加载完整指令（渐进式披露），不会占用对话上下文。',
+        style: TextStyle(fontSize: 12, color: c.textSecondary, height: 1.5),
+      ),
+      const SizedBox(height: 14),
+      if (!s.skillStore.loaded)
+        const Padding(padding: EdgeInsets.all(24), child: Center(child: CircularProgressIndicator(strokeWidth: 2)))
+      else
+        for (final entry in groups.entries) ...[
+          Padding(
+            padding: const EdgeInsets.only(top: 6, bottom: 8),
+            child: Text(entry.key, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: c.textSecondary)),
+          ),
+          ...entry.value.map((sk) => _skillCard(s, sk, c)),
+        ],
+      const SizedBox(height: 10),
+      Text(
+        '提示：部分技能（如智谱 GLM 系列）需要 ZHIPU_API_KEY 环境变量或对应服务的 API Key 才能实际执行；技能正文会指导 AI 如何调用。',
+        style: TextStyle(fontSize: 11, color: c.textTertiary, height: 1.5),
+      ),
+    ]);
+  }
+
+  Widget _skillCard(AppState s, AgentSkill sk, AppColors c) {
+    final isLight = c.isLight;
+    final isCustom = sk.source == 'custom';
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.fromLTRB(14, 12, 10, 12),
+      decoration: BoxDecoration(
+        color: isLight ? const Color(0xFFFAFBFD) : const Color(0xFF2E2E35),
+        borderRadius: BorderRadius.circular(12),
+        border: sk.enabled ? null : Border.all(color: c.border.withValues(alpha: 0.6)),
+      ),
+      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Expanded(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Row(children: [
+              Flexible(
+                child: Text(sk.name, style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w700, color: sk.enabled ? c.text : c.textTertiary), overflow: TextOverflow.ellipsis),
+              ),
+              const SizedBox(width: 6),
+              if (isCustom)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                  decoration: BoxDecoration(color: _primary.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(4)),
+                  child: Text('自定义', style: TextStyle(fontSize: 9.5, color: _primary, fontWeight: FontWeight.w600)),
+                ),
+            ]),
+            const SizedBox(height: 4),
+            Text(
+              sk.description,
+              style: TextStyle(fontSize: 11.5, color: sk.enabled ? c.textSecondary : c.textTertiary, height: 1.5),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+            const SizedBox(height: 6),
+            Row(children: [
+              GestureDetector(
+                onTap: () => _showViewSkillDialog(sk, c),
+                child: Row(children: [
+                  Icon(Icons.visibility_outlined, size: 13, color: c.textTertiary),
+                  const SizedBox(width: 3),
+                  Text('查看', style: TextStyle(fontSize: 11, color: c.textTertiary)),
+                ]),
+              ),
+              if (isCustom) ...[
+                const SizedBox(width: 14),
+                GestureDetector(
+                  onTap: () {
+                    s.skillStore.remove(sk.id);
+                    s.notifyListeners();
+                  },
+                  child: Row(children: [
+                    Icon(Icons.delete_outline_rounded, size: 13, color: c.textTertiary),
+                    const SizedBox(width: 3),
+                    Text('删除', style: TextStyle(fontSize: 11, color: c.textTertiary)),
+                  ]),
+                ),
+              ],
+            ]),
+          ]),
+        ),
+        Switch(
+          value: sk.enabled,
+          onChanged: (v) {
+            s.skillStore.setEnabled(sk.id, v);
+            s.notifyListeners();
+          },
+          activeThumbColor: Colors.white,
+          activeTrackColor: _kSwitchGreen,
+        ),
+      ]),
+    );
+  }
+
+  void _showViewSkillDialog(AgentSkill sk, AppColors c) {
+    showDialog(
+      context: context,
+      builder: (ctx) => Dialog(
+        backgroundColor: Colors.transparent,
+        child: Container(
+          width: 640,
+          height: 560,
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            color: c.isLight ? Colors.white : const Color(0xFF232328),
+            borderRadius: BorderRadius.circular(16),
+          ),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Row(children: [
+              Expanded(child: Text(sk.name, style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: c.text))),
+              IconButton(icon: Icon(Icons.close_rounded, size: 18, color: c.textSecondary), onPressed: () => Navigator.of(ctx).pop()),
+            ]),
+            Text('${sk.category} · ${sk.id}', style: TextStyle(fontSize: 11, color: c.textTertiary)),
+            const SizedBox(height: 10),
+            Expanded(
+              child: Container(
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: c.isLight ? const Color(0xFFF7F8FA) : const Color(0xFF1A1A1E),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: SingleChildScrollView(
+                  child: SelectableText(sk.content, style: TextStyle(fontSize: 12, height: 1.7, color: c.text, fontFamily: 'Consolas')),
+                ),
+              ),
+            ),
+          ]),
+        ),
+      ),
+    );
+  }
+
+  void _showAddSkillDialog(AppState s, AppColors c) {
+    final nameCtrl = TextEditingController();
+    final descCtrl = TextEditingController();
+    final catCtrl = TextEditingController(text: '自定义');
+    final contentCtrl = TextEditingController();
+    var error = '';
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialog) => Dialog(
+          backgroundColor: Colors.transparent,
+          child: Container(
+            width: 640,
+            height: 600,
+            padding: const EdgeInsets.all(20),
+            decoration: BoxDecoration(
+              color: c.isLight ? Colors.white : const Color(0xFF232328),
+              borderRadius: BorderRadius.circular(16),
+            ),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text('添加自定义技能', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: c.text)),
+              const SizedBox(height: 4),
+              Text('技能描述决定 AI 何时触发该技能；正文为完整指令（Markdown）', style: TextStyle(fontSize: 11, color: c.textTertiary)),
+              const SizedBox(height: 14),
+              Row(children: [
+                Expanded(child: _labeledField('技能名称', TextField(controller: nameCtrl, style: TextStyle(fontSize: 13, color: c.text), decoration: _deco(c, hint: '如：会议纪要专家')), c)),
+                const SizedBox(width: 12),
+                Expanded(child: _labeledField('分类', TextField(controller: catCtrl, style: TextStyle(fontSize: 13, color: c.text), decoration: _deco(c, hint: '自定义')), c)),
+              ]),
+              const SizedBox(height: 10),
+              _labeledField(
+                '触发描述（AI 依据它判断何时使用此技能）',
+                TextField(controller: descCtrl, maxLines: 2, style: TextStyle(fontSize: 13, color: c.text), decoration: _deco(c, hint: '当用户要求…时使用此技能')),
+                c,
+              ),
+              const SizedBox(height: 10),
+              Expanded(
+                child: _labeledField(
+                  '技能正文（Markdown 指令）',
+                  TextField(
+                    controller: contentCtrl,
+                    maxLines: null,
+                    expands: true,
+                    textAlignVertical: TextAlignVertical.top,
+                    style: TextStyle(fontSize: 12, color: c.text, fontFamily: 'Consolas'),
+                    decoration: _deco(c, hint: '# 技能标题\n\n完整的工作流指令…'),
+                  ),
+                  c,
+                ),
+              ),
+              const SizedBox(height: 10),
+              Row(children: [
+                if (error.isNotEmpty) Expanded(child: Text(error, style: const TextStyle(fontSize: 11, color: Color(0xFFEF4444)), overflow: TextOverflow.ellipsis)),
+                const Spacer(),
+                TextButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('取消')),
+                const SizedBox(width: 10),
+                ElevatedButton(
+                  onPressed: () {
+                    if (nameCtrl.text.trim().isEmpty || contentCtrl.text.trim().isEmpty) {
+                      setDialog(() => error = '名称与正文不能为空');
+                      return;
+                    }
+                    s.skillStore.addCustom(
+                      name: nameCtrl.text.trim(),
+                      description: descCtrl.text.trim().isEmpty ? '用户自定义技能：${nameCtrl.text.trim()}' : descCtrl.text.trim(),
+                      category: catCtrl.text.trim(),
+                      content: contentCtrl.text.trim(),
+                    );
+                    s.notifyListeners();
+                    Navigator.of(ctx).pop();
+                  },
+                  style: ElevatedButton.styleFrom(backgroundColor: _primary, foregroundColor: Colors.white),
+                  child: const Text('保存'),
+                ),
+              ]),
+            ]),
+          ),
+        ),
+      ),
+    );
+  }
+
   // ============== Section 4: 高级功能 ==============
   Widget _sectionAdvanced(AppState s, AppColors c) {
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -817,8 +1063,9 @@ class _SettingsDialogState extends State<SettingsDialog> {
       _sectionTitle('MCP 服务器 (dsh-mcp-client)', c),
       const SizedBox(height: 6),
       Text(
-        '按 JSON 数组格式填写 MCP server 配置；保存后会自动拉起并把它们的工具挂给 AI。\n'
-        '示例：\n[{"name":"github","command":"npx","args":["-y","@modelcontextprotocol/server-github"],"env":{}}]',
+        '点击预置模板可一键添加常用 server（12306 车票查询 / Git 仓库 / GitHub），或用「自定义添加」填表添加。\n'
+        '也支持直接编辑 JSON 数组；保存后会自动拉起并把它们的工具挂给 AI。\n'
+        '注意：npx 模板需本机已安装 Node.js；uvx 模板需已安装 uv。',
         style: TextStyle(fontSize: 12, color: c.textSecondary, height: 1.5),
       ),
       const SizedBox(height: 10),
@@ -990,9 +1237,113 @@ class _McpConfigEditorState extends State<_McpConfigEditor> {
     super.dispose();
   }
 
+  /// 解析当前 JSON（失败返回 null）
+  List<dynamic>? _parseCurrent() {
+    try {
+      final v = jsonDecode(_ctrl.text.trim().isEmpty ? '[]' : _ctrl.text);
+      return v is List ? v : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 把一个 server 配置合并进 JSON（按 name 去重）并立即保存重连
+  Future<void> _mergeServer(String name, String command, List<String> args) async {
+    final list = _parseCurrent();
+    if (list == null) {
+      setState(() => _hint = '当前 JSON 格式有误，请先修正后再添加');
+      return;
+    }
+    list.removeWhere((e) => e is Map && e['name'] == name);
+    list.add({'name': name, 'command': command, 'args': args, 'env': {}});
+    _ctrl.text = jsonEncode(list);
+    await _save();
+    if (mounted) setState(() => _hint = '✓ 已添加 $name 并尝试连接');
+  }
+
+  Future<void> _save() async {
+    try {
+      await widget.s.setMcpConfigJson(_ctrl.text);
+    } catch (e) {
+      if (mounted) setState(() => _hint = '保存失败：$e');
+    }
+  }
+
+  Widget _presetChip(String label, String name, String command, List<String> args, IconData icon) {
+    return ActionChip(
+      avatar: Icon(icon, size: 16, color: widget.c.textSecondary),
+      label: Text(label, style: TextStyle(fontSize: 12, color: widget.c.text)),
+      onPressed: () => _mergeServer(name, command, args),
+    );
+  }
+
+  void _showAddServerDialog() {
+    final nameCtrl = TextEditingController();
+    final cmdCtrl = TextEditingController(text: 'npx');
+    final argsCtrl = TextEditingController();
+    final c = widget.c;
+    showDialog(
+      context: context,
+      builder: (ctx) => Dialog(
+        backgroundColor: Colors.transparent,
+        child: Container(
+          width: 480,
+          padding: const EdgeInsets.all(22),
+          decoration: BoxDecoration(
+            color: c.isLight ? Colors.white : const Color(0xFF232328),
+            borderRadius: BorderRadius.circular(16),
+          ),
+          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text('添加 MCP 服务器', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: c.text)),
+            const SizedBox(height: 4),
+            Text('保存后会自动拉起 server 并把它的工具挂给 AI', style: TextStyle(fontSize: 11, color: c.textTertiary)),
+            const SizedBox(height: 16),
+            TextField(controller: nameCtrl, style: TextStyle(fontSize: 13, color: c.text), decoration: InputDecoration(labelText: '名称（如 12306-mcp）', border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)))),
+            const SizedBox(height: 12),
+            TextField(controller: cmdCtrl, style: TextStyle(fontSize: 13, color: c.text), decoration: InputDecoration(labelText: '命令（如 npx / uvx / node）', border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)))),
+            const SizedBox(height: 12),
+            TextField(controller: argsCtrl, style: TextStyle(fontSize: 13, color: c.text), decoration: InputDecoration(labelText: '参数（空格分隔，如 -y 12306-mcp）', border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)))),
+            const SizedBox(height: 18),
+            Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+              TextButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('取消')),
+              const SizedBox(width: 10),
+              ElevatedButton(
+                onPressed: () async {
+                  final name = nameCtrl.text.trim();
+                  if (name.isEmpty || cmdCtrl.text.trim().isEmpty) return;
+                  final args = argsCtrl.text.trim().split(RegExp(r'\s+')).where((s) => s.isNotEmpty).toList();
+                  Navigator.of(ctx).pop();
+                  await _mergeServer(name, cmdCtrl.text.trim(), args);
+                },
+                style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF10B981), foregroundColor: Colors.white),
+                child: const Text('添加并连接'),
+              ),
+            ]),
+          ]),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      // 预置模板 + 可视化添加
+      Wrap(
+        spacing: 8,
+        runSpacing: 8,
+        children: [
+          _presetChip('12306 车票查询', '12306-mcp', 'npx', const ['-y', '12306-mcp'], Icons.train_rounded),
+          _presetChip('Git 仓库', 'git', 'uvx', const ['mcp-server-git'], Icons.call_split_rounded),
+          _presetChip('GitHub', 'github', 'npx', const ['-y', '@modelcontextprotocol/server-github'], Icons.code_rounded),
+          ActionChip(
+            avatar: Icon(Icons.add_rounded, size: 16, color: widget.c.textSecondary),
+            label: Text('自定义添加', style: TextStyle(fontSize: 12, color: widget.c.text)),
+            onPressed: _showAddServerDialog,
+          ),
+        ],
+      ),
+      const SizedBox(height: 10),
       Container(
         decoration: BoxDecoration(
           color: widget.c.isLight ? const Color(0xFFF1F2F4) : const Color(0xFF1A1A1F),

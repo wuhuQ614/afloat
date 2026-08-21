@@ -30,7 +30,9 @@ import 'widgets/glass_background.dart';
 import 'widgets/maimemo_wordbook_page.dart';
 import 'widgets/browser_page.dart';
 import 'widgets/snake_game_page.dart';
+import 'widgets/snake_pvp_page.dart';
 import 'widgets/gomoku_page.dart';
+import 'widgets/source_viewer_page.dart';
 import 'widgets/agent_rows.dart';
 
 final bool _isWindows = !kIsWeb && Platform.isWindows;
@@ -46,6 +48,7 @@ const _moreItemsData = [
   (Icons.school_outlined, '语法学习', '从零学会专升本语法', 12),
   (Icons.language_rounded, '浏览器', '轻量网页浏览', 19),
   (Icons.videogame_asset_outlined, '贪吃蛇', '经典小游戏放松', 20),
+  (Icons.groups_outlined, '贪吃蛇双人', '40×40 双蛇对战', 24),
   (Icons.grid_3x3_rounded, '五子棋', '双人对战五子连珠', 23),
 ];
 
@@ -1020,7 +1023,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                     child: const Icon(Icons.auto_awesome_rounded, size: 14, color: Colors.white),
                   ),
                   const SizedBox(width: 10),
-                  Text('AI 对话助手', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: c.text)),
+                  Text(modelName, style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: c.text)),
                   const Spacer(),
                   IconButton(
                     icon: Icon(Icons.settings_outlined, size: 18, color: c.textTertiary),
@@ -1137,6 +1140,10 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
         return const BrowserPage();
       case 20:
         return const SnakeGamePage();
+      case 24:
+        return const SnakePvpPage();
+      case 21:
+        return const SourceViewerPage();
       case 23:
         return const _PageScaffold(title: '五子棋', child: GomokuPage());
       case 10:
@@ -1178,8 +1185,8 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
     if (lower.contains('cohere') || lower.contains('command-r')) return 'assets/ai-icons/cohere.svg';
     if (lower.contains('perplexity') || lower.contains('sonar')) return 'assets/ai-icons/perplexity.svg';
     if (lower.contains('together') || lower.contains('Llama-3') || lower.contains('Qwen2-')) return 'assets/ai-icons/together.svg';
-    // LongCat / Longcat / 紫东太初：暂用 mistral 作 fallback（猫形相近）
-    if (lower.contains('longcat') || lower.contains('long-cat')) return 'assets/ai-icons/mistral.svg';
+    // LongCat / 龙猫（美团）专用图标
+    if (lower.contains('longcat') || lower.contains('long-cat') || lower.contains('龙猫') || lower.contains('美团')) return 'assets/ai-icons/longcat.svg';
     if (lower.contains('taichu') || lower.contains('太初')) return 'assets/ai-icons/zhipu.svg';
     // 兜底：任何未匹配都给一个通用 MiniMax 图标，不再返回 null
     return 'assets/ai-icons/minimax.svg';
@@ -1328,7 +1335,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
               _aiLogo(modelName, size: 30),
               const SizedBox(width: 10),
               Expanded(
-                child: Text('AI 对话助手', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: c.text), overflow: TextOverflow.ellipsis),
+                child: Text(modelName, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: c.text), overflow: TextOverflow.ellipsis),
               ),
               const SizedBox(width: 4),
               Builder(builder: (wsCtx) => IconButton(
@@ -1612,25 +1619,42 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
         const SizedBox(height: 2),
       ],
       if (hasSteps)
-        ...msg.toolSteps.map((ts) => ts.terminal
-            ? AgentTerminalBlock(
-                command: ts.command ?? '',
-                running: ts.running,
-                failed: ts.failed,
-                exitCode: ts.exitCode,
-                output: ts.output,
-                light: isLight,
-              )
-            : AgentToolRow(
-                name: ts.name,
-                label: ts.label,
-                running: ts.running,
-                done: ts.done,
-                failed: ts.failed,
-                input: ts.input,
-                output: ts.output,
-                light: isLight,
-              )),
+        ...msg.toolSteps.map((ts) {
+          if (ts.terminal) {
+            return AgentTerminalBlock(
+              command: ts.command ?? '',
+              running: ts.running,
+              failed: ts.failed,
+              exitCode: ts.exitCode,
+              output: ts.output,
+              light: isLight,
+            );
+          }
+          // 子 Agent 派发：专属卡片（类型徽章 + 执行轨迹 + 报告）
+          if (ts.name == 'spawn_subagent') {
+            return AgentSubagentCard(
+              type: ts.subType ?? 'general',
+              task: ts.subTask ?? '',
+              label: ts.label,
+              running: ts.running,
+              done: ts.done,
+              failed: ts.failed,
+              events: ts.subEvents,
+              output: ts.output,
+              light: isLight,
+            );
+          }
+          return AgentToolRow(
+            name: ts.name,
+            label: ts.label,
+            running: ts.running,
+            done: ts.done,
+            failed: ts.failed,
+            input: ts.input,
+            output: ts.output,
+            light: isLight,
+          );
+        }),
       if (hasSteps) const SizedBox(height: 2),
       // dsh-tool-ask-user：弹问题让用户选
       if (msg.askQuestions.isNotEmpty) ...[
@@ -2478,19 +2502,24 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
     }
 
     final compact = _isCompact(context);
-    final profiles = s.apiProfiles;
-    // 初始选中：useAutoModel → Auto(idx=-1)；否则按当前 apiConfig 匹配
-    int initialIdx = s.useAutoModel ? -1 : -1;
+    // 列表源：开启"独立配置"时展示对话助手配置库，否则展示全局配置库
+    final profiles = s.chatApiIndependent ? s.chatProfiles : s.apiProfiles;
+    // 初始选中：useAutoModel → Auto(idx=-1)；否则按当前生效配置（effectiveChatConfig）匹配
+    int initialIdx = -1;
     if (!s.useAutoModel) {
+      final eff = s.effectiveChatConfig;
       for (var i = 0; i < profiles.length; i++) {
-        if (profiles[i].config.url == s.apiConfig.url &&
-            profiles[i].config.key == s.apiConfig.key &&
-            profiles[i].config.model == s.apiConfig.model) {
+        if (profiles[i].config.url == eff.url &&
+            profiles[i].config.key == eff.key &&
+            profiles[i].config.model == eff.model) {
           initialIdx = i;
           break;
         }
       }
     }
+    // 选中状态提升到外层闭包：避免 StatefulBuilder 每次 build 重新初始化（修复选中特效不变）
+    int curSelectedIdx = initialIdx;
+    bool curMaxMode = s.chatThinking;
 
     // 行渲染（icon + 名称 + tags + 价格）
     // - tags：来自 ApiProfile.tags（数据驱动，不硬编码）
@@ -2653,7 +2682,12 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
             tags: profileTags(profiles[i]),
             onTap: () {
               s.disableAutoModel();
-              s.saveApiProfiles(s.apiProfiles, i);
+              // 开启"独立配置"时写入对话助手配置库，否则写全局配置库
+              if (s.chatApiIndependent) {
+                s.saveChatProfiles(s.chatProfiles, i);
+              } else {
+                s.saveApiProfiles(s.apiProfiles, i);
+              }
               onChanged(i, maxMode);
             },
           ),
@@ -2741,12 +2775,10 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
         isScrollControlled: true,
         builder: (ctx) {
           return StatefulBuilder(builder: (ctx, setState) {
-            var selectedIdx = initialIdx;
-            var maxMode = s.chatThinking;
             void onChanged(int idx, bool mode) {
               setState(() {
-                selectedIdx = idx;
-                maxMode = mode;
+                curSelectedIdx = idx;
+                curMaxMode = mode;
               });
               if (mode != s.chatThinking) s.setChatThinking(mode);
             }
@@ -2757,7 +2789,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
               ),
               child: SizedBox(
                 height: MediaQuery.of(context).size.height * 0.6,
-                child: chrome(content(selectedIdx, maxMode, onChanged)),
+                child: chrome(content(curSelectedIdx, curMaxMode, onChanged)),
               ),
             );
           });
@@ -2775,18 +2807,16 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
             backgroundColor: Colors.transparent,
             insetPadding: const EdgeInsets.all(24),
             child: StatefulBuilder(builder: (ctx, setState) {
-              var selectedIdx = initialIdx;
-              var maxMode = s.chatThinking;
               void onChanged(int idx, bool mode) {
                 setState(() {
-                  selectedIdx = idx;
-                  maxMode = mode;
+                  curSelectedIdx = idx;
+                  curMaxMode = mode;
                 });
                 if (mode != s.chatThinking) s.setChatThinking(mode);
               }
               return SizedBox(
                 width: popupWidth,
-                child: chrome(content(selectedIdx, maxMode, onChanged)),
+                child: chrome(content(curSelectedIdx, curMaxMode, onChanged)),
               );
             }),
           ),
@@ -2809,12 +2839,10 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
       late OverlayEntry entry;
       entry = OverlayEntry(builder: (ctx) {
         return StatefulBuilder(builder: (ctx, setState) {
-          var selectedIdx = initialIdx;
-          var maxMode = s.chatThinking;
           void onChanged(int idx, bool mode) {
             setState(() {
-              selectedIdx = idx;
-              maxMode = mode;
+              curSelectedIdx = idx;
+              curMaxMode = mode;
             });
             if (mode != s.chatThinking) s.setChatThinking(mode);
           }
@@ -2845,7 +2873,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                         child: child,
                       ),
                     ),
-                    child: chrome(content(selectedIdx, maxMode, onChanged)),
+                    child: chrome(content(curSelectedIdx, curMaxMode, onChanged)),
                   ),
                 ),
               ),
@@ -3210,12 +3238,12 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
               c: c,
             ),
             const Spacer(),
-            // 右侧：模型 / 发送
+            // 右侧：模型 / 发送（独立配置生效时加"独立"标识）
             _ChatInputTextButton(
               key: isMobile ? null : _modelSelectorBtnKey,
               icon: null,
               leading: aiIcon,
-              label: modelLabel,
+              label: s.chatApiIndependent ? '$modelLabel·独立' : modelLabel,
               onPressed: () => _showChatModelSelector(context, c, s),
               c: c,
             ),

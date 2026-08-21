@@ -19,9 +19,16 @@
 // 色彩用 harness design-platform.css 的 bluish 灰阶色板，随明暗主题切换。
 
 import 'package:flutter/material.dart';
-import 'dart:async' show Timer;
-import '../state.dart' show AskUserOption, AskUserQuestion, ChatMessage, PlanSubmission, PlanStep, TodoItem;
+import 'dart:convert';
 import 'dart:math' as math;
+import '../state.dart'
+    show
+        AppScope,
+        AskUserQuestion,
+        ChatMessage,
+        PlanSubmission,
+        TodoItem;
+import 'source_viewer_page.dart';
 
 /// deepseek-harness 的 bluish 中性灰阶色板（对应 design-platform.css 静态色）
 class _Ds {
@@ -348,6 +355,29 @@ IconData _toolIcon(String name) => switch (name) {
       'search_web' => Icons.public_rounded,
       'backup_data' => Icons.cloud_upload_rounded,
       'operate_computer' => Icons.terminal_rounded,
+      'read_file' => Icons.description_outlined,
+      'write_file' => Icons.note_add_rounded,
+      'edit_file' => Icons.drive_file_rename_outline_rounded,
+      'list_dir' => Icons.folder_open_rounded,
+      'bash' => Icons.terminal_rounded,
+      'str_replace_editor' => Icons.data_object_rounded,
+      'run_code' => Icons.code_rounded,
+      'todo' => Icons.checklist_rounded,
+      'skill' => Icons.auto_awesome_rounded,
+      'load_skill' => Icons.auto_awesome_outlined,
+      'list_user_skills' => Icons.library_books_outlined,
+      'web_fetch' => Icons.language_rounded,
+      'session_query' => Icons.history_rounded,
+      'spawn_subagent' => Icons.account_tree_rounded,
+      'list_mcp_tools' => Icons.hub_outlined,
+      'call_mcp_tool' => Icons.hub_rounded,
+      'ask_user_question' => Icons.help_outline_rounded,
+      'compact_conversation' => Icons.compress_rounded,
+      'submit_plan' => Icons.fact_check_outlined,
+      'run_background_job' => Icons.play_circle_outline_rounded,
+      'job_output' => Icons.output_rounded,
+      'job_kill' => Icons.stop_circle_outlined,
+      'check_repeat' => Icons.repeat_rounded,
       _ => Icons.build_rounded,
     };
 
@@ -369,6 +399,10 @@ Widget _ioSection(String tag, String text, Color color, _Ds d) {
 /// 工具调用行：[工具图标] + 工具名 + 分隔点 + 摘要 + 折叠箭头。
 /// 运行中播放亮片；失败时 leading 换红色 StateDot、摘要变红。
 /// 展开后呈现 IN（入参）/ OUT（返回）卡片。
+///
+/// 文件类工具（read_file/write_file/str_view 等）若带路径，会在行下方渲染
+/// 一个可点击的「打开源码」链接，直接以该文件 + 行号区间跳转源码查看器。
+/// （源码查看入口走这里，不再放在「更多功能」。）
 class AgentToolRow extends StatefulWidget {
   final String name;
   final String label;
@@ -427,6 +461,123 @@ class _AgentToolRowState extends State<AgentToolRow> with SingleTickerProviderSt
   bool _notEmpty(String? s) => s != null && s.trim().isNotEmpty;
   bool get _expandable => _notEmpty(widget.input) || _notEmpty(widget.output);
 
+  // ============ 源码引用检测（文件工具 + 路径 + 行区间 → 可点击跳转） ============
+
+  String? _toolPath() {
+    const fileTools = {
+      'read_file',
+      'write_file',
+      'edit_file',
+      'str_write_to_file',
+      'str_replace_editor',
+      'str_view',
+      'view_file',
+      'list_file',
+    };
+    if (!fileTools.contains(widget.name)) return null;
+    final input = widget.input ?? '';
+    if (input.trim().isEmpty) return null;
+    try {
+      final map = jsonDecode(input);
+      if (map is Map) {
+        final p = map['file_path'] ?? map['path'];
+        if (p is String && p.trim().isNotEmpty) return p.trim();
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  /// 解析行区间：[from, to]（1 起）。优先取入参 view_range，其次正则兜底。
+  (int?, int?) _toolRange() {
+    final input = widget.input ?? '';
+    try {
+      final map = jsonDecode(input);
+      if (map is Map && map['view_range'] is List) {
+        final l = map['view_range'] as List;
+        if (l.isNotEmpty && l.first is num) {
+          final f = (l.first as num).round();
+          final t = l.length > 1 && l[1] is num ? (l[1] as num).round() : f;
+          return (f < 1 ? 1 : f, t >= f ? t : f);
+        }
+      }
+    } catch (_) {}
+    // 兜底：从 label/output 里找 "X-Y 行" 或 "L123" 或 "第 X 行"
+    final hay = '${widget.label}\n${widget.output ?? ''}';
+    final dash = RegExp(r'(\d+)\s*[-–—]\s*(\d+)').firstMatch(hay);
+    if (dash != null) {
+      final f = int.tryParse(dash.group(1) ?? '');
+      final t = int.tryParse(dash.group(2) ?? '');
+      if (f != null) {
+        final start = f < 1 ? 1 : f;
+        final end = (t == null || t < start) ? start : t;
+        return (start, end);
+      }
+    }
+    final li = RegExp(r'L(\d+)', caseSensitive: false).firstMatch(hay);
+    if (li != null) {
+      final f = int.tryParse(li.group(1) ?? '');
+      if (f != null) return (f < 1 ? 1 : f, f);
+    }
+    return (null, null);
+  }
+
+  /// 相对路径→绝对路径（无盘符时基于工作区根目录解析），与文件工具保持一致
+  String _viewerPath(String p) {
+    if (p.contains(':')) return p.replaceAll('/', '\\');
+    final rel = p.replaceAll('/', '\\').replaceFirst(RegExp(r'^\\+'), '');
+    final ws = AppScope.of(context).workspacePath.trim();
+    return ws.isEmpty ? rel : '$ws\\$rel';
+  }
+
+  Widget _buildSourceLink(d) {
+    final path = _toolPath();
+    if (path == null) return const SizedBox.shrink();
+    final (from, to) = _toolRange();
+    final absolute = _viewerPath(path);
+    final basename = absolute.split(RegExp(r'[\\/]')).last;
+    final rangeTxt = from != null ? ' · L$from${(to ?? from) > from ? '-$to' : ''}' : '';
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(22, 3, 8, 4),
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () {
+          Navigator.of(context).push(MaterialPageRoute(
+            builder: (_) => SourceViewerPage(
+              initialPath: absolute,
+              lineFrom: from,
+              lineTo: to,
+            ),
+          ));
+        },
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          decoration: BoxDecoration(
+            color: d.codeBlock,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: d.border),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.code_rounded, size: 13, color: d.ongoing),
+              const SizedBox(width: 5),
+              Flexible(
+                child: Text(
+                  '打开源码 · $basename$rangeTxt',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: d.ongoing),
+                ),
+              ),
+              const SizedBox(width: 4),
+              Icon(Icons.open_in_new_rounded, size: 12, color: d.ongoing),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final d = _Ds(widget.light);
@@ -464,6 +615,7 @@ class _AgentToolRowState extends State<AgentToolRow> with SingleTickerProviderSt
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           _rowShell(child: header, running: widget.running, ctrl: _c, d: d),
+          if (_toolPath() != null) _buildSourceLink(d),
           if (_open && _expandable)
             Container(
               margin: const EdgeInsets.only(left: 22, top: 4, bottom: 4),
@@ -484,6 +636,184 @@ class _AgentToolRowState extends State<AgentToolRow> with SingleTickerProviderSt
         ],
       ),
     );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 子 Agent 派发卡片（仿 dsh ui-subagent：StateDot 状态 + 任务头 + 事件流）
+// ---------------------------------------------------------------------------
+
+/// spawn_subagent 的专属卡片：头部（类型徽章 + 任务摘要 + 状态点），
+/// 展开后是子 Agent 的工具调用事件流与最终报告。
+class AgentSubagentCard extends StatefulWidget {
+  final String type; // general / research / coder
+  final String task;
+  final String label; // 进度摘要（"子 Agent 执行中 · 第 N 步" / 完成文案）
+  final bool running;
+  final bool done;
+  final bool failed;
+  final List<Map<String, dynamic>> events;
+  final String? output; // OUT 卡片内容（最终报告等）
+  final bool light;
+  const AgentSubagentCard({
+    super.key,
+    required this.type,
+    required this.task,
+    required this.label,
+    required this.running,
+    required this.done,
+    required this.failed,
+    required this.events,
+    this.output,
+    required this.light,
+  });
+  @override
+  State<AgentSubagentCard> createState() => _AgentSubagentCardState();
+}
+
+class _AgentSubagentCardState extends State<AgentSubagentCard> with SingleTickerProviderStateMixin {
+  bool _open = true;
+  late final AnimationController _c;
+  static const _maxVisibleEvents = 8;
+
+  @override
+  void initState() {
+    super.initState();
+    _c = AnimationController(vsync: this, duration: const Duration(milliseconds: 2600));
+    _sync();
+  }
+
+  @override
+  void didUpdateWidget(covariant AgentSubagentCard old) {
+    super.didUpdateWidget(old);
+    _sync();
+  }
+
+  void _sync() {
+    if (widget.running) {
+      if (!_c.isAnimating) _c.repeat();
+    } else {
+      _c.stop();
+      _c.value = 1.0;
+    }
+  }
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  String get _typeLabel => switch (widget.type) {
+        'research' => '研究',
+        'coder' => '编码',
+        _ => '通用',
+      };
+
+  IconData get _typeIcon => switch (widget.type) {
+        'research' => Icons.travel_explore_rounded,
+        'coder' => Icons.code_rounded,
+        _ => Icons.smart_toy_outlined,
+      };
+
+  @override
+  Widget build(BuildContext context) {
+    final d = _Ds(widget.light);
+    final toolEvents = widget.events.where((e) => e['type'] == 'tool').toList();
+    final visible = toolEvents.length > _maxVisibleEvents ? toolEvents.sublist(toolEvents.length - _maxVisibleEvents) : toolEvents;
+    final taskBrief = widget.task.length > 60 ? '${widget.task.substring(0, 60)}…' : widget.task;
+
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      // 头部行：图标 + 类型徽章 + 任务摘要 + 状态
+      _rowShell(
+        ctrl: _c,
+        d: d,
+        running: widget.running,
+        child: Row(children: [
+          SizedBox(
+            width: 16,
+            height: 16,
+            child: widget.failed
+                ? Center(child: AgentStateDot(state: 'error', light: widget.light))
+                : widget.done
+                    ? Center(child: AgentStateDot(state: 'done', light: widget.light))
+                    : Icon(_typeIcon, size: 14, color: d.ongoing),
+          ),
+          const SizedBox(width: 6),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+            decoration: BoxDecoration(
+              color: widget.failed ? d.error.withValues(alpha: 0.08) : d.ongoing.withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(5),
+            ),
+            child: Text('子 Agent · $_typeLabel', style: TextStyle(fontSize: 10.5, height: 1.4, fontWeight: FontWeight.w600, color: widget.failed ? d.error : d.ongoing)),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              widget.running ? (widget.label.isEmpty ? '执行中…' : widget.label) : widget.label,
+              style: TextStyle(fontSize: 13, height: 24 / 13, color: widget.failed ? d.error : d.secondary),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          const SizedBox(width: 4),
+          _chevron(_open, d),
+        ]),
+      ),
+      // 任务描述 + 事件流卡片
+      if (_open)
+        Container(
+          margin: const EdgeInsets.only(left: 22, top: 4, bottom: 4),
+          decoration: BoxDecoration(
+            color: d.codeBlock,
+            border: Border.all(color: d.border),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          clipBehavior: Clip.antiAlias,
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            // 任务
+            if (taskBrief.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+                child: Text(taskBrief, style: TextStyle(fontSize: 12, height: 1.6, color: d.tertiary)),
+              ),
+            // 事件流：最近 N 条工具调用（运行中的带追逐点）
+            if (visible.isNotEmpty) ...[
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+                child: Text('执行轨迹${toolEvents.length > _maxVisibleEvents ? '（最近 $_maxVisibleEvents / 共 ${toolEvents.length} 步）' : '（${toolEvents.length} 步）'}', style: TextStyle(fontSize: 11, height: 1.5, color: d.caption)),
+              ),
+              for (var i = 0; i < visible.length; i++)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 6, 16, 0),
+                  child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Padding(
+                      padding: const EdgeInsets.only(top: 6),
+                      child: AgentStateDot(
+                        state: visible[i]['status'] == 'running' ? 'ongoing' : (visible[i]['status'] == 'fail' ? 'error' : 'done'),
+                        light: widget.light,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        '${visible[i]['name']} · ${visible[i]['label'] ?? ''}',
+                        style: TextStyle(fontSize: 12, height: 1.6, color: visible[i]['status'] == 'fail' ? d.error : d.secondary),
+                      ),
+                    ),
+                  ]),
+                ),
+              const SizedBox(height: 10),
+            ],
+            // 最终报告
+            if ((widget.output ?? '').trim().isNotEmpty) ...[
+              Divider(height: 1, thickness: 1, color: d.borderL2),
+              _ioSection('报告', widget.output!, widget.failed ? d.error : d.secondary, d),
+            ],
+          ]),
+        ),
+    ]);
   }
 }
 

@@ -20,6 +20,7 @@ dependencies:
   audioplayers: ^6.8.1
   flutter_inappwebview: ^6.1.5
   ffi: ^2.1.0
+  highlight: ^0.7.0
 
 dev_dependencies:
   flutter_test:
@@ -35,3 +36,5 @@ flutter:
     - assets/grammar_course.json
     - assets/ai-icons/
     - assets/icons/model_settings.png
+    - assets/sources/
+    - assets/skills/

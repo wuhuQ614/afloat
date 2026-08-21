@@ -596,14 +596,16 @@ class AgentService {
           'function': {
             'name': 'skill',
             'description':
-                '从可用技能目录加载某个技能的完整指令。在做任何明显匹配该技能的工作前调用它，使用准确的技能名（来自技能面板的可选技能）。'
+                '从可用技能目录加载某个技能的完整指令（渐进式披露：系统提示词只含技能名称与触发描述，正文需通过本工具加载）。'
+                '当用户任务命中系统提示词「可用技能目录」中任一技能的触发场景时，在做任何匹配该技能的工作前先调用它。'
+                '使用准确的技能名或 id（如 skill-creator、frontend-design、native_analyze_words）。'
                 '返回的是该技能在工作流中应使用的完整系统级指令。',
             'parameters': {
               'type': 'object',
               'properties': {
                 'name': {
                   'type': 'string',
-                  'description': '可用技能列表中的准确名称（中文 / 英文 / id 均可）。',
+                  'description': '技能列表中的准确名称（中文 / 英文 / id 均可）。',
                 },
               },
               'required': ['name'],
@@ -673,15 +675,18 @@ class AgentService {
           'function': {
             'name': 'spawn_subagent',
             'description':
-                '派生一个隔离的子 Agent 处理子任务。子 Agent 拥有自己的对话历史和上下文，能调用工具（取决于当前权限）。'
-                'type=general 用于自由问答；type=research 用于联网检索并汇总；type=coder 用于写/改代码。'
-                '结果作为 JSON 字符串返回：{"reply": "...", "actions": [...]}。',
+                '派生一个隔离的子 Agent 处理子任务（办公、写文档、数据分析、写/改代码等重活优先派发）。'
+                '子 Agent 拥有自己的对话历史和上下文，能多轮自主调用工具'
+                '（read_file / write_file / edit_file / list_dir / bash / str_replace_editor / web_fetch / search_web / todo），'
+                '直到完成子任务后返回最终报告。子 Agent 的中间过程不会污染主对话上下文。'
+                'type=general 用于通用任务与办公；type=research 用于联网检索并汇总；type=coder 用于写/改代码。'
+                '结果作为 JSON 字符串返回：{"reply": "...", "steps": [...]}。',
             'parameters': {
               'type': 'object',
               'properties': {
                 'task': {
                   'type': 'string',
-                  'description': '子任务的清晰描述，包括目标、输入、期望输出格式。',
+                  'description': '子任务的清晰描述，包括目标、输入、期望输出格式。写得越具体，子 Agent 完成得越好。',
                 },
                 'type': {
                   'type': 'string',
@@ -919,8 +924,10 @@ class AgentService {
       ];
 
   /// Agent 系统 prompt（动态生成，注入当前题目上下文，避免 AI 凭空猜测）
-  static String buildSystemPrompt() {
-    return '''你是 AFloat，一个英语学习 Agent 助手。你能通过工具调用直接帮用户执行操作，也能回答英语问题。
+  /// [skillCatalog]：技能商店目录（每行「- 名称（id: xxx）：描述」），仅元数据不注入正文，
+  /// 正文由 AI 调用 skill 工具按需加载（渐进式披露，节省上下文）。
+  static String buildSystemPrompt({String? skillCatalog}) {
+    final base = '''你是 AFloat，一个英语学习 Agent 助手。你能通过工具调用直接帮用户执行操作，也能回答英语问题。
 
 ## 工具使用决策（关键）
 判断用户意图后，**果断调用工具**，不要只给文字建议：
@@ -952,9 +959,11 @@ class AgentService {
 | "一次性连续执行多个工具（多步文件操作合并）" | run_code（Code Mode：`await tools.<工具名>({...})`） |
 | "下一步拆解多步任务" | todo（按 dsh-tool-todo 规则：单 in_progress，每次提交完整列表） |
 | "按某技能的具体指令工作" | skill（先用 list_mcp_tools 看可选技能名，或者直接传中文名） |
+| "OCR/表格/手写/公式识别、文生图、股票分析、简历筛选、PDF转PPT/网页、GitHub操作等专项任务" | skill（按下方「可用技能目录」匹配技能名，加载完整指令后按其工作流执行） |
 | "抓取网页内容（已去除脚本样式）" | web_fetch |
 | "查找之前对话、列出会话清单" | session_query |
 | "派生子 Agent 处理子任务（research/coder/general）" | spawn_subagent |
+| "办公、写文档、做数据分析、写/改代码等重活、多步骤独立任务" | spawn_subagent（优先派发子 Agent 隔离执行，避免污染主对话上下文；子 Agent 可自主调用文件/命令/搜索工具多轮完成） |
 | "调用任意 MCP server 提供的工具（需先 list_mcp_tools）" | list_mcp_tools / call_mcp_tool |
 | "需要用户做选择/确认/补全信息" | ask_user_question（先列 2-4 个选项，推荐项加 (Recommended)） |
 | "对话太长，token 接近上限（>80%）" | compact_conversation（保留最近 N 条，旧的总结成摘要） |
@@ -1005,7 +1014,15 @@ class AgentService {
 - 中文提问用中文回复，英文提问用英文回复
 - 工具调用后用简洁友好的语言总结结果，不要重复原始 JSON
 - 不要编造工具没有的能力
+
+## 可用技能目录（渐进式披露）
+以下是当前启用的技能列表（仅名称与触发描述，完整指令未注入）。
+当用户任务命中某技能的触发场景时，**先调用 skill 工具加载该技能的完整指令**，再严格按指令工作流执行。
+技能正文只在需要时加载一次，不要为不相关的任务加载技能。
 ''';
+    final catalog = (skillCatalog ?? '').trim();
+    if (catalog.isEmpty) return base;
+    return '$base\n$catalog';
   }
 
   /// 判断模型是否可能支持 function calling
