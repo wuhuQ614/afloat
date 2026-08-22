@@ -859,6 +859,9 @@ class _AgentAskUserPanelState extends State<AgentAskUserPanel> {
       final sel = widget.answers[q.id] ?? const <String>[];
       summary.add('${q.id}: ${sel.isEmpty ? "(未选)" : sel.join(", ")}');
     }
+    // 回传 AppState：唤醒挂起的 ask_user_question 工具调用，
+    // 让模型下一轮真正拿到用户选择（此前只弹 SnackBar，答案无回传路径）
+    AppScope.of(context).completeAskAnswers(Map<String, List<String>>.from(widget.answers));
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: Text('已选择：${summary.join(" | ")}', style: const TextStyle(fontSize: 12)),
       duration: const Duration(seconds: 2),

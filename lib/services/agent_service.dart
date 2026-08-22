@@ -37,7 +37,7 @@ class AgentService {
           'type': 'function',
           'function': {
             'name': 'generate_questions',
-            'description': '为用户生成英语练习题并放入答题区。当用户要求出题、练习、做题时调用。',
+            'description': '为用户生成英语练习题并放入答题区。当用户要求出题、练习、做题、生成综合模拟全卷时调用。',
             'parameters': {
               'type': 'object',
               'properties': {
@@ -53,26 +53,47 @@ class AgentService {
                     'dialogue',
                     'bankedCloze',
                     'en2zh5',
+                    'mixed',
                   ],
-                  'description': '题型：translation=翻译题, choice=选择题, reading=阅读理解, grammar=语法填空, writing=写作题, cloze=完形填空, dialogue=补全对话, bankedCloze=选词填空, en2zh5=英译汉',
+                  'description': '题型：translation=翻译题, choice=选择题, reading=阅读理解, grammar=语法填空, writing=写作题, cloze=完形填空, dialogue=补全对话, bankedCloze=选词填空, en2zh5=英译汉, mixed=综合模拟全卷（76题/7题型/120分钟/150分）',
                 },
                 'level': {
                   'type': 'string',
-                  'enum': ['easy', 'medium', 'hard', 'cet4', 'zsb'],
-                  'description': '难度：easy=简单, medium=中等, hard=困难, cet4=四级, zsb=专升本。未指定时默认 zsb',
+                  'enum': ['easy', 'medium', 'hard', 'cet4', 'zsb', 'maimemo'],
+                  'description': '难度：easy=简单, medium=中等, hard=困难, cet4=四级, zsb=专升本, maimemo=墨墨词库（从墨墨今日已学习单词中抽取）。未指定时默认 zsb',
                 },
                 'count': {
                   'type': 'integer',
-                  'description': '题目数量（1-10），默认 1',
+                  'description': '题目数量（1-50；mixed 全卷固定76题忽略此参数），默认 1',
                   'minimum': 1,
-                  'maximum': 10,
+                  'maximum': 50,
+                },
+                'wordCount': {
+                  'type': 'integer',
+                  'description': '每题目标词数（30-300，主要影响翻译题长度），默认 80',
+                  'minimum': 30,
+                  'maximum': 300,
                 },
                 'useBank': {
                   'type': 'boolean',
                   'description': '是否使用题库（true=从题库抽取，false=用AI全新生成）。用户明确说"不要题库"/"AI出题"/"新题"时设为false，否则默认true',
                 },
+                'direction': {
+                  'type': 'string',
+                  'enum': ['zh2en', 'en2zh'],
+                  'description': '翻译方向（仅 type=translation/en2zh5 有效）：zh2en=中译英（看中文写英文），en2zh=英译中（看英文写中文）。默认 zh2en',
+                },
+                'mode': {
+                  'type': 'string',
+                  'enum': ['fast', 'normal', 'deep'],
+                  'description': '词汇剖析模式：fast=快速（纯词典）, normal=正常（词典+AI）, deep=深度（AI语境分析+词组识别）。默认 normal',
+                },
+                'customReq': {
+                  'type': 'string',
+                  'description': '用户的自定义要求（如话题、字数、文体等），会作为出题附加提示词',
+                },
               },
-              'required': ['type', 'count'],
+              'required': ['type'],
             },
           },
         },
@@ -99,13 +120,19 @@ class AgentService {
                     'dialogue',
                     'bankedCloze',
                     'en2zh5',
+                    'mixed',
                   ],
-                  'description': '题型（缺省为每道题目自身的 type 字段）。translation=翻译题, choice=选择题, reading=阅读理解, grammar=语法填空, writing=写作题, cloze=完形填空, dialogue=补全对话, bankedCloze=选词填空, en2zh5=英译汉',
+                  'description': '题型（缺省为每道题目自身的 type 字段）。translation=翻译题, choice=选择题, reading=阅读理解, grammar=语法填空, writing=写作题, cloze=完形填空, dialogue=补全对话, bankedCloze=选词填空, en2zh5=英译汉, mixed=综合模拟全卷',
                 },
                 'level': {
                   'type': 'string',
-                  'enum': ['easy', 'medium', 'hard', 'cet4', 'zsb'],
-                  'description': '难度：easy=简单, medium=中等, hard=困难, cet4=四级, zsb=专升本。默认 zsb',
+                  'enum': ['easy', 'medium', 'hard', 'cet4', 'zsb', 'maimemo'],
+                  'description': '难度：easy=简单, medium=中等, hard=困难, cet4=四级, zsb=专升本, maimemo=墨墨词库。默认 zsb',
+                },
+                'direction': {
+                  'type': 'string',
+                  'enum': ['zh2en', 'en2zh'],
+                  'description': '翻译方向（仅 type=translation/en2zh5 有效）。默认 zh2en',
                 },
                 'questions': {
                   'type': 'array',
@@ -958,11 +985,16 @@ class AgentService {
 | "查看带行号的代码、创建文件、精确替换/插入（coding 场景优先）" | str_replace_editor（view/create/str_replace/insert） |
 | "一次性连续执行多个工具（多步文件操作合并）" | run_code（Code Mode：`await tools.<工具名>({...})`） |
 | "下一步拆解多步任务" | todo（按 dsh-tool-todo 规则：单 in_progress，每次提交完整列表） |
-| "按某技能的具体指令工作" | skill（先用 list_mcp_tools 看可选技能名，或者直接传中文名） |
+| "按某技能的具体指令工作" | skill（按下方「可用技能目录」匹配技能名，或直接传中文名；不要用 list_mcp_tools——那是 MCP 工具清单，不是技能目录） |
 | "OCR/表格/手写/公式识别、文生图、股票分析、简历筛选、PDF转PPT/网页、GitHub操作等专项任务" | skill（按下方「可用技能目录」匹配技能名，加载完整指令后按其工作流执行） |
 | "抓取网页内容（已去除脚本样式）" | web_fetch |
 | "查找之前对话、列出会话清单" | session_query |
 | "派生子 Agent 处理子任务（research/coder/general）" | spawn_subagent |
+| "写周报/日报/会议纪要/邮件草稿/求职简历文案" | skill（「办公效率」类技能，如 work-weekly-report / work-meeting-notes / work-email-draft），产出必须写成文件交付 |
+| "做 Word 文档/PPT/Excel 表格/PDF" | skill（work-office-docs）：Windows 下用 bash 跑 PowerShell 脚本生成真正的 Office 文件 |
+| "分析这份数据/CSV/Excel/日志/给出结论" | skill（work-data-analysis）：read_file/list_dir 看数据 → bash(PowerShell) 统计 → 报告落盘 |
+| "帮我调研 X/查资料汇总成报告" | skill（work-research-brief）：search_web/web_fetch 多源交叉核实 → 报告落盘；量大派 spawn_subagent(type=research) |
+| "把这份材料翻译成中/英文（合同/论文/简历级）" | skill（work-pro-translation）：术语表 → 初译 → 润色 → 校对，双语对照落盘 |
 | "办公、写文档、做数据分析、写/改代码等重活、多步骤独立任务" | spawn_subagent（优先派发子 Agent 隔离执行，避免污染主对话上下文；子 Agent 可自主调用文件/命令/搜索工具多轮完成） |
 | "调用任意 MCP server 提供的工具（需先 list_mcp_tools）" | list_mcp_tools / call_mcp_tool |
 | "需要用户做选择/确认/补全信息" | ask_user_question（先列 2-4 个选项，推荐项加 (Recommended)） |
@@ -1007,6 +1039,15 @@ class AgentService {
 - **辅助类工具（load_skill / list_user_skills / session_query / compact_conversation / check_repeat）不等于任务完成**。这些只是查询/加载动作，必须根据加载结果继续调用核心工具（如 get_current_question / read_file / 答题/出题工具），再基于真实数据作答。**绝对禁止**只调完辅助工具就输出"已完成：…"作为最终回复。
 - 把"已完成：xxx"这种总结性文字作为最终回复前，**自检一遍**：用户提出的核心问题得到了实际执行工具的回答吗？纯粹"加载技能"不算已回答。
 
+## 真实工作任务守则（办公/工作场景）
+- **先锁定交付物再动手**：格式（docx/xlsx/pptx/md/csv/pdf）、保存位置、篇幅、受众、截止时间。信息不足时用 ask_user_question 一次性问清关键项（2-4 问），不要连环追问也不要擅自假设关键约束。
+- **交付必须落盘**：文档/表格/报告/代码一律写成文件（write_file 或脚本生成），最终回复给出完整路径；桌面端再用 operate_computer(open_file) 帮用户直接打开。只把全文贴在聊天里不算交付。
+- **PowerShell 脚本模式**：bash 是 cmd.exe（每轮全新 shell、默认 30 秒超时）。超过一行的系统操作先 write_file 写 .ps1 脚本，再执行 `powershell -NoProfile -ExecutionPolicy Bypass -File <脚本>.ps1`——避免 cmd 引号地狱与超长单命令。
+- **中文编码陷阱**：PowerShell 5.1 把无 BOM 的 .ps1 按 ANSI 解析，脚本里的中文会乱码。做法：中文内容放独立 UTF-8 文本文件（write_file 写入），.ps1 内用 `Get-Content -Encoding UTF8` 读取；.ps1 本身只含 ASCII 字符。
+- **生成真正的 Office 文件**：机器装了 Office 时优先 COM 自动化（`New-Object -ComObject Word.Application / Excel.Application / PowerPoint.Application`）；未装 Office 时降级 Markdown/CSV/HTML 并向用户说明原因。
+- **多步任务先规划**：≥3 步的任务先 todo 列清单逐步推进；耗时的独立子任务派 spawn_subagent 隔离执行；方案需要用户拍板时先 submit_plan。
+- **完成前自检**：文件写完后 read_file 读回抽查关键段落，或用脚本验证文件存在且非空；失败就修复重试，不要把半成品交给用户。
+
 ## 回复风格
 你的工具使用习惯：
 - 写文件首选 read_file → edit_file（精确替换），其次 write_file（整段覆盖）
@@ -1025,11 +1066,22 @@ class AgentService {
     return '$base\n$catalog';
   }
 
-  /// 判断模型是否可能支持 function calling
-  /// （粗略判断：主流商用模型基本都支持，本地/小模型可能不支持）
+  /// 判断模型是否支持 function calling。
+  /// 默认放行（主流 OpenAI 兼容模型均支持）；仅对已知不支持工具调用的
+  /// 模型族返回 false——此时 Agent 循环自动降级为普通对话，
+  /// 避免向模型发送 tools 触发 400 报错。
   static bool modelSupportsTools(String modelName) {
-    // DeepSeek 为 OpenAI 兼容接口，支持 function calling；默认均支持工具。
-    // 若将来确有模型不支持 tools，再在此按需补充排除项。
+    final m = modelName.toLowerCase();
+    // DeepSeek R1/reasoner：推理模型不支持 function calling
+    if (m.contains('deepseek-reasoner') || m.contains('deepseek-r1')) return false;
+    // 非对话类模型（嵌入/重排/语音/图像生成）
+    const nonChat = [
+      'embedding', 'embed', 'rerank', 'whisper', 'tts',
+      'dall-e', 'stable-diffusion', 'sora',
+    ];
+    for (final k in nonChat) {
+      if (m.contains(k)) return false;
+    }
     return true;
   }
 

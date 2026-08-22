@@ -54,27 +54,38 @@ class _MaimemoWordbookPageState extends State<MaimemoWordbookPage> {
     }
   }
 
-  /// 按 搜索关键词 + 词性筛选 + 排序 得出可见列表
-  List<WordBookItem> _visibleWords() {
+  /// 按 搜索关键词 + 词性筛选 + 排序 得出可见条目。
+  /// 返回 (源列表真实下标, 单词) 对——编辑/删除必须作用于源下标，
+  /// 不用 list.indexOf(w) 反查（重复单词或列表被同步重建时会错位/返回 -1）。
+  List<MapEntry<int, WordBookItem>> _visibleWords() {
     final s = AppScope.of(context);
     final kw = _searchCtrl.text.trim().toLowerCase();
-    final list = s.maimemoWordbook.where((w) {
+    final entries = <MapEntry<int, WordBookItem>>[];
+    for (final e in s.maimemoWordbook.asMap().entries) {
+      final w = e.value;
       if (_typeFilter != 'all') {
         final pt = DictService.lookup(w.word)?.pos ?? '';
-        if (_posType(pt) != _typeFilter) return false;
+        if (_posType(pt) != _typeFilter) continue;
       }
-      if (kw.isEmpty) return true;
-      final ph = DictService.lookup(w.word)?.phonetic ?? '';
-      return w.word.toLowerCase().contains(kw) ||
-          w.translation.toLowerCase().contains(kw) ||
-          ph.toLowerCase().contains(kw);
-    }).toList();
-    if (_sort == 'az') {
-      list.sort((a, b) => a.word.toLowerCase().compareTo(b.word.toLowerCase()));
-    } else if (_sort == 'za') {
-      list.sort((a, b) => b.word.toLowerCase().compareTo(a.word.toLowerCase()));
+      if (kw.isNotEmpty) {
+        final ph = DictService.lookup(w.word)?.phonetic ?? '';
+        final hit = w.word.toLowerCase().contains(kw) ||
+            w.translation.toLowerCase().contains(kw) ||
+            ph.toLowerCase().contains(kw);
+        if (!hit) continue;
+      }
+      entries.add(e);
     }
-    return list;
+    int cmpWord(MapEntry<int, WordBookItem> a, MapEntry<int, WordBookItem> b, bool asc) {
+      final c = a.value.word.toLowerCase().compareTo(b.value.word.toLowerCase());
+      return asc ? c : -c;
+    }
+    if (_sort == 'az') {
+      entries.sort((a, b) => cmpWord(a, b, true));
+    } else if (_sort == 'za') {
+      entries.sort((a, b) => cmpWord(a, b, false));
+    }
+    return entries;
   }
 
   /// 今日新增数
@@ -206,7 +217,11 @@ class _MaimemoWordbookPageState extends State<MaimemoWordbookPage> {
           ),
         ],
       ),
-    );
+    ).whenComplete(() {
+      // 弹窗关闭后释放临时控制器（保存路径在 pop 前已取完值）
+      wordCtrl.dispose();
+      transCtrl.dispose();
+    });
   }
 
   @override
@@ -451,15 +466,15 @@ class _MaimemoWordbookPageState extends State<MaimemoWordbookPage> {
     );
   }
 
-  Widget _buildList(AppColors c, List<WordBookItem> list, List<WordBookItem> visible) {
+  Widget _buildList(AppColors c, List<WordBookItem> list, List<MapEntry<int, WordBookItem>> visible) {
     final s = AppScope.of(context);
     return ListView.separated(
       padding: const EdgeInsets.only(bottom: 20),
       itemCount: visible.length,
       separatorBuilder: (_, __) => Divider(height: 1, thickness: 1, color: c.divider, indent: 20, endIndent: 20),
       itemBuilder: (ctx, i) {
-        final w = visible[i];
-        final origIndex = list.indexOf(w);
+        final w = visible[i].value;
+        final origIndex = visible[i].key; // 源列表真实下标（随筛选结果携带，非反查）
         final entry = DictService.lookup(w.word);
         final ph = entry?.phonetic ?? '';
         final pos = entry?.pos ?? '';

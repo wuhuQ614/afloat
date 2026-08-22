@@ -5,6 +5,7 @@ library;
 import 'package:flutter/material.dart';
 import '../models.dart';
 import '../state.dart';
+import 'particle_backdrop.dart';
 
 // ===== 中性色板常量（不带主题色调） =====
 const Color _kBgDark = Color(0xFF121316);
@@ -58,6 +59,10 @@ class _OnboardingPageState extends State<OnboardingPage> {
   late final TextEditingController _keyCtrl;
   late final TextEditingController _modelCtrl;
 
+  /// 全屏鼠标坐标（引导页顶层 MouseRegion 驱动），喂给第一页粒子背景；
+  /// 放顶层是为了让粒子在卡片遮挡区也能收到 hover（底层 MouseRegion 会被不透明卡片挡住）
+  final ValueNotifier<Offset?> _mouse = ValueNotifier<Offset?>(null);
+
   AppState get s => widget.state;
 
   @override
@@ -97,6 +102,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
     _urlCtrl.dispose();
     _keyCtrl.dispose();
     _modelCtrl.dispose();
+    _mouse.dispose();
     super.dispose();
   }
 
@@ -156,14 +162,34 @@ class _OnboardingPageState extends State<OnboardingPage> {
     final pal = _Pal(s.darkMode); // 深空黑 → 深色向导；其余五套 → 浅色向导
     return Scaffold(
       backgroundColor: pal.bg,
-      body: SafeArea(
-        child: Column(children: [
-          _buildProgress(pal),
-          _buildTopBar(pal),
-          Expanded(child: _buildPages(pal)),
-          _buildBottomBar(pal),
-        ]),
-      ),
+      body: Stack(children: [
+        // 引导页粒子动效背景：仅桌面端生效（内部非桌面直接返回空）。
+        // 作为整页背景，全程常驻显示并驱动动画；鼠标坐标由下方"顶层全屏 Listener"提供
+        Positioned.fill(
+          child: ParticleBackdrop(
+            dark: s.darkMode,
+            active: true,
+            mouseInput: _mouse,
+          ),
+        ),
+        SafeArea(
+          child: Column(children: [
+            _buildProgress(pal),
+            _buildTopBar(pal),
+            Expanded(child: _buildPages(pal)),
+            _buildBottomBar(pal),
+          ]),
+        ),
+        // 顶层全屏鼠标捕获：任意位置（含卡片上方）hovers 都记录坐标 -> 驱动粒子。
+        // Listener + HitTestBehavior.translucent：全屏收 onPointerHover，同时不拦截下层按钮点击
+        Positioned.fill(
+          child: Listener(
+            behavior: HitTestBehavior.translucent,
+            onPointerHover: (e) => _mouse.value = e.localPosition,
+            child: const SizedBox.expand(),
+          ),
+        ),
+      ]),
     );
   }
 

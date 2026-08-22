@@ -249,6 +249,8 @@ class _SnakeGamePageState extends State<SnakeGamePage>
     if (_auto) {
       if (_over) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
+          // 结束帧与下一帧之间页面可能已销毁：拦截，避免访问已释放的 _logic/_ticker
+          if (!mounted) return;
           if (_auto && _over) _start();
         });
       } else if (_playing && !_paused) {
@@ -413,6 +415,8 @@ class _SnakeGamePageState extends State<SnakeGamePage>
   }
 
   /// 兜底：挑一个“连得到尾巴 + 尽量贴近食物”的安全方向，绕圈保命等待机会。
+  /// 空间不足、无法追尾（长蛇）时，退化到“不反向、不撞墙、不撞身、下一步空邻最多”
+  /// 的方向，尽量多活几格而不是原地直撞死。
   (int, int)? _tailChase(int hx, int hy, int fx, int fy) {
     (int, int)? best;
     var bestDist = 1 << 30;
@@ -425,7 +429,51 @@ class _SnakeGamePageState extends State<SnakeGamePage>
         best = (dx, dy);
       }
     }
-    return best;
+    if (best != null) return best;
+
+    // —— 长蛇兜底：所有方向都无法追尾。挑一个仍合法的方向，最大化下一步呼吸空间 ——
+    // 真实行进方向 = 头 - 颈（快照），用于排除自撞反项。
+    int revX = 0, revY = 0;
+    if (_snakeLen > 1) {
+      revX = _curX[0] - _curX[1];
+      revY = _curY[0] - _curY[1];
+    }
+    (int, int)? fallback;
+    var bestAir = -1;
+    for (final (dx, dy) in _autoDirs) {
+      if (revX != 0 || revY != 0) {
+        if (dx == -revX && dy == -revY) continue; // 不反向
+      }
+      final nx = hx + dx, ny = hy + dy;
+      if (nx < 0 || nx >= _cols || ny < 0 || ny >= _rows) continue;
+      var hit = false;
+      for (var i = 0; i < _snakeLen - 1; i++) {
+        if (_curX[i] == nx && _curY[i] == ny) {
+          hit = true;
+          break;
+        }
+      }
+      if (hit) continue;
+      // 统计该格下一步的空邻数，取最大自由空间方向
+      var air = 0;
+      for (final (mx, my) in _autoDirs) {
+        final ax = nx + mx, ay = ny + my;
+        if (ax < 0 || ax >= _cols || ay < 0 || ay >= _rows) continue;
+        var occ = false;
+        for (var i = 0; i < _snakeLen; i++) {
+          if (_curX[i] == ax && _curY[i] == ay) {
+            occ = true;
+            break;
+          }
+        }
+        if (!occ) air++;
+      }
+      if (air > bestAir) {
+        bestAir = air;
+        fallback = (dx, dy);
+      }
+    }
+    return fallback;
   }
 
   /// 判断指定蛇身里，蛇头能否沿空位追到蛇尾（障碍=身段中间部分，尾格可通行）。

@@ -9,7 +9,7 @@ This skill helps turn a broad "find things to simplify" request into evidence-ba
 
 ## Start With Repo Context
 
-- Read `AGENTS.md`, especially the conventions and the "tests are not golden truth" doctrine, plus `docs/defensive-patterns.md` and `docs/architecture.md` when present.
+- Read `AGENTS.md`, especially the Conventions section ("显式 > 隐式", "变更须有证据", "不推倒重做").
 - Skim the architecture before judging anything under `lib/`; simplifications that fight the service map or state model need extra evidence.
 - Treat intentionally duplicated native/FFI bindings and platform branches as intentional by default. Do not propose deleting either side as "low effort" unless the user explicitly overrides that constraint.
 
@@ -70,7 +70,7 @@ Reject or downgrade a candidate when:
 - A production caller exists and the simplification would be a feature decision rather than a cleanup.
 - The API is explicitly justified by an implemented Agent Note or a hard-won defensive pattern, and the new evidence does not beat that reason.
 - The removal would force unrelated churn without actually reducing the public API or required behavior.
-- The idea is correct but tiny. Add a targeted TODO/FIXME/XXX instead, using the urgency semantics in `AGENTS.md`.
+- The idea is correct but tiny. Add a targeted TODO/FIXME/XXX instead.
 
 ## Write The Proposal
 

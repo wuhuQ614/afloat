@@ -26,7 +26,7 @@ Never guess the base. Supply the ref verified from current remote or stack state
 
 ## Select relevant evidence
 
-There is no universal local baseline beyond the hooks. Every behavior change needs the narrowest available test or purpose-built check that would fail for its regression; add broader checks only for surfaces the diff actually reaches.
+There is no universal local baseline, and this repo installs no git hooks, so locally selected checks are the only gate before push. Every behavior change needs the narrowest available test or purpose-built check that would fail for its regression; add broader checks only for surfaces the diff actually reaches.
 
 - **Dart/Flutter behavior:** run the owning `flutter test` file or focused test name. Leave repository-wide coverage to CI unless the change is genuinely cross-cutting or the user requests it.
 - **Documentation, Agent Notes, or doc-linked comments:** validate the affected docs; run lint when the doc workflow requires it.
@@ -34,7 +34,7 @@ There is no universal local baseline beyond the hooks. Every behavior change nee
 - **Native (C/C++) changes under `native/`:** rebuild the affected library and run its consumer; verify the FFI binding struct has not changed field layout when the Dart side relies on it.
 - **Package manifests, public exports, build configuration, or binary entries:** run `flutter analyze` and the relevant build (`flutter build windows` / `flutter build apk`).
 
-Do not manually repeat a passing check merely because commit or push follows. In particular, do not run `flutter analyze` immediately before pushing solely to duplicate the pre-push hook.
+Do not manually repeat a passing check merely because commit or push follows.
 
 ### Focus coverage on the affected source
 
@@ -66,7 +66,7 @@ If a failure looks environment-specific, prove it:
 For ordinary and standalone rebase pushes:
 
 1. Run the selected relevant checks once.
-2. Commit normally and inspect any files changed by the pre-commit fixer before continuing.
+2. Commit normally and inspect any files changed by formatting or fixers before continuing.
 3. Push normally, or use the exact lease for an authorized rewritten branch.
 4. Verify the remote ref matches local `HEAD`.
 

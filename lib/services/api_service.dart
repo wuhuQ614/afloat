@@ -121,9 +121,13 @@ class ApiService {
     ];
   }
 
-  /// 返回当前请求应使用的 http.Client（默认直连客户端）。
+  /// 进程级共享 HTTP 客户端（内部连接池复用；避免每次请求新建 Client
+  /// 造成连接池/定时器泄漏，随进程退出统一释放）。
+  static final http.Client _sharedClient = http.Client();
+
+  /// 返回当前请求应使用的 http.Client（共享实例）。
   static http.Client _requestClient() {
-    return http.Client();
+    return _sharedClient;
   }
 
   /// 非流式调用，返回完整内容文本；失败返回 null
@@ -291,7 +295,14 @@ class ApiService {
       } else {
         _logNonStream(cfg, systemPrompt, messages, content, reasoning);
       }
-      return AIResponse(content: content, toolCalls: toolCalls, reasoning: reasoning);
+      // 捕获 finish_reason（如 'length' 截断），供调用方感知
+      final fr = choice['finish_reason']?.toString();
+      return AIResponse(
+        content: content,
+        toolCalls: toolCalls,
+        reasoning: reasoning,
+        finishReason: (fr == null || fr.isEmpty) ? null : fr,
+      );
     } on TimeoutException catch (_) {
       lastError = '请求超时（120 秒）';
       devLog('✗ 请求失败: $lastError');
@@ -329,15 +340,25 @@ class ApiService {
     List<Map<String, dynamic>>? tools,
     Map<String, dynamic>? extraParams,
     int maxTokens = 16384,
+    /// 用户中止探测：SSE 每行检查一次，命中即断开连接并返回已累积内容
+    /// （lastError 置 'aborted_by_user'）。让"暂停"在流式期间毫秒级生效，
+    /// 而不是等整条流读完才被外层循环发现。
+    bool Function()? isAborted,
   }) async {
     final cfg = config;
-    if (cfg == null || !cfg.ready) return const AIResponse(content: null, toolCalls: []);
+    if (cfg == null || !cfg.ready) {
+      lastError = '未配置 API 地址或密钥';
+      return const AIResponse(content: null, toolCalls: []);
+    }
     final contentBuf = StringBuffer();
     final reasoningBuf = StringBuffer();
     // 按 index 增量累积 tool_calls
     final tcId = <int, String>{};
     final tcName = <int, String>{};
     final tcArgs = <int, StringBuffer>{};
+    // 兼容不回传 index 字段的网关：带 id/name 的分片视为新调用开新桶，
+    // 纯 arguments 分片续写最近一个桶，避免多个调用全搅进桶 0
+    var autoTcIdx = 0;
     // finishReason 需在 try 外声明，供函数末尾 return 使用
     String? finishReason;
     try {
@@ -373,16 +394,36 @@ class ApiService {
       });
       req.body = jsonEncode(body);
       final streamed = await _requestClient().send(req).timeout(const Duration(seconds: 120));
-      if (streamed.statusCode != 200) return const AIResponse(content: null, toolCalls: []);
+      if (streamed.statusCode != 200) {
+        // 读错误响应体做诊断；5 秒读不完直接关流（sink.close 会取消底层订阅），
+        // 避免 join().timeout 路径下订阅滞留、连接挂死
+        final errBody = await streamed.stream
+            .transform(utf8.decoder)
+            .timeout(const Duration(seconds: 5), onTimeout: (sink) => sink.close())
+            .join();
+        lastError = 'HTTP ${streamed.statusCode}${errBody.trim().length <= 200 ? '：${errBody.trim()}' : ''}';
+        return const AIResponse(content: null, toolCalls: []);
+      }
+      // SSE body 空闲超时：响应头 200 后若服务器长时间不发数据（>90s），
+      // timeout 会向流注入 TimeoutException，由下方 catch 捕获并置
+      // lastError，已累积内容仍会返回——杜绝永久挂起。
       final lines = streamed.stream
           .transform(utf8.decoder)
-          .transform(const LineSplitter());
+          .transform(const LineSplitter())
+          .timeout(const Duration(seconds: 90));
       await for (final line in lines) {
+        // 用户请求暂停：立即断开流，已累积的内容照常返回
+        if (isAborted != null && isAborted()) {
+          lastError = 'aborted_by_user';
+          break;
+        }
         final trimmed = line.trim();
         if (trimmed.isEmpty) continue;
-        if (trimmed == 'data: [DONE]') break;
-        if (!trimmed.startsWith('data: ')) continue;
-        final data = trimmed.substring(6);
+        // 兼容两种结束标记：标准 "data: [DONE]" 与无空格变体 "data:[DONE]"
+        if (trimmed == 'data: [DONE]' || trimmed == 'data:[DONE]') break;
+        if (!trimmed.startsWith('data:')) continue;
+        // 兼容 "data:{...}"（冒号后无空格）的网关实现
+        final data = trimmed.substring(5).trimLeft();
         try {
           final obj = jsonDecode(data) as Map<String, dynamic>;
           final choices = obj['choices'] as List?;
@@ -408,7 +449,14 @@ class ApiService {
           if (toolCallsDelta != null) {
             for (final tcRaw in toolCallsDelta) {
               final tc = tcRaw as Map<String, dynamic>;
-              final idx = (tc['index'] as num?)?.toInt() ?? 0;
+              final idx = (tc['index'] as num?)?.toInt() ??
+                  (() {
+                    final fn = tc['function'] as Map<String, dynamic>?;
+                    final startsNew = ((tc['id'] as String?)?.isNotEmpty ?? false) ||
+                        (((fn?['name']) as String?)?.isNotEmpty ?? false);
+                    if (startsNew) return autoTcIdx++;
+                    return autoTcIdx > 0 ? autoTcIdx - 1 : 0;
+                  })();
               final id = tc['id'] as String?;
               if (id != null && id.isNotEmpty) tcId[idx] = id;
               final fn = tc['function'] as Map<String, dynamic>?;
@@ -426,8 +474,14 @@ class ApiService {
           // 忽略单行解析失败
         }
       }
-    } catch (_) {
-      // 流中断
+    } on TimeoutException catch (_) {
+      // 流空闲超时：保留已累积内容，置 lastError 供调用方区分"合法空回复"与"请求已死"
+      lastError = '流式响应超时（90 秒无新数据），已返回已接收内容';
+      devLog('✗ 流式超时: 已收 ${contentBuf.length} 字符');
+    } catch (e) {
+      // 流中断：同样保留已累积内容并记录错误
+      lastError = '流式响应中断：$e';
+      devLog('✗ 流中断: $lastError');
     }
     // 组装 tool_calls
     final toolCalls = <ToolCall>[];
@@ -870,25 +924,33 @@ class ApiService {
           }),
         )
         .timeout(const Duration(seconds: 30));
-    final bodyText = utf8.decode(resp.bodyBytes);
+    final bodyText = utf8.decode(resp.bodyBytes, allowMalformed: true);
     if (resp.statusCode != 200) {
       throw Exception('HTTP ${resp.statusCode}');
     }
-    final data = jsonDecode(bodyText) as Map<String, dynamic>;
+    // 解析容错：服务器返回畸形 JSON / 非预期结构时不抛 CastError，转成友好错误
+    final Map<String, dynamic> data;
+    try {
+      data = jsonDecode(bodyText) as Map<String, dynamic>;
+    } catch (e) {
+      throw Exception('搜索服务返回无法解析的内容：$e');
+    }
     if (data['error'] != null) {
       throw Exception('${data['error']}');
     }
-    final answer = (data['answer'] ?? '') as String;
+    final answer = (data['answer'] ?? '').toString();
     final refs = (data['references'] as List?) ?? <dynamic>[];
-    final refList = refs.take(5).map<Map<String, dynamic>>((e) {
-      final m = e as Map<String, dynamic>;
-      final content = (m['content'] ?? '').toString();
-      return {
-        'title': (m['title'] ?? '').toString(),
-        'url': (m['url'] ?? '').toString(),
+    final refList = <Map<String, dynamic>>[];
+    for (final e in refs.take(5)) {
+      // 跳过非 Map 元素，避免 e as Map 强转抛 CastError 中断整体解析
+      if (e is! Map) continue;
+      final content = (e['content'] ?? '').toString();
+      refList.add({
+        'title': (e['title'] ?? '').toString(),
+        'url': (e['url'] ?? '').toString(),
         'content': content.length > 200 ? content.substring(0, 200) : content,
-      };
-    }).toList();
+      });
+    }
     return {'answer': answer, 'references': refList};
   }
 }

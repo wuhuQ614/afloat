@@ -3,7 +3,7 @@ library;
 
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io' show Directory, File, HttpClient, Platform, Process;
+import 'dart:io' show Directory, File, HttpClient, Platform, Process, systemEncoding;
 import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -158,6 +158,10 @@ class BackgroundJob {
   int? exitCode;
   String stdout = '';
   String stderr = '';
+  /// 真实进程引用：job_kill 时能真正终止，而不是只改标志位
+  Process? process;
+  /// 已被 kill：完成回调不得再覆写 stdout/stderr/finished（否则反向覆盖 kill 标记）
+  bool killed = false;
   BackgroundJob({
     required this.jobId,
     required this.command,
@@ -190,6 +194,9 @@ class ChatMessage {
   Map<String, List<String>> askAnswers = {};
   /// submit_plan 工具提交的计划（dsh-plan-mode 风格）
   PlanSubmission? plan;
+  /// 运行中的一句话进度（如"思考下一步（第 2 轮）…"），仅在消息生成期间展示；
+  /// 工具步骤卡片出现或正文开始输出后应置 null，避免与步骤卡片重复。
+  String? statusLabel;
 
   ChatMessage({required this.role, required this.content, this.showReasoning = false, this.reasoningExpanded = true, this.reasoning, this.imageData, this.imageDark = false, this.modelLabel});
 
@@ -433,8 +440,6 @@ class AppState extends ChangeNotifier {
   int examRemainingSec = 0;
   int examStartTs = 0;
   int examCurrentQuestion = 1; // 1-based
-  /// 全卷生成后待确认（对话助手处将弹出"是否进入模拟考试"）
-  bool examPendingConfirm = false;
   /// 考场内AI逐批生成状态
   bool examGeneratingBatch = false;
   int examGeneratedCount = 0; // 已生成的题目数
@@ -528,7 +533,6 @@ class AppState extends ChangeNotifier {
     examHistory = Storage.loadExamHistory();
     currentExamPaper = null;
     currentExamAnswerSheet = null;
-    examPendingConfirm = false;
     // 多配置记忆：加载配置库；旧单配置数据迁移为默认配置
     apiProfiles = Storage.loadApiProfiles();
     chatProfiles = Storage.loadChatProfiles();
@@ -671,6 +675,39 @@ class AppState extends ChangeNotifier {
     applyDirection();
   }
 
+  // ===== 公共 setter（供 Agent 工具调用） =====
+  /// 设置出题页面"题型"选项
+  void setSelectedType(String t) {
+    selectedType = t;
+    notifyListeners();
+  }
+
+  /// 设置出题页面"难度"选项（含 maimemo）
+  void setSelectedLevel(String l) {
+    selectedLevel = l;
+    notifyListeners();
+  }
+
+  /// 设置题量（1-50）—— 实际 UI 滑块位于 LearnPageState，这里只更新下次出题使用的值
+  void setCount(int n) {
+    final v = n.clamp(1, 50);
+    lastQuestionCount = v;
+    notifyListeners();
+  }
+
+  /// 设置每题目标词数（30-300）—— 仅更新下次出题使用的值
+  void setWordCount(int n) {
+    final v = n.clamp(30, 300);
+    lastWordCount = v;
+    notifyListeners();
+  }
+
+  /// 设置自定义要求文本
+  void setCustomReq(String s) {
+    lastCustomReq = s;
+    notifyListeners();
+  }
+
   // ===== 题库 =====
   void loadQuestionFromBank(int idx) {
     if (idx < 0 || idx >= questions.length) return;
@@ -782,6 +819,7 @@ class AppState extends ChangeNotifier {
       'easy': '简单',
       'medium': '中等',
       'hard': '困难',
+      'maimemo': '墨墨词库',
     };
     final levelGuides = {
       'cet4': '要求：词汇范围以四级大纲为准（约4500词），句式多样，涉及校园生活、社会热点、科普常识、日常交际等话题。翻译题长度约 100-150 字（中文）或 80-120 词（英文），难度对标四级翻译真题。',
@@ -1306,6 +1344,12 @@ class AppState extends ChangeNotifier {
       final obj = ApiService.extractJsonObject(reply);
       if (obj != null) {
         final result = GradingResult.fromJson(obj);
+        // 竞态防护：批改 await 期间用户切换了题目，则丢弃旧题成绩，
+        // 避免旧题的批改结果顶掉新题（对照：考试 AI 批改有 submittedAt 校验）
+        if (!identical(currentQuestion, q)) {
+          notifyListeners();
+          return;
+        }
         currentQuestion = q.copyWith(
           score: result.score,
           correctAnswer: result.correctAnswer,
@@ -1632,6 +1676,19 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> analyzeWords(String text, {bool force = false}) async {
+    try {
+      await _analyzeWordsImpl(text, force: force);
+    } finally {
+      // 兜底：任何异常路径都要复位，否则 analyzing 永久卡 true，
+      // 剖析入口被重入保护静默吞掉（后续请求全部无效）
+      if (analyzing) {
+        analyzing = false;
+        notifyListeners();
+      }
+    }
+  }
+
+  Future<void> _analyzeWordsImpl(String text, {bool force = false}) async {
     if (text.isEmpty || analyzing) return; // 重入保护：剖析进行中不发起第二轮
     
     // 检查API配置（正常/深度模式需要API）
@@ -2034,6 +2091,20 @@ class AppState extends ChangeNotifier {
   final List<Map<String, dynamic>> recentToolCalls = [];
   /// R13: 同一命令连续失败计数（命令文本 → 连续失败次数），每次对话开始清零
   final Map<String, int> _cmdFailStreak = {};
+  /// ask_user_question 挂起的回答 Completer（工具 await 用户在 UI 点确认）
+  final Map<String, Completer<Map<String, List<String>>>> _askCompleters = {};
+  /// ask completer 自增序号（仅作 key 用）
+  int _askSeq = 0;
+
+  /// UI 层用户点"确认"后回填答案，唤醒挂起的 ask_user_question 工具调用
+  void completeAskAnswers(Map<String, List<String>> answers) {
+    final entries = _askCompleters.entries.toList();
+    _askCompleters.clear();
+    for (final e in entries) {
+      if (!e.value.isCompleted) e.value.complete(answers);
+    }
+    _notifyChatUpdate();
+  }
 
   void _notifyChatUpdate() {
     final now = DateTime.now().millisecondsSinceEpoch;
@@ -2106,6 +2177,9 @@ class AppState extends ChangeNotifier {
     chatSending = true;
     // 开始新一轮发送：清零 abort 标志
     _chatAbortRequested = false;
+    // 新一轮对话：清零 bash 命令熔断计数（兑现字段注释承诺）。
+    // 否则被熔断的命令没有执行机会、永远不会成功复位，进程内永久封禁
+    _cmdFailStreak.clear();
     notifyListeners();
     // Auto 模式：发送时按优先级挑选 profile，把 effectiveChatConfig 切到所选 profile（不持久化到 global apiConfig）
     if (useAutoModel) {
@@ -2165,7 +2239,9 @@ class AppState extends ChangeNotifier {
         (q.knowledge.isNotEmpty ? '核心知识点：${q.knowledge.join('、')}\n' : '') +
         buildChatContextPrompt();
     final history = chatHistory
-        .where((m) => m.role != 'system')
+        // 排除系统消息，但保留【早期对话摘要】（压缩工具写入的上下文，
+        // 否则模型下一轮完全失忆、压缩对模型无效）
+        .where((m) => m.role != 'system' || m.content.startsWith('【早期对话摘要】'))
         .map((m) {
           var content = (m.role == 'user' && m.imageData != null && m.imageData!.isNotEmpty)
               ? ApiService.buildContent(m.content, m.imageData)
@@ -2400,7 +2476,7 @@ class AppState extends ChangeNotifier {
         case 'get_current_question':
           return _toolGetCurrentQuestion();
         case 'next_question':
-          return _toolNextQuestion();
+          return await _toolNextQuestion();
         case 'toggle_favorite':
           return _toolToggleFavorite();
         case 'get_progress':
@@ -2500,12 +2576,80 @@ class AppState extends ChangeNotifier {
     final level = (args['level'] as String?) ?? 'zsb';
     var count = (args['count'] as num?)?.toInt() ?? 1;
     if (count < 1) count = 1;
-    if (count > 10) count = 10;
+    if (count > 50) count = 50;
     final useBank = (args['useBank'] as bool?) ?? true;
+    final wordCount = (args['wordCount'] as num?)?.toInt() ?? 0; // 0 表示使用现有设置
+    final direction = (args['direction'] as String?) ?? '';
+    final mode = (args['mode'] as String?) ?? '';
+    final customReq = (args['customReq'] as String?) ?? '';
+
     if (generating) {
       return const ToolExecResult(content: '正在生成中，请稍候', ok: false);
     }
-    // 翻译题优先走题库（除非用户明确说不要题库）
+
+    // 0) 综合模拟全卷：直接走 generateFullExam
+    if (type == 'mixed') {
+      if (!apiConfig.ready) {
+        return const ToolExecResult(content: '{"ok":false,"reason":"api_not_configured"}', ok: false);
+      }
+      if (examGeneratingBatch) {
+        return const ToolExecResult(content: '{"ok":false,"reason":"already_generating"}', ok: false);
+      }
+      selectedLevel = (level == 'maimemo' || level == 'medium') ? 'zsb' : level;
+      if (wordCount > 0) lastWordCount = wordCount.clamp(30, 300);
+      if (customReq.isNotEmpty) lastCustomReq = customReq;
+      if (mode.isNotEmpty) analysisMode = mode;
+      examGeneratingBatch = true;
+      try {
+        final ok = await generateFullExam(customReq: lastCustomReq);
+        return ToolExecResult(
+          content: '{"ok":$ok,"type":"mixed","level":"$level"}',
+          ok: ok,
+          actionLabel: ok ? '已生成综合模拟全卷（76题/7题型/120分钟）' : '生成全卷失败',
+        );
+      } finally {
+        examGeneratingBatch = false;
+      }
+    }
+
+    // 1) 墨墨词库模式：从墨墨今日已学单词随机抽取 + AI 出题
+    if (level == 'maimemo') {
+      if (maimemoWordbook.isEmpty) {
+        return const ToolExecResult(
+            content: '{"ok":false,"reason":"maimemo_empty"}', ok: false,
+            actionLabel: '墨墨词库为空，请先在"更多功能 → 墨墨词库"中同步');
+      }
+      if (!apiConfig.ready) {
+        return const ToolExecResult(content: '{"ok":false,"reason":"api_not_configured"}', ok: false);
+      }
+      final refWords = maimemoRefWords();
+      selectedType = type;
+      selectedLevel = 'maimemo';
+      if (wordCount > 0) lastWordCount = wordCount.clamp(30, 300);
+      if (customReq.isNotEmpty) lastCustomReq = customReq;
+      if (mode.isNotEmpty) analysisMode = mode;
+      if (direction == 'zh2en' || direction == 'en2zh') {
+        setDirection(direction);
+      }
+      final actualCount = count.clamp(1, refWords.isEmpty ? 1 : (refWords.length > 50 ? 50 : refWords.length));
+      final ok = await generateQuestions(
+        count: actualCount,
+        customReq: lastCustomReq,
+        wordCount: lastWordCount,
+        maimemoWords: refWords,
+      );
+      if (ok) {
+        _gotoAnswerPage();
+        return ToolExecResult(
+          content: '{"ok":true,"count":${generatedQuestions.length},"type":"$type","level":"maimemo","source":"ai"}',
+          ok: true,
+          actionLabel: '已基于墨墨词库（${refWords.length} 个参考词）生成 ${generatedQuestions.length} 道${qTypeName(qTypeFrom(type))}',
+        );
+      }
+      return const ToolExecResult(content: '{"ok":false,"reason":"generate_failed"}', ok: false);
+    }
+
+    // 2) 翻译题优先走题库（除非用户明确说不要题库）
     if (type == 'translation' && useBank) {
       final bankLevels = switch (level) {
         'cet4' => const ['medium', 'hard'],
@@ -2516,6 +2660,12 @@ class AppState extends ChangeNotifier {
       if (picked.isNotEmpty) {
         selectedType = type;
         selectedLevel = level;
+        if (wordCount > 0) lastWordCount = wordCount.clamp(30, 300);
+        if (customReq.isNotEmpty) lastCustomReq = customReq;
+        if (mode.isNotEmpty) analysisMode = mode;
+        if (direction == 'zh2en' || direction == 'en2zh') {
+          setDirection(direction);
+        }
         generatedQuestions = picked;
         generatedQuestionIdx = 0;
         loadGeneratedQuestion();
@@ -2532,7 +2682,17 @@ class AppState extends ChangeNotifier {
     }
     selectedType = type;
     selectedLevel = level;
-    final ok = await generateQuestions(count: count, customReq: '');
+    if (wordCount > 0) lastWordCount = wordCount.clamp(30, 300);
+    if (customReq.isNotEmpty) lastCustomReq = customReq;
+    if (mode.isNotEmpty) analysisMode = mode;
+    if (direction == 'zh2en' || direction == 'en2zh') {
+      setDirection(direction);
+    }
+    final ok = await generateQuestions(
+      count: count,
+      customReq: lastCustomReq,
+      wordCount: lastWordCount,
+    );
     if (ok) {
       _gotoAnswerPage();
       return ToolExecResult(
@@ -2630,6 +2790,7 @@ class AppState extends ChangeNotifier {
   Future<ToolExecResult> _toolSubmitGeneratedQuestions(Map<String, dynamic> args) async {
     final defaultType = (args['type'] as String?) ?? 'translation';
     final defaultLevel = (args['level'] as String?) ?? 'zsb';
+    final direction = (args['direction'] as String?) ?? '';
     final raw = args['questions'];
     if (raw == null) {
       return const ToolExecResult(content: '{"ok":false,"reason":"empty_questions"}', ok: false);
@@ -2644,6 +2805,9 @@ class AppState extends ChangeNotifier {
     }
     selectedType = defaultType;
     selectedLevel = defaultLevel;
+    if (direction == 'zh2en' || direction == 'en2zh') {
+      setDirection(direction);
+    }
     generatedQuestions = healed;
     generatedQuestionIdx = 0;
     lastQuestionSource = 'ai';
@@ -2710,11 +2874,13 @@ class AppState extends ChangeNotifier {
     );
   }
 
-  ToolExecResult _toolNextQuestion() {
+  Future<ToolExecResult> _toolNextQuestion() async {
     if (generatedQuestions.length <= 1) {
       return const ToolExecResult(content: '{"ok":false,"reason":"no_more_questions"}', ok: false);
     }
-    nextQuestion();
+    // nextQuestion 在 AI 来源时会重新生成题目（耗时网络请求），
+    // 必须 await 后再读索引，否则返回的是切换前的旧索引
+    await nextQuestion();
     textAnswerValue = '';
     return ToolExecResult(
       content: '{"ok":true,"index":$generatedQuestionIdx,"total":${generatedQuestions.length}}',
@@ -3611,17 +3777,25 @@ class AppState extends ChangeNotifier {
       }
     }
     _notifyChatUpdate();
-    final answers = <Map<String, dynamic>>[];
+    // 挂起等待用户在 UI 选择并点"确认"（completeAskAnswers 唤醒），
+    // 最多等 5 分钟，超时按当前已选（可能为空）返回
+    final key = 'ask_${_askSeq++}';
+    final completer = Completer<Map<String, List<String>>>();
+    _askCompleters[key] = completer;
+    Map<String, List<String>> answers = {};
+    try {
+      answers = await completer.future.timeout(const Duration(minutes: 5), onTimeout: () => {});
+    } catch (_) {}
+    _askCompleters.remove(key);
+    final answerList = <Map<String, dynamic>>[];
     for (final q in qs) {
-      final sel = chatHistory.isNotEmpty && chatHistory.last.role == 'ai'
-          ? (chatHistory.last.askAnswers[q.id] ?? const <String>[])
-          : const <String>[];
-      answers.add({'id': q.id, 'selected': sel, 'custom': null});
+      final sel = answers[q.id] ?? const <String>[];
+      answerList.add({'id': q.id, 'selected': sel, 'custom': null});
     }
     return ToolExecResult(
-      content: jsonEncode({'ok': true, 'answers': answers, 'pending': true, 'hint': '等待 UI 层回填用户答案'}),
+      content: jsonEncode({'ok': true, 'answers': answerList, 'pending': false}),
       ok: true,
-      actionLabel: '已弹出问题，等待用户回答',
+      actionLabel: answers.isEmpty ? '用户未作答（超时）' : '已收到用户回答',
     );
   }
 
@@ -3822,15 +3996,39 @@ class AppState extends ChangeNotifier {
     backgroundJobs[jobId] = job;
     () async {
       try {
-        final result = await Process.run('cmd', ['/c', cmd], runInShell: false);
-        job.stdout = result.stdout.toString();
-        job.stderr = result.stderr.toString();
-        job.exitCode = result.exitCode;
+        // Process.start 保留进程引用，job_kill 可真正终止；
+        // Process.run 无法拿到 Process 对象，kill 只能改标志位（旧缺陷）
+        final proc = await Process.start('cmd', ['/c', cmd], runInShell: false);
+        job.process = proc;
+        // kill 恰好发生在 start 与赋值之间的竞态窗口：立即补杀
+        if (job.killed) proc.kill();
+        final outBuf = StringBuffer();
+        final errBuf = StringBuffer();
+        // Windows cmd 输出为系统码页，用 systemEncoding 解码避免中文乱码
+        proc.stdout.transform(systemEncoding.decoder).listen(
+              outBuf.write,
+              onError: (Object e) {},
+              cancelOnError: false,
+            );
+        proc.stderr.transform(systemEncoding.decoder).listen(
+              errBuf.write,
+              onError: (Object e) {},
+              cancelOnError: false,
+            );
+        final code = await proc.exitCode;
+        // 已被 kill 的任务：保留 kill 时写入的（用户已取消）文案，不反向覆写
+        if (!job.killed) {
+          job.stdout = outBuf.toString();
+          job.stderr = errBuf.toString();
+          job.exitCode = code;
+        }
         job.finished = true;
       } catch (e) {
-        job.stderr = '$e';
+        if (!job.killed) {
+          job.stderr = '$e';
+          job.exitCode = -1;
+        }
         job.finished = true;
-        job.exitCode = -1;
       }
       notifyListeners();
     }();
@@ -3877,8 +4075,11 @@ class AppState extends ChangeNotifier {
     if (job == null) {
       return ToolExecResult(content: jsonEncode({'ok': false, 'reason': 'job_not_found'}), ok: false, actionLabel: '未找到任务 $jobId');
     }
+    // 真正终止进程（而非只改标志位），并标记 killed 防止完成回调反向覆写
+    job.killed = true;
     job.finished = true;
     job.stderr = '（用户已取消）';
+    job.process?.kill();
     return ToolExecResult(
       content: jsonEncode({'ok': true, 'job_id': jobId, 'killed': true}),
       ok: true,
@@ -4310,8 +4511,21 @@ class AppState extends ChangeNotifier {
           .toList();
       final steps = <Map<String, dynamic>>[];
       String? lastError;
+      // 轮次耗尽 / 用户中止时的尽力报告
+      String partialReport() =>
+          steps.isNotEmpty ? steps.map((s) => '${s['ok'] == true ? '✓' : '✗'} ${s['label']}').join('\n') : '（无）';
+
       // 最多 8 轮工具循环
       for (var round = 0; round < 8; round++) {
+        // 用户在主对话点了暂停：子 Agent 立即收工，返回部分报告（不让主循环干等）
+        if (_chatAbortRequested) {
+          emit({'type': 'aborted'});
+          return ToolExecResult(
+            content: jsonEncode({'ok': false, 'reason': 'user_aborted', 'type': type, 'steps': steps, 'partial': partialReport()}),
+            ok: false,
+            actionLabel: '子 Agent 已随主任务暂停',
+          );
+        }
         emit({'type': 'round', 'n': round + 1});
         final resp = await ApiService.callAIWithTools(
           messages,
@@ -4321,6 +4535,14 @@ class AppState extends ChangeNotifier {
           maxTokens: 8192,
           extraParams: ApiService.noThinkingParams(cfg.model),
         );
+        if (_chatAbortRequested) {
+          emit({'type': 'aborted'});
+          return ToolExecResult(
+            content: jsonEncode({'ok': false, 'reason': 'user_aborted', 'type': type, 'steps': steps, 'partial': partialReport()}),
+            ok: false,
+            actionLabel: '子 Agent 已随主任务暂停',
+          );
+        }
         if (resp.content == null && resp.toolCalls.isEmpty) {
           lastError = ApiService.lastError ?? 'empty_response';
           break;
@@ -4343,6 +4565,15 @@ class AppState extends ChangeNotifier {
               for (final tc in resp.toolCalls) {'id': tc.id, 'type': 'function', 'function': {'name': tc.name, 'arguments': tc.arguments}},
             ]});
         for (final tc in resp.toolCalls) {
+          // 暂停：内部工具粒度检查，点暂停后不再发起新的工具调用
+          if (_chatAbortRequested) {
+            emit({'type': 'aborted'});
+            return ToolExecResult(
+              content: jsonEncode({'ok': false, 'reason': 'user_aborted', 'type': type, 'steps': steps, 'partial': partialReport()}),
+              ok: false,
+              actionLabel: '子 Agent 已随主任务暂停',
+            );
+          }
           final toolArgs = AgentService.parseArgs(tc.arguments);
           final label = _toolRunningLabel(tc.name, toolArgs).isEmpty ? _toolDefaultLabel(tc.name) : _toolRunningLabel(tc.name, toolArgs);
           emit({'type': 'tool', 'name': tc.name, 'label': label, 'status': 'running'});
@@ -4358,9 +4589,8 @@ class AppState extends ChangeNotifier {
         }
       }
       // 轮次耗尽：收集已有信息给出尽力报告
-      final partial = steps.isNotEmpty ? steps.map((s) => '${s['ok'] == true ? '✓' : '✗'} ${s['label']}').join('\n') : '（无）';
       return ToolExecResult(
-        content: jsonEncode({'ok': false, 'reason': 'rounds_exhausted:$lastError', 'type': type, 'steps': steps, 'partial': partial}),
+        content: jsonEncode({'ok': false, 'reason': 'rounds_exhausted:$lastError', 'type': type, 'steps': steps, 'partial': partialReport()}),
         ok: false,
         actionLabel: '子 Agent 达到轮次上限（已执行 ${steps.length} 步）',
       );
@@ -4555,8 +4785,7 @@ class AppState extends ChangeNotifier {
     // R11：todo 仍有未完成项时的强制继续计数。todo 状态是权威信号（比文本猜测可靠），
     // 单独给 3 次额度；配合 12 轮循环上限兜底，不会无限空转。
     var todoNudge = 0;
-    // 上一轮若因 max_tokens 截断续跑，本轮不清空占位正文，在其上继续累积
-    var keepPartialContent = false;
+    
   
     // 动态 system prompt：技能设定放在最前，确保覆盖 Agent 默认决策表；
     // 当前题目不再注入提示词（已技能化：load_skill('exam-context') 获取）
@@ -4571,7 +4800,8 @@ class AppState extends ChangeNotifier {
     const maxHistory = 16;
     final allHistory = chatHistory
         .getRange(0, historyLen - 1)
-        .where((m) => m.role != 'system')
+        // 排除系统消息，但保留【早期对话摘要】（压缩工具写入的上下文）
+        .where((m) => m.role != 'system' || m.content.startsWith('【早期对话摘要】'))
         .toList();
     final trimmedStart = allHistory.length > maxHistory ? allHistory.length - maxHistory : 0;
     final baseHistory = <Map<String, dynamic>>[];
@@ -4598,28 +4828,46 @@ class AppState extends ChangeNotifier {
     final messages = List<Map<String, dynamic>>.from(baseHistory);
   
     try {
+      // 用户请求暂停后的统一收尾：保留占位消息，汇报已完成动作并提示可"继续"
+      ({String reply, List<String> actions}) finishAbort() {
+        _chatAbortRequested = false;
+        placeholder.statusLabel = null;
+        final doneTxt = actions.isEmpty ? '' : '\n\n已完成：${actions.join("、")}。回复"继续"，我会接着完成剩余部分。';
+        if (placeholder.content.trim().isEmpty) {
+          placeholder.content = '已按你的要求暂停。$doneTxt'.trim();
+        } else {
+          placeholder.content = '${placeholder.content}$doneTxt';
+        }
+        // 未完成的步骤卡片标记为暂停态
+        for (final s in placeholder.toolSteps) {
+          if (s.running) {
+            s.running = false;
+            s.label = '已暂停';
+          }
+        }
+        _notifyChatUpdate();
+        chatSending = false;
+        notifyListeners();
+        return (reply: '已暂停', actions: actions);
+      }
+
       // 最多循环 12 轮（比原先 5 轮放宽，复杂多步任务不会因轮次耗尽提前收尾）
       for (var round = 0; round < 12; round++) {
         // R10: 用户点了发送按钮的"中止"——立即跳出循环，保留已有占位消息
         if (_chatAbortRequested) {
-          _chatAbortRequested = false;
-          placeholder.content = placeholder.content.isEmpty ? '已中止' : placeholder.content;
-          if (actions.isNotEmpty) placeholder.content = '${placeholder.content}\n（已中止，已完成：${actions.join("、")}）';
-          _notifyChatUpdate();
-          chatSending = false;
-          notifyListeners();
-          return (reply: '已中止', actions: actions);
+          return finishAbort();
         }
         // R8: 每轮清零本轮工具名，本轮执行工具后填充，末尾赋给 lastRoundTools 供下轮判断
         final roundTools = <String>{};
-        // 更新占位消息：思考中正文留空，进度由思考行/工具行展示。
-        // 例外：上一轮因 max_tokens 截断进入续跑时，保留已输出正文并继续追加。
-        final contentPrefix = keepPartialContent ? placeholder.content : '';
-        if (!keepPartialContent) {
-          placeholder.content = '';
-          _notifyChatUpdate();
-        }
-        keepPartialContent = false;
+        // 正文累积保留：模型每轮流式吐出的文字都"不被撤回"。
+        // 之前每轮开头会 placeholder.content='' 清空正文，导致用户只看到最后一轮的
+        // 一句话总结（中间步骤/边想边说的内容全部消失）——这正是"agent 的话被撤掉
+        // 只剩一句"的来源。现在不清空，始终在已有正文上继续累加。
+        final contentPrefix = placeholder.content;
+
+        // 流式决策期间给出一句话进度（正文/步骤卡片出现后清除）
+        placeholder.statusLabel = round == 0 ? '正在分析请求…' : '思考下一步（第 ${round + 1} 轮）…';
+        _notifyChatUpdate();
   
         // R1: 所有轮次全部用流式调用（streamChatWithTools 现在返回 AIResponse 含 tool_calls）
         // R2: 决策轮关闭思考以加速
@@ -4637,6 +4885,8 @@ class AppState extends ChangeNotifier {
           // R7: 输出上限联动上下文窗口（Max 模式 1M → 128K；普通 200K → 16K），
           // 思考模式下 reasoning 会占用输出预算，已包含在联动上限中
           maxTokens: effectiveOutputLimit,
+          // 暂停按钮：流式期间逐行探测，命中立即断开
+          isAborted: () => _chatAbortRequested,
           onReasoning: (chunk) {
             rawReasoning += chunk;
             placeholder.reasoning = rawReasoning;
@@ -4648,7 +4898,12 @@ class AppState extends ChangeNotifier {
             _notifyChatUpdate();
           },
         );
-  
+        // 流式期间用户点了暂停：isAborted 已断开流，这里立即收尾，不再执行任何工具
+        if (_chatAbortRequested) {
+          return finishAbort();
+        }
+        placeholder.statusLabel = null;
+
         if (resp.content == null && resp.toolCalls.isEmpty) {
           // API 失败，移除占位消息，回退
           chatHistory.remove(placeholder);
@@ -4676,10 +4931,8 @@ class AppState extends ChangeNotifier {
             'content': '（你的回复因输出长度限制被截断。请不要再重复之前的思考过程，'
                 '直接从中断处继续输出剩余内容或结论；如果尚未完成任务，继续调用必要的工具完成剩余步骤。）',
           });
-          // 保留占位消息内容，让用户看到已输出的部分；并标记下一轮"继续累积"，
-          // 避免轮次开头的 placeholder.content = '' 把已输出的正文清掉。
+          // 占位正文已=累积的 streamContent，直接续跑（正文本就累积保留，无需标志）
           placeholder.content = streamContent;
-          keepPartialContent = true;
           _notifyChatUpdate();
           continue;
         }
@@ -4757,8 +5010,11 @@ class AppState extends ChangeNotifier {
           }
 
           // 真正的纯文本答复 → 当作任务完成返回
-          final reply = resp.content ?? '';
-          await _simulateStreamOutput(placeholder, reply, actions);
+          final reply = (resp.content ?? '').trim();
+          // 气泡展示用累积正文（含中间步骤/边想边说的文字），
+          // 不用仅"最后一轮的 reply"覆盖，避免把中间已吐出的内容"撤回"。
+          await _simulateStreamOutput(
+              placeholder, streamContent.trim().isEmpty ? reply : streamContent, actions);
           return (reply: reply, actions: actions);
         }
         // 有工具调用：把 assistant 的 tool_calls 消息加入历史
@@ -4836,18 +5092,37 @@ class AppState extends ChangeNotifier {
         }
         // 执行每个工具调用，实时更新占位消息
         for (final tc in validCalls) {
+          // 暂停检查（工具粒度）：长任务里点暂停不必等当前工具整轮跑完。
+          // 已发起未执行的 tool_calls 必须补上结果消息，否则 assistant 消息与
+          // tool 结果数量不匹配，下一轮请求会因协议不完整被服务端拒绝。
+          if (_chatAbortRequested) {
+            final executedCount = validCalls.indexOf(tc);
+            for (final rest in validCalls.skip(executedCount)) {
+              messages.add({
+                'role': 'tool',
+                'tool_call_id': rest.id,
+                'name': rest.name,
+                'content': '（用户已暂停：本次调用未执行）',
+              });
+            }
+            return finishAbort();
+          }
           roundTools.add(tc.name);
           final args = AgentService.parseArgs(tc.arguments);
           // 工具执行前：在气泡上方添加"调用工具"步骤卡片（运行中）
           final runningLabel = _toolRunningLabel(tc.name, args);
-          final isTerminal = tc.name == 'operate_computer' && (args['operation'] as String?) == 'run_command';
+          // bash 与 operate_computer(run_command) 一样以终端块呈现：
+          // 命令、原始输出、退出码全程可见，而不是一行"执行命令"
+          final isTerminal = (tc.name == 'operate_computer' && (args['operation'] as String?) == 'run_command') || tc.name == 'bash';
           final isSubagent = tc.name == 'spawn_subagent';
           final step = ToolStep(
             name: tc.name,
             label: runningLabel.isEmpty ? _toolDefaultLabel(tc.name) : runningLabel,
             input: _toolInputSummary(tc.name, args),
             terminal: isTerminal,
-            command: isTerminal ? ((args['target'] as String?) ?? '') : null,
+            command: isTerminal
+                ? (tc.name == 'bash' ? ((args['command'] as String?) ?? '') : ((args['target'] as String?) ?? ''))
+                : null,
             subType: isSubagent ? ((args['type'] as String?) ?? 'general') : null,
             subTask: isSubagent ? ((args['task'] as String?) ?? '') : null,
           );
@@ -4860,9 +5135,9 @@ class AppState extends ChangeNotifier {
             onProgress: isSubagent
                 ? (event) {
                     step.subEvents.add(event);
-                    final n = step.subEvents.where((e) => e['type'] == 'tool').length;
                     if (event['type'] == 'tool') {
-                      step.label = '子 Agent 执行中 · 第 $n 步';
+                      final n = step.subEvents.where((e) => e['type'] == 'tool').length;
+                      step.label = '子 Agent · 第 $n 步 · ${event['label'] ?? ''}';
                     }
                     _notifyChatUpdate();
                   }
@@ -4880,14 +5155,11 @@ class AppState extends ChangeNotifier {
               final reply = (data['reply'] as String?) ?? (data['partial'] as String?) ?? '';
               if (reply.isNotEmpty) step.output = reply.length > 4000 ? '${reply.substring(0, 4000)}\n…(已截断)' : reply;
             } catch (_) {}
-          } else if (tc.name == 'operate_computer' || tc.name == 'search_web') {
-            // 其他命令 / 联网等返回了打印内容时，保存到步骤，供 OUT 卡片展开查看
-            final raw = result.content;
-            if (raw.isNotEmpty) step.output = raw.length > 2400 ? '${raw.substring(0, 2400)}\n…(已截断)' : raw;
-          } else if (result.content.isNotEmpty && !result.content.startsWith('{')) {
-            // 非 JSON 的纯文本返回也放入 OUT 卡片
-            final raw = result.content;
-            step.output = raw.length > 2400 ? '${raw.substring(0, 2400)}\n…(已截断)' : raw;
+          } else {
+            // 其余工具：统一提取人类可读的输出预览进 OUT 卡片
+            // （此前 JSON 结果一律不展示，用户看不到读了什么文件/写了什么内容）
+            final preview = _toolOutputPreview(result.content);
+            if (preview.isNotEmpty) step.output = preview;
           }
           // 工具执行后：更新该步骤状态与文案
           step.running = false;
@@ -4960,6 +5232,57 @@ class AppState extends ChangeNotifier {
     }
   }
 
+  /// 工具结果的人类可读预览（OUT 卡片用）。
+  /// JSON 结果按常见字段优先级提取（stdout/stderr → content → reply/summary），
+  /// 提取不到就压成单行 JSON 预览；纯文本直接截断。上限 1200 字符。
+  String _toolOutputPreview(String content) {
+    final raw = content.trim();
+    if (raw.isEmpty) return '';
+    // 纯文本（skill 正文、错误说明等）：直接截断展示
+    if (!raw.startsWith('{') && !raw.startsWith('[')) {
+      return raw.length > 1200 ? '${raw.substring(0, 1200)}\n…(已截断)' : raw;
+    }
+    try {
+      final obj = jsonDecode(raw);
+      if (obj is Map) {
+        // 命令类结果：stdout + stderr
+        final stdout = (obj['stdout'] as String?) ?? '';
+        final stderr = (obj['stderr'] as String?) ?? '';
+        if (stdout.isNotEmpty || stderr.isNotEmpty) {
+          final parts = [if (stdout.isNotEmpty) stdout, if (stderr.isNotEmpty) 'STDERR: $stderr'];
+          final joined = parts.join('\n');
+          return joined.length > 1200 ? '${joined.substring(0, 1200)}\n…(已截断)' : joined;
+        }
+        // 文件类结果：content 字段
+        final fileContent = obj['content'];
+        if (fileContent is String && fileContent.isNotEmpty) {
+          return fileContent.length > 1200 ? '${fileContent.substring(0, 1200)}\n…(已截断)' : fileContent;
+        }
+        // 目录列举 / 技能清单等数组字段
+        for (final key in ['entries', 'files', 'items', 'skills', 'results']) {
+          final list = obj[key];
+          if (list is List && list.isNotEmpty) {
+            final names = list.take(12).map((e) {
+              if (e is Map) return (e['name'] ?? e['id'] ?? e.toString()).toString();
+              return e.toString();
+            }).join('、');
+            final more = list.length > 12 ? ' …等 ${list.length} 项' : '';
+            return '$names$more';
+          }
+        }
+        // 通用兜底：单行压缩 JSON
+        final line = raw.replaceAll('\n', ' ');
+        return line.length > 400 ? '${line.substring(0, 400)}…' : line;
+      }
+      if (obj is List) {
+        final line = jsonEncode(obj);
+        return line.length > 600 ? '${line.substring(0, 600)}…' : line;
+      }
+    } catch (_) {}
+    final line = raw.replaceAll('\n', ' ');
+    return line.length > 400 ? '${line.substring(0, 400)}…' : line;
+  }
+
   /// 工具入参摘要（ToolRow 展开后的 IN 卡片），key: value 逐行排列
   String _toolInputSummary(String name, Map<String, dynamic> args) {
     if (args.isEmpty) return '';
@@ -4985,6 +5308,15 @@ class AppState extends ChangeNotifier {
 
   /// 工具执行中的进度文案
   String _toolRunningLabel(String name, Map<String, dynamic> args) {
+    /// 取路径的最后一段（文件名/目录名），让"写入文件"变成"写入 report.md"
+    String base(String? p) {
+      final t = (p ?? '').trim().replaceAll('/', r'\');
+      if (t.isEmpty) return '';
+      return t.split(r'\').where((s) => s.isNotEmpty).last;
+    }
+
+    String clip(String s, int n) => s.length > n ? '${s.substring(0, n)}…' : s;
+
     switch (name) {
       case 'generate_questions':
         final type = (args['type'] as String?) ?? 'translation';
@@ -5024,9 +5356,20 @@ class AppState extends ChangeNotifier {
       case 'get_study_report':
         return '正在读取学习报告';
       case 'config_settings':
-        return '正在读取设置';
+        final action = (args['action'] as String?) ?? 'get';
+        final key = (args['key'] as String?) ?? '';
+        return action == 'set' ? '正在修改设置${key.isEmpty ? '' : ' · $key'}' : '正在读取设置';
       case 'search_web':
-        return '正在联网搜索';
+        final q = ((args['query'] as String?) ?? '').trim();
+        return q.isEmpty ? '正在联网搜索' : '正在搜索「${clip(q, 24)}」';
+      case 'web_fetch':
+        final url = (args['url'] as String?) ?? '';
+        var host = url;
+        try {
+          final u = Uri.parse(url);
+          host = '${u.host}${u.path == '/' || u.path.isEmpty ? '' : clip(u.path, 24)}';
+        } catch (_) {}
+        return host.isEmpty ? '正在抓取网页' : '正在读取 $host';
       case 'backup_data':
         return '正在备份数据';
       case 'operate_computer':
@@ -5041,6 +5384,78 @@ class AppState extends ChangeNotifier {
           _ => '正在操作电脑',
         };
         return desc.trim();
+      // ===== 工作类工具：让用户一眼看出在操作哪个文件/跑什么命令 =====
+      case 'bash':
+        final cmd = ((args['command'] as String?) ?? '').trim().replaceAll('\n', ' ');
+        final desc = ((args['description'] as String?) ?? '').trim();
+        if (cmd.isNotEmpty) return clip(cmd, 56);
+        if (desc.isNotEmpty) return '正在执行：$desc';
+        return '正在执行命令';
+      case 'run_background_job':
+        final cmd = ((args['command'] as String?) ?? '').trim();
+        return cmd.isEmpty ? '正在启动后台任务' : '后台任务 · ${clip(cmd, 48)}';
+      case 'job_output':
+        return '正在查看后台任务输出';
+      case 'job_kill':
+        return '正在终止后台任务';
+      case 'read_file':
+        final b = base(args['path'] as String?);
+        return b.isEmpty ? '正在读取文件' : '正在读取 $b';
+      case 'write_file':
+        final b = base(args['path'] as String?);
+        return b.isEmpty ? '正在写入文件' : '正在写入 $b';
+      case 'edit_file':
+        final b = base(args['path'] as String?);
+        return b.isEmpty ? '正在编辑文件' : '正在编辑 $b';
+      case 'list_dir':
+        final p = base(args['path'] as String?);
+        return p.isEmpty ? '正在查看目录' : '正在查看目录 $p';
+      case 'str_replace_editor':
+        final cmd = (args['command'] as String?) ?? '';
+        final b = base(args['path'] as String?);
+        final verb = switch (cmd) {
+          'view' => '查看',
+          'create' => '创建',
+          'str_replace' => '替换',
+          'insert' => '插入',
+          _ => '编辑',
+        };
+        return b.isEmpty ? '正在$verb代码' : '正在$verb $b';
+      case 'run_code':
+        final d = ((args['description'] as String?) ?? '').trim();
+        return d.isEmpty ? '正在执行批量操作' : '正在$d';
+      case 'skill':
+      case 'load_skill':
+        final n = ((args['name'] as String?) ?? '').trim();
+        return n.isEmpty ? '正在加载技能' : '正在加载技能「${clip(n, 20)}」';
+      case 'list_user_skills':
+        return '正在列出工作区技能';
+      case 'session_query':
+        return '正在检索历史会话';
+      case 'compact_conversation':
+        return '正在压缩对话上下文';
+      case 'check_repeat':
+        return '正在检查重复调用';
+      case 'list_mcp_tools':
+        return '正在查询 MCP 工具清单';
+      case 'call_mcp_tool':
+        final server = (args['server_name'] as String?) ?? '';
+        final tool = (args['tool_name'] as String?) ?? '';
+        return '$server · $tool'.isEmpty ? '正在调用 MCP 工具' : '正在调用 $server.$tool';
+      case 'ask_user_question':
+        return '等待你的选择…';
+      case 'submit_plan':
+        final t = ((args['title'] as String?) ?? '').trim();
+        return t.isEmpty ? '已提交计划待审批' : '计划待审批：${clip(t, 24)}';
+      case 'spawn_subagent':
+        final type = (args['type'] as String?) ?? 'general';
+        final label = switch (type) {
+          'research' => '研究型子 Agent 出动',
+          'coder' => '编码子 Agent 出动',
+          _ => '通用子 Agent 出动',
+        };
+        final task = ((args['task'] as String?) ?? '').trim();
+        return task.isEmpty ? label : '$label · ${clip(task, 28)}';
       default:
         return '正在处理';
     }
@@ -6070,6 +6485,9 @@ class AppState extends ChangeNotifier {
     // 重入守卫：上一轮整卷生成仍在进行时直接拒绝，
     // 避免新卷已建但 _runExamGeneration 被拦截导致永远卡在“加载中”
     if (examGeneratingBatch) return false;
+    // 同步置位：闭合“检查→延迟回调才置位”的 TOCTOU 窗口，
+    // 防止 300ms 内二次点击覆盖 currentExamPaper 产生双份生成竞态
+    examGeneratingBatch = true;
     _examCustomReq = customReq;
     generatingFullExam = true;
     notifyListeners();
@@ -6094,11 +6512,9 @@ class AppState extends ChangeNotifier {
     examStartTs = DateTime.now().millisecondsSinceEpoch;
     examCurrentQuestion = 1;
     examGeneratedCount = 0;
-    examGeneratingBatch = false;
     examGenerationDone = false;
     _examFailedBatches.clear();
     examGeneratingHint = '准备进入考场...';
-    examPendingConfirm = false;
 
     // 直接进入考场（page=10）
     page = 10;
@@ -6109,6 +6525,10 @@ class AppState extends ChangeNotifier {
     Future.delayed(const Duration(milliseconds: 300), () {
       if (currentExamPaper != null && page == 10) {
         _runExamGeneration(_fullExamBatchPlan(), customReq);
+      } else {
+        // 未启动生成（已离开考场/试卷被清空）：释放守卫，避免永久卡死
+        examGeneratingBatch = false;
+        notifyListeners();
       }
     });
 
@@ -6132,12 +6552,21 @@ class AppState extends ChangeNotifier {
   /// 部分题目时自动拆小重发（对用户透明）；词汇/英译汉彻底失败用本地兜底；
   /// 剩余失败大题记入 _examFailedBatches 供“重新生成缺失部分”。
   Future<void> _runExamGeneration(List<ExamBatchSpec> plan, String customReq) async {
-    if (examGeneratingBatch || plan.isEmpty) return;
+    // 注：examGeneratingBatch 已由调用方（generateFullExam 同步置位）持有；
+    // 此处只拦截空计划，并在各提前退出路径负责释放守卫。
+    if (plan.isEmpty) {
+      examGeneratingBatch = false;
+      return;
+    }
     final paper = currentExamPaper;
-    if (paper == null) return;
+    if (paper == null) {
+      examGeneratingBatch = false;
+      return;
+    }
     if (!apiConfig.ready) {
       examGeneratingHint = 'API未配置，无法生成题目，请先到“设置 → AI 接口”完成配置';
       examGenerationDone = true;
+      examGeneratingBatch = false;
       notifyListeners();
       return;
     }
@@ -6887,10 +7316,9 @@ class AppState extends ChangeNotifier {
     enterFullExam();
   }
 
-  /// 用户在对话助手确认"进入考场"后调用：初始化答题卡，进入沉浸考场
+  /// 初始化答题卡，进入沉浸考场（全卷生成完成后直接调用）
   void enterFullExam() {
     if (currentExamPaper == null) return;
-    examPendingConfirm = false;
     currentExamAnswerSheet = ExamAnswerSheet();
     currentExamResult = null; // 重开考试时清除上一轮成绩，保证 setPage 考场守卫生效
     examRemainingSec = currentExamPaper!.totalTimeMin * 60;
@@ -6900,10 +7328,13 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 交卷：自动判分（客观题直接判，英译汉和写作先用关键词打分），切换到成绩页
-  ExamResult submitFullExam() {
-    final paper = currentExamPaper!;
-    final ans = currentExamAnswerSheet!;
+  /// 交卷：自动判分（客观题直接判，英译汉和写作先用关键词打分），切换到成绩页。
+  /// 试卷/答题卡缺失（生成失败或被并发清空）时返回 null 而非抛异常，
+  /// 避免考场页在退化路径下崩溃。
+  ExamResult? submitFullExam() {
+    final paper = currentExamPaper;
+    final ans = currentExamAnswerSheet;
+    if (paper == null || ans == null) return null;
     final now = DateTime.now().millisecondsSinceEpoch;
     final dur = ((now - examStartTs) / 1000).round();
     final durationSec = dur > 0 ? dur : (paper.totalTimeMin * 60 - examRemainingSec).clamp(0, paper.totalTimeMin * 60);
@@ -7156,13 +7587,13 @@ class AppState extends ChangeNotifier {
         }
       }
       if (ws != null) {
-        sb.writeln('【写作】满分 20 分，请按内容切题、结构组织、语言准确性、词汇句式丰富度综合评分：');
+        sb.writeln('【写作】满分 35 分，请按内容切题、结构组织、语言准确性、词汇句式丰富度综合评分：');
         sb.writeln('题目要求：${ws.topic}');
         sb.writeln('学生作文：${ans.writing.trim()}');
       }
       final systemPrompt = '你是专升本英语考试阅卷老师，请批改以下主观题并只返回一个 JSON 对象（不要输出其他内容），格式：\n'
-          '{"translation":[{"score":0到3整数,"comment":"该句中文点评(30字内)"},共$sentCount项按句序],'
-          '"writing":{"score":0到20整数,"comment":"总体中文点评(60字内)","suggestion":"改进建议(60字内)"}}\n'
+          '{"translation":[{"score":0到4整数,"comment":"该句中文点评(30字内)"},共$sentCount项按句序],'
+          '"writing":{"score":0到35整数,"comment":"总体中文点评(60字内)","suggestion":"改进建议(60字内)"}}\n'
           '未作答给 0 分；评分客观公正，点评简洁。';
       final reply = await ApiService.callAI(
         [{'role': 'user', 'content': sb.toString()}],
@@ -7197,7 +7628,7 @@ class AppState extends ChangeNotifier {
             valid = false;
             break;
           }
-          scores.add(sc.toInt().clamp(0, 3));
+          scores.add(sc.toInt().clamp(0, 4));
           comments.add(e is Map ? (e['comment'] ?? '').toString() : '');
         }
         if (valid && scores.length == sentCount) {
@@ -7210,7 +7641,7 @@ class AppState extends ChangeNotifier {
       String wSuggestion = '';
       final wRaw = json['writing'];
       if (hasWriting && wRaw is Map && wRaw['score'] is num) {
-        wScore = (wRaw['score'] as num).toInt().clamp(0, 20);
+        wScore = (wRaw['score'] as num).toInt().clamp(0, 35);
         wComment = (wRaw['comment'] ?? '').toString();
         wSuggestion = (wRaw['suggestion'] ?? '').toString();
       }
@@ -7239,7 +7670,7 @@ class AppState extends ChangeNotifier {
         r.sectionScores[ExamSection.writing] = wScore;
         r.sectionCorrect[ExamSection.writing] = wScore;
         r.writingScoreNum = wScore;
-        r.writingScore = wComment.isNotEmpty ? wComment : '（$wScore/20）';
+        r.writingScore = wComment.isNotEmpty ? wComment : '（$wScore/35）';
         r.writingAiSuggestion = wSuggestion;
       }
       r.totalScore = r.sectionScores.values.fold<int>(0, (a, b) => a + b);

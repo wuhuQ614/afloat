@@ -15,7 +15,13 @@ class MainActivity : FlutterActivity() {
             when (call.method) {
                 "setFrameRate" -> {
                     val fps = call.argument<Int>("fps") ?: 60
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    if (fps <= 0) {
+                        // fps<=0：解除锁帧，清除首选显示模式，交还系统默认刷新率
+                        val clearParams = window.attributes
+                        clearParams.preferredDisplayModeId = 0
+                        window.attributes = clearParams
+                        result.success(true)
+                    } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                         val display: Display? = windowManager.defaultDisplay
                         val modes: Array<Display.Mode>? = display?.supportedModes
                         if (modes != null && modes.isNotEmpty()) {

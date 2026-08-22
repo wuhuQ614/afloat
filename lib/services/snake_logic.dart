@@ -8,7 +8,11 @@ import 'dart:io' show Platform;
 import 'package:ffi/ffi.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 
-/// C++ 侧状态快照结构体（字段顺序与 snake_logic.h 的 SnakeSnapshot 一致）
+/// C++ 侧状态快照结构体（字段顺序与 snake_logic.h 的 SnakeSnapshot 一致）。
+///
+/// 布局说明：moveProgress(@Float) 与 tickMs(@Double) 之间，Dart FFI 与
+/// C++（默认 ABI 对齐）都会插入相同的 4 字节填充，两侧一致，无需手动
+/// 保留字段——勿改动字段顺序/类型。
 final class SnakeSnapshot extends Struct {
   @Int32()
   external int score;
@@ -137,7 +141,13 @@ class SnakeLogic {
   }
 
   /// 蛇身坐标（头在 0）。返回 (curX, curY, prevX, prevY) 四组列表。
+  ///
+  /// 安全说明：C++ 侧数组容量为 SNAKE_MAX_LEN(=COLS*ROWS=400)，且指针在
+  /// 下一次 advance/turn/dispose 后可能失效。这里对 n 做容量钳制并
+  /// **立即拷贝**到 Dart 自有内存，杜绝 asTypedList 零拷贝视图带来的
+  /// 越界读与 use-after-free 风险。
   (List<int>, List<int>, List<int>, List<int>) snakePos(int len) {
+    if (_disposed) return (<int>[], <int>[], <int>[], <int>[]);
     final cx = _curX(_state);
     final cy = _curY(_state);
     final px = _prevX(_state);
@@ -145,20 +155,33 @@ class SnakeLogic {
     if (cx == nullptr || cy == nullptr || px == nullptr || py == nullptr) {
       return (<int>[], <int>[], <int>[], <int>[]);
     }
-    final n = len < 0 ? 0 : len;
+    // 权威长度：以 C++ 快照中的 snake_len 为准，并与传入值、数组容量取最小
+    _snapshot(_state, _snapPtr);
+    final cap = _snapPtr.ref.snakeLen;
+    var n = len < 0 ? 0 : len;
+    if (n > cap) n = cap;
+    if (n > _maxLen) n = _maxLen;
+    // 拷贝为 Dart 自有列表（asTypedList 仅是 C++ 内存的临时视图，不可跨帧持有）
     return (
-      cx.asTypedList(n),
-      cy.asTypedList(n),
-      px.asTypedList(n),
-      py.asTypedList(n),
+      cx.asTypedList(_maxLen).sublist(0, n),
+      cy.asTypedList(_maxLen).sublist(0, n),
+      px.asTypedList(_maxLen).sublist(0, n),
+      py.asTypedList(_maxLen).sublist(0, n),
     );
   }
+
+  /// C++ 侧坐标数组容量（SNAKE_MAX_LEN = COLS*ROWS = 400）
+  static const int _maxLen = 20 * 20;
 
   /// 回写最高分（Dart 持久化后同步给 C++）
   void setHighScore(int hs) => _setHighScore(_state, hs);
 
-  /// 释放 C++ 状态
+  /// 释放 C++ 状态（幂等：重复调用安全返回）
+  bool _disposed = false;
+
   void dispose() {
+    if (_disposed) return;
+    _disposed = true;
     _destroy(_state);
     calloc.free(_snapPtr);
   }

@@ -160,14 +160,18 @@ class _AnswerPageState extends State<AnswerPage> {
     ]);
   }
 
-  // 中英方向分段切换：仅当前源语言显示容器背景（白字），另一语言只显示文字（灰字）
+  // 中英方向分段切换：
+  //  - 浅色主题：选中态用「深色字 + 浅灰容器」(避免白字融白底)
+  //  - 深色主题：选中态用「白色字 + 深灰容器」(保持原有对比)
   Widget _buildDirSwitch(String label, bool active, VoidCallback onTap, AppColors c) {
+    // 选中态前景色按主题取
+    final activeTextColor = c.isLight ? c.primaryText : Colors.white;
     final text = Text(
       label,
       style: TextStyle(
         fontSize: 14,
         fontWeight: FontWeight.w800,
-        color: active ? Colors.white : c.primaryText.withValues(alpha: 0.55),
+        color: active ? activeTextColor : c.primaryText.withValues(alpha: 0.55),
       ),
     );
     return InkWell(

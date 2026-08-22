@@ -80,6 +80,8 @@ String levelName(String l) {
       return '简单';
     case 'hard':
       return '困难';
+    case 'maimemo':
+      return '墨墨词库';
     default:
       return '中等';
   }

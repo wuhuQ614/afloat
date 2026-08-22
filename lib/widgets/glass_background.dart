@@ -1,91 +1,26 @@
-/// 毛玻璃背景层 —— 动态渐变光斑（供 BackdropFilter 模糊）
+/// 毛玻璃背景层 —— 纯色基底（供 BackdropFilter 模糊）
 library;
 
-import 'dart:math';
 import 'dart:ui' show ImageFilter;
 import 'package:flutter/material.dart';
 import '../theme_colors.dart' show kPrimary;
 
-/// 动态渐变光斑背景：仅在 uiStyle == 'glass' 时显示
-/// 放在 widget 树最底层，上层的半透明容器通过 BackdropFilter 模糊这块背景
-class GlassBackground extends StatefulWidget {
+/// 纯色基底背景：仅在 uiStyle == 'glass' 时显示。
+/// 放在 widget 树最底层，上层的半透明容器通过 BackdropFilter 模糊这块背景。
+/// （原动态光斑已按设计移除；同时删除空转的动画控制器与未使用的 _BlobPainter）
+class GlassBackground extends StatelessWidget {
   final bool isLight;
   const GlassBackground({super.key, required this.isLight});
 
   @override
-  State<GlassBackground> createState() => _GlassBackgroundState();
-}
-
-class _GlassBackgroundState extends State<GlassBackground>
-    with TickerProviderStateMixin {
-  late final AnimationController _ctrl;
-
-  @override
-  void initState() {
-    super.initState();
-    _ctrl = AnimationController(
-      vsync: this,
-      duration: const Duration(seconds: 20),
-    )..repeat();
-  }
-
-  @override
-  void dispose() {
-    _ctrl.dispose();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
-    final isLight = widget.isLight;
-    // 纯色基底：浅色淡灰白 / 深色深灰，去掉动态光斑
+    // 纯色基底：浅色淡灰白 / 深色深灰
     final baseColor = isLight ? const Color(0xFFE8E9F0) : const Color(0xFF0E0E12);
     return DecoratedBox(
       decoration: BoxDecoration(color: baseColor),
       child: const SizedBox.expand(),
     );
   }
-}
-
-class _BlobPainter extends CustomPainter {
-  final double t;
-  final Color baseColor;
-  final List<(Color, double)> blobs;
-
-  _BlobPainter(this.t, this.baseColor, this.blobs);
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    // 填充底色
-    canvas.drawRect(Offset.zero & size, Paint()..color = baseColor);
-
-    final w = size.width;
-    final h = size.height;
-
-    for (var i = 0; i < blobs.length; i++) {
-      final (color, alpha) = blobs[i];
-      // 每个光斑的轨道参数
-      final angle = t * 0.5 + i * (pi / 2.5);
-      final cx = w * (0.25 + 0.18 * cos(angle + i * 1.3));
-      final cy = h * (0.3 + 0.2 * sin(angle * 0.8 + i * 0.7));
-      final radius = min(w, h) * (0.45 + 0.1 * sin(t * 0.5 + i));
-
-      final rect = Rect.fromCircle(center: Offset(cx, cy), radius: radius);
-      final shader = RadialGradient(
-        colors: [color.withValues(alpha: alpha), color.withValues(alpha: 0)],
-        stops: const [0, 1],
-      ).createShader(rect);
-      canvas.drawCircle(
-        Offset(cx, cy),
-        radius,
-        Paint()..shader = shader,
-      );
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant _BlobPainter oldDelegate) =>
-      oldDelegate.t != t;
 }
 
 /// 毛玻璃容器包装器：BackdropFilter + 半透明叠加
@@ -473,7 +408,21 @@ class _GlassSelectedTileState extends State<GlassSelectedTile>
     _breath = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 2400),
-    )..repeat(reverse: true);
+    );
+    // 未选中态不挂 vsync 回调，避免呼吸动画在后台每帧空转
+    if (widget.active) _breath.repeat(reverse: true);
+  }
+
+  @override
+  void didUpdateWidget(covariant GlassSelectedTile oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.active != oldWidget.active) {
+      if (widget.active) {
+        _breath.repeat(reverse: true);
+      } else {
+        _breath.stop();
+      }
+    }
   }
 
   @override

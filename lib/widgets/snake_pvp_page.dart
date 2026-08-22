@@ -188,7 +188,11 @@ class _SnakePvpPageState extends State<SnakePvpPage>
       _phase = _phase == _playing ? _paused : _playing;
     });
     _lastFrameTime = null;
-    if (_phase == _playing) _focusNode.requestFocus();
+    if (_phase == _playing) {
+      // 恢复播放：_onFrame 在暂停/结束时会自停 Ticker，这里必须重启
+      if (!_ticker.isActive) _ticker.start();
+      _focusNode.requestFocus();
+    }
   }
 
   /// 切换模式（人机 / 双人），切换即重开
@@ -216,6 +220,13 @@ class _SnakePvpPageState extends State<SnakePvpPage>
   // ==================== 每帧驱动（Ticker，帧率 = 显示器刷新率） ====================
 
   void _onFrame(Duration elapsed) {
+    // 非播放态（暂停/结束/未开始）自停渲染循环，避免满帧空转（对齐单机版做法）。
+    // 恢复播放的路径（_start/_togglePause）会重新 start
+    if (_phase != _playing) {
+      _ticker.stop();
+      _lastFrameTime = null;
+      return;
+    }
     final dtMs = _lastFrameTime == null
         ? 0
         : (elapsed - _lastFrameTime!).inMicroseconds ~/ 1000;

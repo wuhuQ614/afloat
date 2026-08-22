@@ -1,12 +1,14 @@
 /// 功能页：错题本 / 学习报告 / 生词本 / 答题记录 / 查词 / 默写
 library;
 
+import 'dart:async' show Timer;
 import 'dart:math';
 import 'dart:ui' show FontFeature, ImageFilter;
 import 'package:flutter/material.dart';
 import '../models.dart';
 import '../services/api_service.dart' as api;
 import '../services/dict_service.dart';
+import '../services/storage.dart';
 import '../services/tts_service.dart';
 import '../state.dart';
 import '../theme_colors.dart' show kPrimary, kSuccess, kDanger, kDarkCard, AppColors;
@@ -1359,7 +1361,7 @@ class _HistoryCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // 标题 + 查看全部
+          // 标题（下方列表即全部记录，无需"查看全部"入口）
           Row(
             children: [
               Text('历史考试记录',
@@ -1368,24 +1370,6 @@ class _HistoryCard extends StatelessWidget {
                       fontWeight: FontWeight.w700,
                       color: c.text,
                       height: 1.2)),
-              const Spacer(),
-              GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onTap: () {
-                  // 预留：跳转全部历史（暂无独立页）
-                },
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text('查看全部',
-                        style: TextStyle(
-                            fontSize: 12, color: c.textTertiary, height: 1.2)),
-                    const SizedBox(width: 1),
-                    Icon(Icons.arrow_forward_ios_rounded,
-                        size: 11, color: c.textTertiary),
-                  ],
-                ),
-              ),
             ],
           ),
           const SizedBox(height: 6),
@@ -1646,6 +1630,8 @@ class _WordBookPageState extends State<WordBookPage> {
             onPressed: () {
               s.wordbook[_flashIdx] = WordBookItem(
                   word: w.word, translation: w.translation, reviewCount: w.reviewCount + 1, lastReview: DateTime.now().millisecondsSinceEpoch, addedAt: w.addedAt);
+              // 复习次数持久化：否则重启即丢，"知道了"的复习记录永远清零
+              Storage.saveWordBook(s.wordbook);
               setState(() => _flashIdx++);
             },
             child: const Text('知道了'),
@@ -1828,6 +1814,8 @@ class _RecordsPageState extends State<RecordsPage> {
           ? api.ApiService.thinkingParams(s.apiConfig.model)
           : api.ApiService.noThinkingParams(s.apiConfig.model),
     );
+    // 请求期间用户可能已退出本页（dispose）：跳过后续 setState/UI 操作
+    if (!mounted) return;
     setState(() => _generating = false);
     if (reply != null) {
       final list = api.ApiService.extractJsonArray(reply);
@@ -1875,6 +1863,12 @@ class _DictionaryPageState extends State<DictionaryPage> {
     TtsService.instance.init().then((_) {
       if (mounted) setState(() {});
     });
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
   }
 
   @override
@@ -2377,6 +2371,8 @@ class _DictionaryPageState extends State<DictionaryPage> {
       maxTokens: 256,
       extraParams: api.ApiService.noThinkingParams(s.apiConfig.model),
     );
+    // 查询期间用户可能已切页：setState 前必须校验 mounted
+    if (!mounted) return;
     if (reply != null) {
       final obj = api.ApiService.extractJsonObject(reply);
       if (obj != null) {
@@ -2638,7 +2634,7 @@ class _DictationPageState extends State<DictationPage> {
   bool _autoAdvance = true;
   bool _aiGrading = false; // AI 批改中
   String _aiComment = ''; // AI 点评
-  int? _autoAdvanceTimer;
+  Timer? _autoAdvanceTimer; // 自动跳题定时器（可取消，避免堆积多个延时回调）
   final FocusNode _focusNode = FocusNode();
   final List<WordToken> _wrongWords = [];
 
@@ -2646,13 +2642,11 @@ class _DictationPageState extends State<DictationPage> {
   void initState() {
     super.initState();
     _zsbCount = DictService.zsbWords().length;
-    _focusNode.addListener(() {
-      if (_focusNode.hasFocus) {}
-    });
   }
 
   @override
   void dispose() {
+    _autoAdvanceTimer?.cancel();
     _autoAdvanceTimer = null;
     _ansCtrl.dispose();
     _focusNode.dispose();
@@ -2666,6 +2660,7 @@ class _DictationPageState extends State<DictationPage> {
     _showAnswer = false;
     _aiGrading = false;
     _aiComment = '';
+    _autoAdvanceTimer?.cancel();
     _autoAdvanceTimer = null;
   }
 
@@ -3550,11 +3545,14 @@ class _DictationPageState extends State<DictationPage> {
         _showAnswer = !result.correct;
         if (!result.correct && w != null) {
           _wrongWords.add(w);
+          // 错词闭环：同步收进生词本（去重），否则收集后无任何去向
+          s.addToWordBook(w.word, w.translation);
         }
       });
       if (_autoAdvance && result.correct) {
-        _autoAdvanceTimer = DateTime.now().millisecondsSinceEpoch;
-        Future.delayed(const Duration(milliseconds: 1000), () {
+        // 取消上一个未触发的跳题定时器，避免连续答对时堆积多个延时回调
+        _autoAdvanceTimer?.cancel();
+        _autoAdvanceTimer = Timer(const Duration(milliseconds: 1000), () {
           if (mounted && _feedback != null && _isCorrect) {
             _nextQuestion(s);
           }
@@ -3570,7 +3568,11 @@ class _DictationPageState extends State<DictationPage> {
         _feedback = correct ? '回答正确！' : '回答错误';
         _aiComment = 'AI 批改失败，已用本地批改';
         _showAnswer = !correct;
-        if (!correct && w != null) _wrongWords.add(w);
+        if (!correct && w != null) {
+          _wrongWords.add(w);
+          // 错词闭环：同步收进生词本（去重）
+          s.addToWordBook(w.word, w.translation);
+        }
       });
     }
   }

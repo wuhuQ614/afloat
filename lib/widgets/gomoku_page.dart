@@ -146,6 +146,12 @@ class _GomokuPageState extends State<GomokuPage> {
       _winLine.clear();
       _current = _moves.isEmpty ? _firstStone : (_moves.last.$3 == 1 ? 2 : 1);
     });
+    // 悔棋后若轮到 AI（玩家执白开局时悔掉 AI 首手等场景），必须主动调度 AI 走子，
+    // 否则既无人落子、玩家也被回合校验拦住，永久卡死
+    if (mode == 'pve' && _winPlayer == null && _current != _playerStone) {
+      _aiThinking = true;
+      _scheduleAi();
+    }
   }
 
   /// 重新开始（保留模式/难度）

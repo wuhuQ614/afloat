@@ -231,8 +231,6 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
   // 页面索引已上提到 AppState.page（0 学习 1 答题 2 学习报告 3 查询 | 更多: 4 题库 5 错题本 6 生词本 7 答题记录 8 默写）
   bool _lastDarkMode = false;
   bool _lastFullscreen = false;
-  /// 考试确认对话框是否正在显示
-  bool _examDialogShowing = false;
   /// 手机端浏览器页是否临时显示底部导航栏
   bool _showBrowserNav = false;
   Timer? _browserNavTimer;
@@ -326,28 +324,12 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
     }
     // 根据省电模式调整帧率
     _updateFrameRate();
-    // 全卷生成完成（examPendingConfirm=true）时触发确认弹窗
-    _checkExamConfirmDialog();
     // 离开浏览器页后重置临时导航栏状态
     if (_state.page != 19 && _showBrowserNav) {
       _showBrowserNav = false;
       _browserNavTimer?.cancel();
     }
     setState(() {});
-  }
-
-  /// 在 build 中检测考试确认弹窗触发条件
-  void _checkExamConfirmDialog() {
-    if (_state.examPendingConfirm && _state.currentExamPaper != null && !_examDialogShowing) {
-      _examDialogShowing = true;
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted && _state.examPendingConfirm && _state.currentExamPaper != null) {
-          _showExamConfirmDialog();
-        } else {
-          _examDialogShowing = false;
-        }
-      });
-    }
   }
 
   static const _frameRateChannel = MethodChannel('com.smartenglish/framerate');
@@ -1494,22 +1476,6 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
     );
   }
 
-  /// 显示考试确认对话框
-  void _showExamConfirmDialog() {
-    final s = _state;
-    if (s.currentExamPaper == null) {
-      _examDialogShowing = false;
-      return;
-    }
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) => ExamConfirmDialog(state: s),
-    ).then((_) {
-      _examDialogShowing = false;
-    });
-  }
-
   Widget _buildChatBubble(ChatMessage msg, bool isLight, {bool running = false}) {
     final c = AppColors(isLight);
     final isUser = msg.role == 'user';
@@ -1602,14 +1568,25 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
         ),
       );
     }
+    final hasStatus = running && !isUser && (msg.statusLabel ?? '').isNotEmpty;
     if (!hasReasoning && !hasSteps) {
-      if (modelHeader == null) return avatarRow;
-      return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [modelHeader, avatarRow]);
+      if (!hasStatus) {
+        if (modelHeader == null) return avatarRow;
+        return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [modelHeader, avatarRow]);
+      }
+      // 仅有状态行（流式决策期间）：状态 + 模型名，不渲染空气泡
+      return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        if (modelHeader != null) modelHeader,
+        _statusRow(msg, isLight),
+        avatarRow,
+      ]);
     }
     // 内容尚未到达时（纯思考/工具阶段）不渲染空气泡
     final bool showBubble = msg.content.isNotEmpty || !running;
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       if (modelHeader != null) modelHeader,
+      // 运行状态行：流式决策期间告诉用户"现在到哪一步了"
+      if (hasStatus) _statusRow(msg, isLight),
       if (hasReasoning) ...[
         AgentThinkRow(text: msg.reasoning!, running: running, light: isLight),
         const SizedBox(height: 2),
@@ -1668,6 +1645,32 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
       ],
       if (showBubble) avatarRow,
     ]);
+  }
+
+  /// 运行状态行（"思考下一步（第 2 轮）…"）：小转轮 + 一句话进度，
+  /// 让用户在模型流式决策期间也知道 Agent 没卡死、进行到第几步。
+  Widget _statusRow(ChatMessage msg, bool isLight) {
+    final text = msg.statusLabel ?? '';
+    if (text.isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(left: 4, bottom: 4),
+      child: Row(children: [
+        SizedBox(
+          width: 12,
+          height: 12,
+          child: CircularProgressIndicator(strokeWidth: 1.6, color: isLight ? const Color(0xFF6B7280) : const Color(0xFF9CA3AF)),
+        ),
+        const SizedBox(width: 6),
+        Expanded(
+          child: Text(
+            text,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(fontSize: 12, color: isLight ? const Color(0xFF6B7280) : const Color(0xFF9CA3AF)),
+          ),
+        ),
+      ]),
+    );
   }
 
   /// R5: 简易 Markdown 解析：支持 **粗体**、*斜体*、~~删除线~~、`行内代码`、标题、列表、代码块、引用、链接
@@ -3331,17 +3334,6 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
         (_state.page == 1 || _state.page == 10 || _state.page == 11)) {
       Navigator.of(context).pop();
       return;
-    }
-    // 发送完成后检查是否需要弹出考试确认对话框（全卷生成成功后）
-    if (mounted && s.examPendingConfirm && s.currentExamPaper != null && !_examDialogShowing) {
-      _examDialogShowing = true;
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted && _state.examPendingConfirm && _state.currentExamPaper != null) {
-          _showExamConfirmDialog();
-        } else {
-          _examDialogShowing = false;
-        }
-      });
     }
   }
 }

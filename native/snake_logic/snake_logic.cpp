@@ -44,6 +44,7 @@ struct SnakeStateImpl {
 
   void syncRenderArrays() {
     snakeLen = (int)snake.size();
+    if (snakeLen > SNAKE_MAX_LEN) snakeLen = SNAKE_MAX_LEN;  // 防御：绝不越界写坐标数组
     for (int i = 0; i < snakeLen; i++) {
       curX[i] = snake[i].x;
       curY[i] = snake[i].y;
@@ -74,7 +75,8 @@ struct SnakeStateImpl {
     return rngState;
   }
 
-  Vec randomFreeCell() {
+  /// 随机空格。返回 false 表示棋盘已满（无空格可放食物）。
+  bool randomFreeCell(Vec* out) {
     std::vector<Vec> free;
     for (int x = 0; x < SNAKE_COLS; x++)
       for (int y = 0; y < SNAKE_ROWS; y++) {
@@ -83,8 +85,9 @@ struct SnakeStateImpl {
           if (s.x == x && s.y == y) { occ = true; break; }
         if (!occ) free.push_back({x, y});
       }
-    if (free.empty()) return {0, 0};
-    return free[rngNext() % free.size()];
+    if (free.empty()) return false;
+    *out = free[rngNext() % free.size()];
+    return true;
   }
 
   void reset() {
@@ -97,7 +100,8 @@ struct SnakeStateImpl {
     dirQueue.clear();
     score = 0;
     tickMs = 180.0;
-    food = randomFreeCell();
+    Vec f;
+    if (randomFreeCell(&f)) food = f;  // 重置时蛇仅 3 节，必有空格
     over = false;
     paused = false;
     moveProgress = 1.0;
@@ -148,12 +152,22 @@ struct SnakeStateImpl {
     snake.push_back(head);
     const size_t keep = eat ? prevSnake.size() : prevSnake.size() - 1;
     for (size_t i = 0; i < keep; i++) snake.push_back(prevSnake[i]);
+    // 容量防御：任何路径下蛇身都不超过棋盘格数（杜绝 curX/curX 越界写）
+    if (snake.size() > (size_t)SNAKE_MAX_LEN) snake.resize(SNAKE_MAX_LEN);
     if (eat) {
       score += 10;
       if (score % 50 == 0 && tickMs > 90.0) {
         tickMs = std::max(90.0, 180.0 - (score / 10) * 6.0);
       }
-      food = randomFreeCell();
+      Vec nf;
+      if (!randomFreeCell(&nf)) {
+        // 吃掉最后一颗食物后棋盘全满：通关（不再放食物，自然结束）
+        gameOver();
+        syncRenderArrays();
+        syncPrevArrays();
+        return;
+      }
+      food = nf;
     }
     syncRenderArrays();
     syncPrevArrays();
@@ -161,6 +175,10 @@ struct SnakeStateImpl {
 
   void advance(double dtMs) {
     if (!playing || paused || over) return;
+    // 钳制单帧推进时长：后台恢复/首帧卡顿/时钟跳变时 dt 可能异常大，
+    // 一次性追赶数百步会导致蛇瞬移甚至直接撞死（spiral of death）。
+    if (!(dtMs > 0.0)) dtMs = 0.0;  // 负值/NaN 归零
+    if (dtMs > 250.0) dtMs = 250.0;
     if (invincible) {
       invincibleElapsed += dtMs;
       if (invincibleElapsed >= 1100.0) {
@@ -174,7 +192,9 @@ struct SnakeStateImpl {
       step();
       if (over) break;
     }
-    moveProgress = std::min(1.0, logicElapsed / tickMs);
+    // 进度双端钳制：负 dt / 异常 tick 时保证插值进度在 [0,1]
+    const double prog = (tickMs > 0.0) ? (logicElapsed / tickMs) : 1.0;
+    moveProgress = std::max(0.0, std::min(1.0, prog));
   }
 };
 
@@ -224,6 +244,10 @@ void snake_toggle_pause(SnakeState* s) {
 void snake_turn(SnakeState* s, int dx, int dy) {
   auto* impl = reinterpret_cast<SnakeStateImpl*>(s);
   if (!impl->playing || impl->paused || impl->over) return;
+  // 仅接受正交单位方向：(±1,0) 或 (0,±1)。
+  // (0,0) 会原地不动下一帧自撞；(1,1)/(2,0) 等会斜移/跨格跳，均可穿墙穿身。
+  if ((dx == 0) == (dy == 0)) return;
+  if (dx < -1 || dx > 1 || dy < -1 || dy > 1) return;
   if (impl->dirQueue.size() >= 2) return;
   Vec last = impl->dirQueue.empty() ? impl->dir : impl->dirQueue.back();
   if (dx == -last.x && dy == -last.y) return;

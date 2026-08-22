@@ -9,6 +9,7 @@ library;
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 
 /// MCP server 配置（stdio）
 class McpServerConfig {
@@ -54,7 +55,8 @@ class McpStdioClient {
   int _nextId = 1;
   StreamSubscription? _stdoutSub;
   StreamSubscription? _stderrSub;
-  final StringBuffer _buf = StringBuffer();
+  // 原始字节缓冲（勿按 chunk 解码：多字节 UTF-8 字符跨块会被截断损坏）
+  List<int> _bufBytes = <int>[];
   bool _initialized = false;
 
   /// 工具列表（initialize + tools/list 后填充）
@@ -74,30 +76,46 @@ class McpStdioClient {
     );
     _stdoutSub = _process!.stdout.listen(_onStdout);
     _stderrSub = _process!.stderr.listen((_) {}); // 丢弃 stderr（noise）
+    // 子进程退出：立即失败所有挂起 RPC，避免调用方空等 60s 超时
+    _process!.exitCode.then((_) => _failAllPending());
 
     // initialize 握手
-    final initResp = await _send({
-      'jsonrpc': '2.0',
-      'id': _nextId++,
-      'method': 'initialize',
-      'params': {
-        'protocolVersion': '2024-11-05',
-        'capabilities': {},
-        'clientInfo': {'name': 'afloat', 'version': '1.0'},
+    final initResp = await _send(
+      {
+        'jsonrpc': '2.0',
+        'id': _nextId++,
+        'method': 'initialize',
+        'params': {
+          'protocolVersion': '2024-11-05',
+          'capabilities': {},
+          'clientInfo': {'name': 'afloat', 'version': '1.0'},
+        },
       },
-    });
+      timeout: const Duration(seconds: 20),
+    );
+    // 握手失败（超时/写失败/协议错误）必须抛异常，
+    // 否则客户端会带空工具列表"假连接"，UI 显示已连接但所有工具不可用
+    if (initResp.containsKey('error')) {
+      throw StateError('MCP initialize 失败: ${initResp['error']}');
+    }
     serverInfo = (initResp['serverInfo'] is Map) ? (initResp['serverInfo']['name']?.toString()) : null;
     _initialized = true;
     // initialized notification
     _sendNotify({'jsonrpc': '2.0', 'method': 'notifications/initialized'});
 
     // list tools
-    final listResp = await _send({
-      'jsonrpc': '2.0',
-      'id': _nextId++,
-      'method': 'tools/list',
-      'params': {},
-    });
+    final listResp = await _send(
+      {
+        'jsonrpc': '2.0',
+        'id': _nextId++,
+        'method': 'tools/list',
+        'params': {},
+      },
+      timeout: const Duration(seconds: 20),
+    );
+    if (listResp.containsKey('error')) {
+      throw StateError('MCP tools/list 失败: ${listResp['error']}');
+    }
     final rawTools = (listResp['result'] is Map && (listResp['result'] as Map)['tools'] is List)
         ? (listResp['result'] as Map)['tools'] as List
         : <dynamic>[];
@@ -131,18 +149,24 @@ class McpStdioClient {
     };
   }
 
-  Future<Map<String, dynamic>> _send(Map<String, dynamic> msg) async {
+  Future<Map<String, dynamic>> _send(Map<String, dynamic> msg, {Duration timeout = const Duration(seconds: 60)}) async {
     if (_process == null) throw StateError('MCP process not running');
     final id = msg['id'] as int;
     final body = jsonEncode(msg);
     final bytes = utf8.encode(body);
     final header = 'Content-Length: ${bytes.length}\r\n\r\n';
-    _process!.stdin.add(utf8.encode(header));
-    _process!.stdin.add(bytes);
     final completer = Completer<Map<String, dynamic>>();
     _pending[id] = completer;
-    // 单次 RPC 最多等 60s
-    return completer.future.timeout(const Duration(seconds: 60), onTimeout: () {
+    // 写入失败（子进程已死等）立即失败该 RPC，而非让调用方等 60s 超时
+    try {
+      _process!.stdin.add(utf8.encode(header));
+      _process!.stdin.add(bytes);
+    } catch (e) {
+      _pending.remove(id);
+      return {'jsonrpc': '2.0', 'id': id, 'error': {'code': -32000, 'message': 'mcp_write_failed: $e'}};
+    }
+    // 单次 RPC 最多等 timeout（握手 20s / 工具调用 60s）
+    return completer.future.timeout(timeout, onTimeout: () {
       _pending.remove(id);
       return {'jsonrpc': '2.0', 'id': id, 'error': {'code': -32000, 'message': 'mcp_timeout'}};
     });
@@ -158,24 +182,24 @@ class McpStdioClient {
   }
 
   void _onStdout(List<int> chunk) {
-    _buf.write(utf8.decode(chunk, allowMalformed: true));
+    _bufBytes.addAll(chunk);
     while (true) {
-      final text = _buf.toString();
-      final sepIdx = text.indexOf('\r\n\r\n');
-      if (sepIdx < 0) return;
-      final headerPart = text.substring(0, sepIdx);
-      final m = RegExp(r'Content-Length:\s*(\d+)', caseSensitive: false).firstMatch(headerPart);
+      final sep = _findSeparator(_bufBytes);
+      if (sep < 0) return;
+      // 头部为 ASCII，单独解码安全
+      final header = utf8.decode(_bufBytes.sublist(0, sep), allowMalformed: true);
+      final m = RegExp(r'Content-Length:\s*(\d+)', caseSensitive: false).firstMatch(header);
       if (m == null) {
-        _buf.clear();
-        return;
+        // 非法头部：仅丢弃该段头部继续扫描，不清空整段缓冲
+        _bufBytes = _bufBytes.sublist(sep + 4);
+        continue;
       }
       final len = int.parse(m.group(1)!);
-      final bodyStart = sepIdx + 4;
-      if (text.length < bodyStart + len) return; // 还没收完
-      final body = text.substring(bodyStart, bodyStart + len);
-      // 已读完，移除缓冲
-      _buf.clear();
-      _buf.write(text.substring(bodyStart + len));
+      final bodyStart = sep + 4;
+      if (_bufBytes.length < bodyStart + len) return; // 还没收完
+      // body 整体解码一次：多字节字符跨 chunk 也不会损坏
+      final body = utf8.decode(_bufBytes.sublist(bodyStart, bodyStart + len), allowMalformed: true);
+      _bufBytes = _bufBytes.sublist(bodyStart + len);
       try {
         final json = jsonDecode(body) as Map<String, dynamic>;
         final id = json['id'];
@@ -183,6 +207,26 @@ class McpStdioClient {
           _pending.remove(id)!.complete(json);
         }
       } catch (_) {}
+    }
+  }
+
+  /// 在字节流中查找 \r\n\r\n 分隔符位置；未找到返回 -1
+  static int _findSeparator(List<int> b) {
+    for (var i = 0; i + 3 < b.length; i++) {
+      if (b[i] == 13 && b[i + 1] == 10 && b[i + 2] == 13 && b[i + 3] == 10) return i;
+    }
+    return -1;
+  }
+
+  /// 进程退出/写入失败时，立即让所有挂起 RPC 失败，不再傻等 60s 超时
+  void _failAllPending([String reason = 'mcp_process_exit']) {
+    if (_pending.isEmpty) return;
+    final entries = _pending.entries.toList();
+    _pending.clear();
+    for (final e in entries) {
+      if (!e.value.isCompleted) {
+        e.value.complete({'jsonrpc': '2.0', 'id': e.key, 'error': {'code': -32000, 'message': reason}});
+      }
     }
   }
 
@@ -197,15 +241,25 @@ class McpStdioClient {
 /// 管理多个 MCP server 客户端
 class McpRegistry {
   final List<McpStdioClient> _clients = [];
-  bool _connecting = false;
+  /// 进行中的连接 Future：并发调用 connectAll 复用同一 Future，
+  /// 避免早到的调用方拿到陈旧/空工具列表
+  Future<List<McpTool>>? _connectFuture;
 
   List<McpStdioClient> get clients => List.unmodifiable(_clients);
 
   /// 给定配置列表，启动所有 server。
   /// 单个失败不影响其他；返回的工具列表是所有 server 工具合并的结果。
-  Future<List<McpTool>> connectAll(List<McpServerConfig> configs) async {
-    if (_connecting) return allTools;
-    _connecting = true;
+  Future<List<McpTool>> connectAll(List<McpServerConfig> configs) {
+    final inFlight = _connectFuture;
+    if (inFlight != null) return inFlight;
+    final f = _doConnectAll(configs);
+    _connectFuture = f;
+    return f.whenComplete(() {
+      if (identical(_connectFuture, f)) _connectFuture = null;
+    });
+  }
+
+  Future<List<McpTool>> _doConnectAll(List<McpServerConfig> configs) async {
     // 先断开旧的
     await disconnectAll();
     for (final cfg in configs) {
@@ -214,11 +268,12 @@ class McpRegistry {
       try {
         await client.connect();
         _clients.add(client);
-      } catch (_) {
+      } catch (e) {
+        // 失败的 server 不进 _clients（不"假连接"），但留日志供排查
+        debugPrint('[MCP] server "${cfg.name}" 连接失败: $e');
         await client.dispose();
       }
     }
-    _connecting = false;
     return allTools;
   }
 

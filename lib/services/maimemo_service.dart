@@ -186,9 +186,9 @@ class MaimemoService {
     return list.map((e) {
       final m = e as Map<String, dynamic>;
       return MaimemoTodayWord(
-        vocId: (m['voc_id'] ?? '') as String,
-        spelling: (m['voc_spelling'] ?? '') as String,
-        order: ((m['order'] ?? 0) as num).toInt(),
+        vocId: m['voc_id']?.toString() ?? '',
+        spelling: m['voc_spelling']?.toString() ?? '',
+        order: _asInt(m['order']),
         firstResponse: m['first_response'] as String?,
         isNew: (m['is_new'] ?? false) as bool,
         isFinished: (m['is_finished'] ?? false) as bool,
@@ -196,12 +196,20 @@ class MaimemoService {
     }).toList();
   }
 
+  /// 宽容取整：API 返回字符串/其他类型时不抛 CastError
+  static int _asInt(Object? v) {
+    if (v is num) return v.toInt();
+    if (v is String) return int.tryParse(v) ?? 0;
+    return 0;
+  }
+
   /// 拉取今日全部学习单词（去重合并）。
   ///
-  /// 墨墨接口无分页参数且单次 limit 上限为 1000。策略：
-  /// 1. 先按全部状态拉一次；若返回数 < 上限，说明已拉全，直接返回；
-  /// 2. 若达到上限（今日单词可能超过 1000），再按「已完成 / 未完成」
-  ///    拆分两次拉取，按 vocId/spelling 去重合并，覆盖更多今日单词。
+  /// 墨墨接口无分页游标且单次 limit 上限为 1000。策略：
+  /// 1. 先按全部维度拉一次；未打满说明已拉全，直接返回；
+  /// 2. 某桶打满 pageSize 时，按「完成状态 / 新旧」两个维度继续细分重拉
+  ///    （去重靠 vocId/spelling），逐级扩大覆盖，避免重度用户单桶
+  ///    超 1000 被静默截断。
   static Future<List<MaimemoTodayWord>> fetchAllTodayWords(
     String token, {
     int pageSize = 1000,
@@ -215,14 +223,27 @@ class MaimemoService {
       }
     }
 
-    var words = await getTodayWords(token, limit: pageSize);
-    merge(words);
-    if (words.length < pageSize) return all;
+    Future<void> pull({String status = 'all', String freshness = 'all'}) async {
+      final words = await getTodayWords(
+        token,
+        status: status,
+        freshness: freshness,
+        limit: pageSize,
+      );
+      merge(words);
+      if (words.length < pageSize) return; // 未打满：该桶已拉全
+      // 打满：细分维度重拉（最多再下探两级，维度集合有限不会无限递归）
+      if (status == 'all') {
+        await pull(status: 'finished', freshness: freshness);
+        await pull(status: 'unfinished', freshness: freshness);
+      }
+      if (freshness == 'all') {
+        await pull(status: status, freshness: 'new');
+        await pull(status: status, freshness: 'review');
+      }
+    }
 
-    words = await getTodayWords(token, status: 'finished', limit: pageSize);
-    merge(words);
-    words = await getTodayWords(token, status: 'unfinished', limit: pageSize);
-    merge(words);
+    await pull();
     return all;
   }
 
@@ -247,13 +268,13 @@ class MaimemoService {
     return list.map((e) {
       final m = e as Map<String, dynamic>;
       return MaimemoStudyRecord(
-        vocId: (m['voc_id'] ?? '') as String,
-        spelling: (m['voc_spelling'] ?? '') as String,
+        vocId: m['voc_id']?.toString() ?? '',
+        spelling: m['voc_spelling']?.toString() ?? '',
         addDate: m['add_date'] as String?,
         firstStudyDate: m['first_study_date'] as String?,
         lastStudyDate: m['last_study_date'] as String?,
         nextStudyDate: m['next_study_date'] as String?,
-        studyCount: ((m['study_count'] ?? 0) as num).toInt(),
+        studyCount: _asInt(m['study_count']),
       );
     }).toList();
   }

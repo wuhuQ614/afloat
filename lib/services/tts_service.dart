@@ -60,6 +60,9 @@ class TtsService {
     } catch (_) {
       _tts = null;
       _available = false;
+      // 瞬时失败（如引擎尚未就绪）不永久缓存：清空 Future，
+      // 下一次 init() 会重新尝试初始化
+      _initFuture = null;
     }
   }
 

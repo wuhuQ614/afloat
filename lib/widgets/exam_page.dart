@@ -20,40 +20,59 @@ class ExamShell extends StatefulWidget {
 
 class _ExamShellState extends State<ExamShell> {
   Timer? _timer;
-  late AppState _state;
+  AppState? _state;
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    _state = AppScope.of(context);
-    if (_state.page == 10) {
+    final s = AppScope.of(context);
+    if (_state != s) {
+      _state?.removeListener(_onPageChanged);
+      _state = s;
+      _state!.addListener(_onPageChanged);
+    }
+    _onPageChanged();
+  }
+
+  /// 离开考场页（page != 10）立即停表：交卷/切页后不再后台递减倒计时，
+  /// 也不每秒空转 notifyListeners 触发整页重建。
+  void _onPageChanged() {
+    final s = _state;
+    if (s == null) return;
+    if (s.page == 10) {
       _timer ??= Timer.periodic(const Duration(seconds: 1), (_) {
-        _state.tickExamTimer();
+        s.tickExamTimer();
       });
+    } else {
+      _timer?.cancel();
+      _timer = null;
     }
   }
 
   @override
   void dispose() {
+    _state?.removeListener(_onPageChanged);
     _timer?.cancel();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    // build 必然发生在 didChangeDependencies 之后，_state 已就绪
+    final s = _state!;
     return AnimatedBuilder(
-      animation: _state,
+      animation: s,
       builder: (context, _) {
-        if (_state.page == 11 && _state.currentExamResult != null) {
-          return ExamResultPage(state: _state);
+        if (s.page == 11 && s.currentExamResult != null) {
+          return ExamResultPage(state: s);
         }
-        if (_state.currentExamPaper == null) {
+        if (s.currentExamPaper == null) {
           return Container(
             color: const Color(0xFF0F172A),
             child: const Center(child: Text('暂无试卷', style: TextStyle(color: Colors.white))),
           );
         }
-        return ExamRoomPage(state: _state);
+        return ExamRoomPage(state: s);
       },
     );
   }
@@ -1971,9 +1990,8 @@ class ExamResultPage extends StatelessWidget {
                     flex: isMobile ? 1 : 0,
                     child: ElevatedButton.icon(
                       onPressed: () {
-                        // 回看错题：返回考场，但其实直接重进首页
-                        state.page = 9;
-                        state.touch();
+                        // 去错题本复盘：错题本页索引为 5（见 main.dart 页面索引注释）
+                        state.setPage(5);
                       },
                       icon: const Icon(Icons.analytics_rounded, size: 16),
                       label: const Text('去错题本复盘', style: TextStyle(fontSize: 12.5)),
@@ -2589,190 +2607,3 @@ int _countAnswered(AppState state) {
   return n;
 }
 
-/// 全卷生成完成后的醒目大弹窗：选择"进入考场"或"暂不进入"
-class ExamConfirmDialog extends StatelessWidget {
-  final AppState state;
-  const ExamConfirmDialog({super.key, required this.state});
-
-  @override
-  Widget build(BuildContext context) {
-    final paper = state.currentExamPaper;
-    return Dialog(
-      backgroundColor: Colors.transparent,
-      insetPadding: const EdgeInsets.symmetric(horizontal: 40, vertical: 40),
-      child: Container(
-        width: 520,
-        constraints: const BoxConstraints(maxHeight: 640),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(24),
-          boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.18), blurRadius: 40, offset: const Offset(0, 12))],
-        ),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // 顶部渐变横幅
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.fromLTRB(28, 28, 28, 24),
-                decoration: const BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                    colors: [Color(0xFF3B82F6), Color(0xFF6366F1), Color(0xFF8B5CF6)],
-                  ),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(children: [
-                      Container(
-                        width: 52,
-                        height: 52,
-                        decoration: BoxDecoration(
-                          color: Colors.white.withValues(alpha: 0.2),
-                          borderRadius: BorderRadius.circular(14),
-                        ),
-                        child: const Icon(Icons.assignment_turned_in_rounded, color: Colors.white, size: 28),
-                      ),
-                      const SizedBox(width: 14),
-                      const Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text('全卷已生成', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800, color: Colors.white)),
-                            SizedBox(height: 4),
-                            Text('专升本英语综合模拟全卷', style: TextStyle(fontSize: 13, color: Colors.white70)),
-                          ],
-                        ),
-                      ),
-                    ]),
-                  ],
-                ),
-              ),
-              // 内容区
-              Flexible(
-                child: SingleChildScrollView(
-                  padding: const EdgeInsets.fromLTRB(28, 22, 28, 8),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      if (paper != null)
-                        Text(paper.title, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Color(0xFF1E293B))),
-                      const SizedBox(height: 18),
-                      // 四个指标卡（读试卷实际数据）
-                      Row(children: [
-                        _metricCard('${paper?.totalQuestions ?? 76}', '题量', const Color(0xFF3B82F6)),
-                        const SizedBox(width: 10),
-                        _metricCard('150', '总分', const Color(0xFF8B5CF6)),
-                        const SizedBox(width: 10),
-                        _metricCard('7', '题型', const Color(0xFF10B981)),
-                        const SizedBox(width: 10),
-                        _metricCard('${paper?.totalTimeMin ?? 120}', '分钟', const Color(0xFFF59E0B)),
-                      ]),
-                      const SizedBox(height: 20),
-                      // 题型分布
-                      Container(
-                        width: double.infinity,
-                        padding: const EdgeInsets.all(14),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFF8FAFC),
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: const Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text('题型分布', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: Color(0xFF64748B))),
-                            SizedBox(height: 8),
-                            Text('① 词汇与语法 20题  ② 阅读理解 20题\n③ 完形填空 15题  ④ 补全对话 5题\n⑤ 选词填空 10题  ⑥ 英译汉 5题\n⑦ 写作 1题', style: TextStyle(fontSize: 12, color: Color(0xFF334155), height: 1.7)),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                      // 提示
-                      Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Icon(Icons.info_outline_rounded, size: 16, color: Color(0xFF94A3B8)),
-                          const SizedBox(width: 6),
-                          Expanded(
-                            child: Text(
-                              '进入考场后 AI 助手将自动隐藏，需独立作答，超时自动交卷。',
-                              style: const TextStyle(fontSize: 11.5, color: Color(0xFF94A3B8), height: 1.5),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-              // 底部按钮
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.fromLTRB(28, 12, 28, 24),
-                child: Row(children: [
-                  Expanded(
-                    child: OutlinedButton(
-                      onPressed: () {
-                        state.examPendingConfirm = false;
-                        state.notifyListeners();
-                        Navigator.of(context).pop();
-                      },
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: const Color(0xFF64748B),
-                        side: const BorderSide(color: Color(0xFFCBD5E1)),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                        padding: const EdgeInsets.symmetric(vertical: 14),
-                      ),
-                      child: const Text('暂不进入', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: FilledButton.icon(
-                      onPressed: () {
-                        Navigator.of(context).pop();
-                        state.enterFullExam();
-                      },
-                      icon: const Icon(Icons.play_arrow_rounded, size: 20),
-                      label: const Text('进入考场', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700)),
-                      style: FilledButton.styleFrom(
-                        backgroundColor: const Color(0xFF3B82F6),
-                        foregroundColor: Colors.white,
-                        elevation: 0,
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                        padding: const EdgeInsets.symmetric(vertical: 14),
-                      ),
-                    ),
-                  ),
-                ]),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _metricCard(String value, String label, Color color) {
-    return Expanded(
-      child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 14),
-        decoration: BoxDecoration(
-          color: color.withValues(alpha: 0.08),
-          borderRadius: BorderRadius.circular(12),
-        ),
-        child: Column(
-          children: [
-            Text(value, style: TextStyle(fontSize: 24, fontWeight: FontWeight.w800, color: color)),
-            const SizedBox(height: 2),
-            Text(label, style: const TextStyle(fontSize: 11, color: Color(0xFF64748B))),
-          ],
-        ),
-      ),
-    );
-  }
-}

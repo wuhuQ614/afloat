@@ -66,6 +66,7 @@ class Storage {
         model: _get('apiModel', 'gpt-5.1'),
         temperature: _get('apiTemp', '0.3'),
         fullUrl: _getBool('apiFullUrl', false),
+        vision: _getBool('apiVision', true),
         questionMode: _get('apiQuestionMode', 'auto'),
         questionSpeed: _get('apiQuestionSpeed', 'fast'),
         contextLength: _getInt('apiContextLength', 200000),
@@ -77,6 +78,7 @@ class Storage {
     _set('apiModel', c.model);
     _set('apiTemp', c.temperature);
     _setBool('apiFullUrl', c.fullUrl);
+    _setBool('apiVision', c.vision);
     _set('apiQuestionMode', c.questionMode);
     _set('apiQuestionSpeed', c.questionSpeed);
     _setInt('apiContextLength', c.contextLength);
@@ -509,6 +511,10 @@ class Storage {
       'apiModel': _get('apiModel', ''),
       'apiTemp': _get('apiTemp', ''),
       'apiFullUrl': _getBool('apiFullUrl', false),
+      'apiVision': _getBool('apiVision', true),
+      'apiQuestionMode': _get('apiQuestionMode', 'auto'),
+      'apiQuestionSpeed': _get('apiQuestionSpeed', 'fast'),
+      'apiContextLength': _getInt('apiContextLength', 200000),
       'uiMode': _get('uiMode', ''),
       'themeId': _get('themeId', ''),
       'lastLightTheme': _get('lastLightTheme', ''),
@@ -531,17 +537,34 @@ class Storage {
       'chatApiModel': _get('chatApiModel', ''),
       'chatApiTemp': _get('chatApiTemp', ''),
       'chatApiFullUrl': _getBool('chatApiFullUrl', false),
+      'chatApiContextLength': _getInt('chatApiContextLength', 200000),
       'chatShowReasoning': _getBool('chatShowReasoning', false),
       'chatStream': _getBool('chatStream', true),
       'chatThinking': _getBool('chatThinking', true),
+      'chatFullAccess': _getBool('chatFullAccess', false),
+      // Agent / 技能 / MCP
+      'activeSkill': _get('activeSkill', ''),
+      'chatMode': _get('chatMode', ''),
+      'activeExpert': _get('activeExpert', ''),
+      'customSkills': _get('customSkills', '[]'),
+      'skillsDisabledIds': _get('skillsDisabledIds', '[]'),
+      'mcpConfigJson': _get('mcpConfigJson', '[]'),
+      'chatWorkspacePath': _get('chatWorkspacePath', ''),
+      'chatSessions': _get('chatSessions', ''),
+      'chatSessionMessages': _get('chatSessionMessages', ''),
       // 开发者模式
       'devMode': _getBool('devMode', false),
       // 联网搜索服务
+      'searchEnabled': _getBool('searchEnabled', false),
       'searchUrl': _get('searchUrl', ''),
       'searchKey': _get('searchKey', ''),
       // 墨墨词库
       'maimemoToken': _get('maimemoToken', ''),
       'maimemoWordbook': _get('maimemoWordbook', ''),
+      'maimemoLastSync': _getInt('maimemoLastSync', 0),
+      'maimemoSyncedCount': _getInt('maimemoSyncedCount', 0),
+      // 贪吃蛇最高分
+      'snakeHighScore': _getInt('snakeHighScore', 0),
       // API 配置档
       'apiProfiles': _get('apiProfiles', ''),
       'chatProfiles': _get('chatProfiles', ''),
@@ -559,61 +582,106 @@ class Storage {
     return jsonEncode(data);
   }
 
-  /// 导入备份，返回是否成功
+  /// 导入备份，返回是否成功。
+  /// 逐键独立容错：单个键类型不符只跳过该键，其余照常导入，
+  /// 避免"第 N 键抛 TypeError 时前 N-1 键已落盘却返回失败"的半导入失真。
   static bool importBackup(String content) {
     try {
       final data = jsonDecode(content) as Map<String, dynamic>;
-      if (data.containsKey('apiUrl')) _set('apiUrl', data['apiUrl'] as String);
-      if (data.containsKey('apiKey')) _set('apiKey', data['apiKey'] as String);
-      if (data.containsKey('apiModel')) _set('apiModel', data['apiModel'] as String);
-      if (data.containsKey('apiTemp')) _set('apiTemp', data['apiTemp'] as String);
-      if (data.containsKey('apiFullUrl')) _setBool('apiFullUrl', data['apiFullUrl'] as bool);
-      if (data.containsKey('uiMode')) _set('uiMode', data['uiMode'] as String);
-      if (data.containsKey('themeId')) _set('themeId', data['themeId'] as String);
-      if (data.containsKey('lastLightTheme')) _set('lastLightTheme', data['lastLightTheme'] as String);
-      if (data.containsKey('onboardingDone')) _setBool('onboardingDone', data['onboardingDone'] == 'true');
-      if (data.containsKey('favorites')) _set('favorites', data['favorites'] as String);
-      if (data.containsKey('wrongQuestions')) _set('wrongQuestions', data['wrongQuestions'] as String);
-      if (data.containsKey('studyRecords')) _set('studyRecords', data['studyRecords'] as String);
-      if (data.containsKey('wordbook')) _set('wordbook', data['wordbook'] as String);
-      if (data.containsKey('recordedWords')) _set('recordedWords', data['recordedWords'] as String);
-      if (data.containsKey('recordsSelected')) _set('recordsSelected', data['recordsSelected'] as String);
-      if (data.containsKey('examLastPaper')) _set('examLastPaper', data['examLastPaper'] as String);
-      if (data.containsKey('examLastResult')) _set('examLastResult', data['examLastResult'] as String);
-      if (data.containsKey('examHistory')) _set('examHistory', data['examHistory'] as String);
-      if (data.containsKey('grammarProgress')) _set('grammarProgress', data['grammarProgress'] as String);
-      if (data.containsKey('answeredBankIdx')) _set('answeredBankIdx', data['answeredBankIdx'] as String);
+      void s(String k) {
+        try {
+          if (data[k] is String) _set(k, data[k] as String);
+        } catch (_) {}
+      }
+      void b(String k) {
+        try {
+          if (data[k] is bool) _setBool(k, data[k] as bool);
+        } catch (_) {}
+      }
+      void i(String k) {
+        try {
+          if (data[k] is num) _setInt(k, (data[k] as num).toInt());
+        } catch (_) {}
+      }
+      // 基础 API 配置
+      s('apiUrl');
+      s('apiKey');
+      s('apiModel');
+      s('apiTemp');
+      b('apiFullUrl');
+      b('apiVision');
+      s('apiQuestionMode');
+      s('apiQuestionSpeed');
+      i('apiContextLength');
+      // 界面
+      s('uiMode');
+      s('themeId');
+      s('lastLightTheme');
+      try {
+        if (data.containsKey('onboardingDone')) {
+          _setBool('onboardingDone', data['onboardingDone'] == 'true' || data['onboardingDone'] == true);
+        }
+      } catch (_) {}
+      // 学习数据
+      s('favorites');
+      s('wrongQuestions');
+      s('studyRecords');
+      s('wordbook');
+      s('recordedWords');
+      s('recordsSelected');
+      s('examLastPaper');
+      s('examLastResult');
+      s('examHistory');
+      s('grammarProgress');
+      s('answeredBankIdx');
       // 聊天独立 API 配置
-      if (data.containsKey('chatApiIndependent')) _setBool('chatApiIndependent', data['chatApiIndependent'] as bool);
-      if (data.containsKey('chatApiUrl')) _set('chatApiUrl', data['chatApiUrl'] as String);
-      if (data.containsKey('chatApiKey')) _set('chatApiKey', data['chatApiKey'] as String);
-      if (data.containsKey('chatApiModel')) _set('chatApiModel', data['chatApiModel'] as String);
-      if (data.containsKey('chatApiTemp')) _set('chatApiTemp', data['chatApiTemp'] as String);
-      if (data.containsKey('chatApiFullUrl')) _setBool('chatApiFullUrl', data['chatApiFullUrl'] as bool);
-      if (data.containsKey('chatShowReasoning')) _setBool('chatShowReasoning', data['chatShowReasoning'] as bool);
-      if (data.containsKey('chatStream')) _setBool('chatStream', data['chatStream'] as bool);
-      if (data.containsKey('chatThinking')) _setBool('chatThinking', data['chatThinking'] as bool);
+      b('chatApiIndependent');
+      s('chatApiUrl');
+      s('chatApiKey');
+      s('chatApiModel');
+      s('chatApiTemp');
+      b('chatApiFullUrl');
+      i('chatApiContextLength');
+      b('chatShowReasoning');
+      b('chatStream');
+      b('chatThinking');
+      b('chatFullAccess');
+      // Agent / 技能 / MCP
+      s('activeSkill');
+      s('chatMode');
+      s('activeExpert');
+      s('customSkills');
+      s('skillsDisabledIds');
+      s('mcpConfigJson');
+      s('chatWorkspacePath');
+      s('chatSessions');
+      s('chatSessionMessages');
       // 开发者模式
-      if (data.containsKey('devMode')) _setBool('devMode', data['devMode'] as bool);
+      b('devMode');
       // 联网搜索服务
-      if (data.containsKey('searchUrl')) _set('searchUrl', data['searchUrl'] as String);
-      if (data.containsKey('searchKey')) _set('searchKey', data['searchKey'] as String);
+      b('searchEnabled');
+      s('searchUrl');
+      s('searchKey');
       // 墨墨词库
-      if (data.containsKey('maimemoToken')) _set('maimemoToken', data['maimemoToken'] as String);
-      if (data.containsKey('maimemoWordbook')) _set('maimemoWordbook', data['maimemoWordbook'] as String);
+      s('maimemoToken');
+      s('maimemoWordbook');
+      i('maimemoLastSync');
+      i('maimemoSyncedCount');
+      // 贪吃蛇最高分
+      i('snakeHighScore');
       // API 配置档
-      if (data.containsKey('apiProfiles')) _set('apiProfiles', data['apiProfiles'] as String);
-      if (data.containsKey('chatProfiles')) _set('chatProfiles', data['chatProfiles'] as String);
+      s('apiProfiles');
+      s('chatProfiles');
       // 界面与模式
-      if (data.containsKey('theme_dark')) _setBool('theme_dark', data['theme_dark'] as bool);
-      if (data.containsKey('analysisMode')) _set('analysisMode', data['analysisMode'] as String);
-      if (data.containsKey('fullscreen')) _setBool('fullscreen', data['fullscreen'] as bool);
-      if (data.containsKey('powerSavingMode')) _setBool('powerSavingMode', data['powerSavingMode'] as bool);
-      if (data.containsKey('highPerformanceMode')) _setBool('highPerformanceMode', data['highPerformanceMode'] as bool);
-      if (data.containsKey('uiStyle')) _set('uiStyle', data['uiStyle'] as String);
-      if (data.containsKey('navIndicator')) _set('navIndicator', data['navIndicator'] as String);
+      b('theme_dark');
+      s('analysisMode');
+      b('fullscreen');
+      b('powerSavingMode');
+      b('highPerformanceMode');
+      s('uiStyle');
+      s('navIndicator');
       // 自定义词库
-      if (data.containsKey('customWordbook')) _set('customWordbook', data['customWordbook'] as String);
+      s('customWordbook');
       return true;
     } catch (_) {
       return false;

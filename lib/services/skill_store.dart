@@ -76,6 +76,13 @@ const List<String> kBundledSkillFiles = [
   'glmv-prd-to-app',
   'glmv-web-replication',
   'glm-master-skill',
+  'work-office-docs',
+  'work-email-draft',
+  'work-meeting-notes',
+  'work-weekly-report',
+  'work-data-analysis',
+  'work-research-brief',
+  'work-pro-translation',
 ];
 
 /// 原生自带的学习技能（非资产 .md，由 Dart 内置，随应用能力绑定）。
@@ -160,6 +167,7 @@ class SkillStore {
   /// 被禁用的技能 id（含内置与自定义）
   final Set<String> _disabled = {};
   bool _loaded = false;
+  Future<void>? _loadFuture;
 
   bool get loaded => _loaded;
 
@@ -171,10 +179,12 @@ class SkillStore {
 
   List<AgentSkill> get custom => List.unmodifiable(_custom);
 
-  /// 启动时加载：内置资产 + 持久化的自定义技能与禁用名单
-  Future<void> load() async {
-    if (_loaded) return;
-    _loaded = true;
+  /// 启动时加载：内置资产 + 持久化的自定义技能与禁用名单。
+  /// 缓存 Future：并发调用等待同一次加载完成——原先提前置位 _loaded 会让
+  /// 窗口期内的并发调用直接返回，系统提示词拿到空技能目录
+  Future<void> load() => _loadFuture ??= _loadCore();
+
+  Future<void> _loadCore() async {
     for (final id in (Storage.loadSkillsDisabledIds())) {
       _disabled.add(id);
     }
@@ -212,6 +222,7 @@ class SkillStore {
         enabled: !_disabled.contains(k['id']),
       ));
     }
+    _loaded = true;
   }
 
   /// 解析 SKILL.md：YAML frontmatter（name/description/category/source）+ 正文

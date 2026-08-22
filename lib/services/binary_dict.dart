@@ -8,6 +8,7 @@ library;
 
 import 'dart:convert';
 import 'dart:typed_data';
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter/services.dart' show rootBundle;
 import '../models.dart';
 
@@ -45,7 +46,9 @@ class BinaryDict {
       }
 
       _dataBase = 12 + idxSize;
-    } catch (_) {
+    } catch (e) {
+      // 资产损坏/缺失时保留诊断线索（原先静默吞掉，问题无从排查）
+      debugPrint('[BinaryDict] 词典加载失败 ($assetPath): $e');
       _buf = null;
       _idx = null;
     }
@@ -154,15 +157,34 @@ class BinaryDict {
 
   DictEntry _decode(_Idx e) {
     final buf = _buf!;
+    final bl = buf.length;
     var p = _dataBase + e.dataOff;
-    final phLen = _u16(p); p += 2;
-    final phonetic = utf8.decode(buf.sublist(p, p + phLen)); p += phLen;
-    final psLen = _u16(p); p += 2;
-    final pos = utf8.decode(buf.sublist(p, p + psLen)); p += psLen;
-    final trLen = _u16(p); p += 2;
-    final trans = utf8.decode(buf.sublist(p, p + trLen)); p += trLen;
-    final otLen = _u16(p); p += 2;
-    final other = utf8.decode(buf.sublist(p, p + otLen));
+    // 起始偏移即越界：返回空条目（损坏 .bin 不应使查词流程崩溃）
+    if (p < 0 || p >= bl) {
+      return DictEntry(phonetic: '', pos: '', translation: '', other: '');
+    }
+    // 顺序读取 4 个 u16 长度前缀字符串段；任何越界/非法 UTF-8 均降级为空串
+    String readStr() {
+      if (p + 2 > bl) return '';
+      final len = _u16(p);
+      p += 2;
+      if (len < 0 || p + len > bl) {
+        p = bl; // 后续段必然也越界，直接钳到底
+        return '';
+      }
+      final bytes = buf.sublist(p, p + len);
+      p += len;
+      try {
+        return utf8.decode(bytes);
+      } catch (_) {
+        return ''; // 非法 UTF-8 字节段：跳过而非抛 FormatException
+      }
+    }
+
+    final phonetic = readStr();
+    final pos = readStr();
+    final trans = readStr();
+    final other = readStr();
     return DictEntry(phonetic: phonetic, pos: pos, translation: trans, other: other);
   }
 
