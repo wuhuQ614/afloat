@@ -953,8 +953,21 @@ class AgentService {
   /// Agent 系统 prompt（动态生成，注入当前题目上下文，避免 AI 凭空猜测）
   /// [skillCatalog]：技能商店目录（每行「- 名称（id: xxx）：描述」），仅元数据不注入正文，
   /// 正文由 AI 调用 skill 工具按需加载（渐进式披露，节省上下文）。
+  /// 按 DSH 分层组装模式（system-prompt/assemble）构建主提示词。
+  ///
+  /// 参考 deepseek-harness：
+  /// - ordered sections 按 order 升序拼接（identity -100 → persona 0 → 工具/执行守则）
+  /// - 分层职责清晰，而非单一巨大字符串
+  /// - 技能目录通过 skillCatalog 变量注入（渐进式披露）
+  /// - 内容与原有保持一致，仅调整组织结构，行为不变
   static String buildSystemPrompt({String? skillCatalog}) {
-    final base = '''你是 AFloat，一个英语学习 Agent 助手。你能通过工具调用直接帮用户执行操作，也能回答英语问题。
+    final sections = <({int order, String text})>[];
+    String sec(String text) {
+      sections.add((order: sections.length, text: text));
+      return '';
+    }
+
+    sec('''你是 AFloat，一个英语学习 Agent 助手。你能通过工具调用直接帮用户执行操作，也能回答英语问题。
 
 ## 工具使用决策（关键）
 判断用户意图后，**果断调用工具**，不要只给文字建议：
@@ -1055,15 +1068,17 @@ class AgentService {
 - 中文提问用中文回复，英文提问用英文回复
 - 工具调用后用简洁友好的语言总结结果，不要重复原始 JSON
 - 不要编造工具没有的能力
+''');
 
-## 可用技能目录（渐进式披露）
-以下是当前启用的技能列表（仅名称与触发描述，完整指令未注入）。
-当用户任务命中某技能的触发场景时，**先调用 skill 工具加载该技能的完整指令**，再严格按指令工作流执行。
-技能正文只在需要时加载一次，不要为不相关的任务加载技能。
-''';
+    // 技能目录作为独立 section 注入（渐进式披露：仅元数据，不加载正文）
     final catalog = (skillCatalog ?? '').trim();
-    if (catalog.isEmpty) return base;
-    return '$base\n$catalog';
+    if (catalog.isNotEmpty) {
+      sections.add((order: 100, text: '## 可用技能目录（渐进式披露）\n以下是当前启用的技能列表（仅名称与触发描述，完整指令未注入）。\n当用户任务命中某技能的触发场景时，**先调用 skill 工具加载该技能的完整指令**，再严格按指令工作流执行。\n技能正文只在需要时加载一次，不要为不相关的任务加载技能。\n\n$catalog'));
+    }
+
+    // 按 order 升序拼接所有 section（DSH 分层组装）
+    final sorted = List<({int order, String text})>.from(sections)..sort((a, b) => a.order.compareTo(b.order));
+    return sorted.map((s) => s.text.trim()).where((t) => t.isNotEmpty).join('\n\n');
   }
 
   /// 判断模型是否支持 function calling。
