@@ -1736,7 +1736,12 @@ class AppState extends ChangeNotifier {
     final cacheKey = '${ApiService.simpleHash('$text|${isZh2En ? 'z' : 'e'}|$analysisMode')}';
     if (!force) {
       final cached = Storage.readAnalysisCache(cacheKey);
-      if (cached != null && cached.isNotEmpty) {
+      // 防御：早期版本会把 AI 请求失败产生的"暂无释义"结果写入缓存，
+      // 命中后秒回失败结果；此类缓存视为无效，重新剖析
+      final cacheValid = cached != null &&
+          cached.isNotEmpty &&
+          !cached.where((t) => t.type != 'other').every((t) => t.translation == '暂无释义');
+      if (cacheValid) {
         analysisTokens = cached;
         analyzing = false;
         notifyListeners();
@@ -1867,21 +1872,30 @@ class AppState extends ChangeNotifier {
     }
 
     // 剖析链路关闭模型深度思考：按实际模型名添加非推理参数，未知模型不添加以避免 400
-    // 请求一批词；仅当返回非空且长度接近输出上限（疑似截断）且词数 > 5 时，
-    // 对半拆分各重试一次（仅重试一次）；拒答/空响应等其他失败不重试
+    // 请求一批词；仅当返回非空且疑似输出截断（finish_reason=length 或响应超长）
+    // 且词数 > 5 时，对半拆分各重试一次（仅重试一次）；拒答/空响应等其他失败不重试
+    //
+    // maxTokens 取 8192：每批最多 20 词，输出远低于此；过大的值（如 200k）会超出
+    // 多数服务商的 max_tokens 上限，导致 HTTP 400 在 1 秒内快速失败（"转一下就没"）。
+    String? batchError; // 请求级失败原因（取自 ApiService.lastError），供 UI 提示
+    var batchFailed = false; // 任一批次失败时不写缓存，避免失败结果被缓存污染
     Future<List<WordToken>> requestBatch(List<String> batch, {bool retried = false}) async {
-      final reply = await ApiService.callAI(
+      final r = await ApiService.callAIResult(
         [{'role': 'user', 'content': isZh ? '请剖析这些中文词组的用法' : '请剖析这些单词的用法'}],
         buildPrompt(batch),
         config: ai,
-        maxTokens: 200000, // 默认 200k，避免批量剖析输出被截断
+        maxTokens: 8192,
         extraParams: _noThinkingParams(),
       );
-      List<Map<String, dynamic>>? list;
-      if (reply != null && reply.isNotEmpty) {
-        list = ApiService.extractJsonArray(reply);
+      final reply = r.content;
+      if (reply == null || reply.isEmpty) {
+        batchFailed = true;
+        batchError = ApiService.lastError ?? 'AI 请求无响应';
+        devLogAdd('✗ 词汇剖析批次请求失败: $batchError');
+        return const [];
       }
-      final looksTruncated = reply != null && reply.length > 2048; // 接近 maxTokens 输出预算
+      final list = ApiService.extractJsonArray(reply);
+      final looksTruncated = r.finishReason == 'length' || reply.length > 2048;
       if (list == null && !retried && batch.length > 5 && looksTruncated) {
         final mid = batch.length ~/ 2;
         final halves = await Future.wait([
@@ -1890,9 +1904,15 @@ class AppState extends ChangeNotifier {
         ]);
         return [...halves[0], ...halves[1]];
       }
+      if (list == null) {
+        // 模型返回了内容但不是有效 JSON：不重试，记录原因让 UI 可见
+        batchFailed = true;
+        batchError ??= 'AI 返回内容无法解析';
+        devLogAdd('✗ 词汇剖析批次解析失败: ${reply.substring(0, reply.length > 200 ? 200 : reply.length)}');
+        return const [];
+      }
       final result = <WordToken>[];
-      if (list != null) {
-        for (final e in list) {
+      for (final e in list) {
           final w = ((e['word'] ?? '') as String).toLowerCase().trim();
           if (w.isEmpty) continue;
           // 解析 phrases 字段
@@ -1923,7 +1943,6 @@ class AppState extends ChangeNotifier {
             contextTranslation: (e['contextTranslation'] ?? '') as String,
             phrases: phrasesList,
           ));
-        }
       }
       return result;
     }
@@ -1958,6 +1977,7 @@ class AppState extends ChangeNotifier {
         applyBatchResult(idxList, results);
       }).catchError((_) {
         // 单批失败不影响其他批次，失败词标记为暂无释义
+        batchFailed = true;
         applyBatchResult(idxList, const <WordToken>[]);
       }));
     }
@@ -1971,7 +1991,13 @@ class AppState extends ChangeNotifier {
     if (isDeep) _markPhraseTokens(tokens, text);
 
     analysisTokens = tokens;
-    Storage.writeAnalysisCache(cacheKey, tokens);
+    if (batchFailed) {
+      // 有批次失败：给出可见原因（避免"转一下就没"），且不写缓存，
+      // 否则失败结果会被缓存，之后同模式秒回"暂无释义"
+      analysisError = batchError != null ? '部分词汇剖析失败：$batchError' : '部分词汇剖析失败';
+    } else {
+      Storage.writeAnalysisCache(cacheKey, tokens);
+    }
     analyzing = false;
     notifyListeners();
   }

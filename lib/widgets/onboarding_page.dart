@@ -5,6 +5,7 @@ library;
 import 'package:flutter/material.dart';
 import '../models.dart';
 import '../state.dart';
+import 'aurora_backdrop.dart';
 import 'particle_backdrop.dart';
 
 // ===== 中性色板常量（不带主题色调） =====
@@ -163,6 +164,15 @@ class _OnboardingPageState extends State<OnboardingPage> {
     return Scaffold(
       backgroundColor: pal.bg,
       body: Stack(children: [
+        // 主题氛围背景（最底层）：经典浅色=清新蓝极光带；深色模式=深海霓虹光带；
+        // 毛玻璃主题=液态玻璃液滴。动画由内部 Ticker 驱动，只重绘自身画布
+        Positioned.fill(
+          child: AuroraBackdrop(
+            dark: s.darkMode,
+            liquidGlass: !s.darkMode && s.uiStyle == 'glass',
+            active: true,
+          ),
+        ),
         // 引导页粒子动效背景：仅桌面端生效（内部非桌面直接返回空）。
         // 作为整页背景，全程常驻显示并驱动动画；鼠标坐标由下方"顶层全屏 Listener"提供
         Positioned.fill(
@@ -250,19 +260,23 @@ class _OnboardingPageState extends State<OnboardingPage> {
       _buildStepMode(pal),     // 3 词汇剖析强度
       _buildStepWelcome(pal),  // 4 欢迎
     ];
-    return PageView(
-      controller: _pageCtrl,
-      physics: const ClampingScrollPhysics(),
-      // 启用隐式滚动：PageView 会完整预构建相邻步骤页（默认只缓存 250px，不足一页），
-      // 翻页时不再首帧同步构建页面，避免"卡死一下"
-      allowImplicitScrolling: true,
-      onPageChanged: (i) {
-        if (_step == 2) _saveApiIfFilled();
-        setState(() => _step = i);
-      },
-      children: [
-        for (var i = 0; i < _totalSteps; i++) _PageFx(key: _pageKeys[i], index: i, pos: _pos, child: pages[i]),
-      ],
+    // 关闭桌面端默认滚动条：引导页内容基本一屏放下，常驻滚动条轨道是视觉噪音
+    return ScrollConfiguration(
+      behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
+      child: PageView(
+        controller: _pageCtrl,
+        physics: const ClampingScrollPhysics(),
+        // 启用隐式滚动：PageView 会完整预构建相邻步骤页（默认只缓存 250px，不足一页），
+        // 翻页时不再首帧同步构建页面，避免"卡死一下"
+        allowImplicitScrolling: true,
+        onPageChanged: (i) {
+          if (_step == 2) _saveApiIfFilled();
+          setState(() => _step = i);
+        },
+        children: [
+          for (var i = 0; i < _totalSteps; i++) _PageFx(key: _pageKeys[i], index: i, pos: _pos, child: pages[i]),
+        ],
+      ),
     );
   }
 
