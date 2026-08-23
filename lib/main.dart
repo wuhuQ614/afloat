@@ -1147,7 +1147,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
     // 按优先级匹配，越具体的越靠前
     if (lower.contains('gpt-4') || lower.contains('gpt-3.5') || lower.contains('openai')) return 'assets/ai-icons/openai.svg';
     if (lower.contains('claude') || lower.contains('anthropic')) return 'assets/ai-icons/claude.svg';
-    if (lower.contains('glm') || lower.contains('chatglm') || lower.contains('zhipu') || lower.contains('智谱')) return 'assets/ai-icons/chatglm.svg';
+    if (lower.contains('glm') || lower.contains('chatglm') || lower.contains('zhipu') || lower.contains('智谱')) return 'assets/ai-icons/chatglm.png';
     if (lower.contains('qwen') || lower.contains('千问') || lower.contains('通义') || lower.contains('qwq') || lower.contains('qvq')) return 'assets/ai-icons/qwen.svg';
     if (lower.contains('deepseek') || lower.contains('deep-seek')) return 'assets/ai-icons/deepseek.svg';
     if (lower.contains('gemini') || lower.contains('google')) return 'assets/ai-icons/gemini.svg';
@@ -1155,7 +1155,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
     // MiniMax / hy（参考图中 hy3 用 MiniMax logo）
     if (lower.contains('minimax') || lower.contains('hy') || lower.contains('hy3')) return 'assets/ai-icons/minimax.svg';
     if (lower.contains('step') || lower.contains('阶跃') || lower.contains('stepfun')) return 'assets/ai-icons/stepfun.svg';
-    if (lower.contains('kimi') || lower.contains('moonshot')) return 'assets/ai-icons/kimi.svg';
+    if (lower.contains('kimi') || lower.contains('moonshot')) return 'assets/ai-icons/kimi.png';
     if (lower.contains('baichuan') || lower.contains('百川')) return 'assets/ai-icons/baichuan.svg';
     if (lower.contains('yi-') || lower.contains('零一') || lower.contains('yi_lite') || lower.contains('yi-large')) return 'assets/ai-icons/yi.svg';
     if (lower.contains('spark') || lower.contains('星火') || lower.contains('xunfei') || lower.contains('讯飞')) return 'assets/ai-icons/spark.svg';
@@ -1249,19 +1249,21 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
 
   /// 渲染 AI 模型 logo：不要渐变圆底图层，只渲染图标本体。
   /// SVG 是 currentColor 单色，直接用品牌色渲染；dark 模式下与白色 lerp 35% 提亮保证可见。
+  /// PNG 是彩色位图（如 GLM / Kimi 官方 logo），原样渲染，不着色。
   Widget _aiLogo(String model, {double size = 30}) {
     final asset = _getAiIconAsset(model);
     final (c1, _) = _aiBrandColors(model);
     final brand = _state.darkMode ? Color.lerp(c1, Colors.white, 0.35)! : c1;
-    return asset != null
-        ? SvgPicture.asset(
+    if (asset == null) return Icon(Icons.smart_toy_outlined, size: size * 0.8, color: brand);
+    return asset.toLowerCase().endsWith('.png')
+        ? Image.asset(asset, width: size, height: size, fit: BoxFit.contain)
+        : SvgPicture.asset(
             asset,
             width: size,
             height: size,
             fit: BoxFit.contain,
             color: brand,
-          )
-        : Icon(Icons.smart_toy_outlined, size: size * 0.8, color: brand);
+          );
   }
 
   // ===== 右侧 AI 对话助手面板 =====
