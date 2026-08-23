@@ -49,6 +49,10 @@ Source: "{#BuildDir}\flutter_tts_plugin.dll"; DestDir: "{app}"; Flags: ignorever
 Source: "{#BuildDir}\desktop_drop_plugin.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BuildDir}\screen_retriever_windows_plugin.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BuildDir}\window_manager_plugin.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#BuildDir}\audioplayers_windows_plugin.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#BuildDir}\flutter_inappwebview_windows_plugin.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#BuildDir}\snake_logic.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#BuildDir}\WebView2Loader.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BuildDir}\data\*"; DestDir: "{app}\data"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
