@@ -608,6 +608,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
     required IconData icon,
     required String title,
     required Widget child,
+    Color? iconColor,
   }) {
     return Container(
       padding: const EdgeInsets.all(16),
@@ -624,7 +625,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Row(children: [
-          Icon(icon, size: 22, color: _primary),
+          Icon(icon, size: 22, color: iconColor ?? _primary),
           const SizedBox(width: 10),
           Expanded(
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -657,6 +658,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
       c: c,
       icon: Icons.cloud_sync_outlined,
       title: '数据备份',
+      iconColor: c.textTertiary,
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         SizedBox(
           width: double.infinity,
@@ -664,7 +666,11 @@ class _SettingsDialogState extends State<SettingsDialog> {
             onPressed: () => _backup(s),
             icon: const Icon(Icons.save_alt, size: 16),
             label: const Text('一键备份数据'),
-            style: FilledButton.styleFrom(backgroundColor: _primary, foregroundColor: Colors.white),
+            // 数据备份/墨墨/搜索统一用中性灰（避免品牌紫/纯黑）
+            style: FilledButton.styleFrom(
+              backgroundColor: c.isLight ? const Color(0xFF6B7280) : const Color(0xFF8A8D94),
+              foregroundColor: Colors.white,
+            ),
           ),
         ),
         const SizedBox(height: 10),
@@ -683,6 +689,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
       c: c,
       icon: Icons.auto_stories_outlined,
       title: '墨墨背单词同步',
+      iconColor: c.textTertiary,
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         TextField(
           controller: _maimemoTokenCtrl,
@@ -712,7 +719,9 @@ class _SettingsDialogState extends State<SettingsDialog> {
           height: 42,
           child: FilledButton(
             style: FilledButton.styleFrom(
-              backgroundColor: _primary,
+              // 同步按钮同样改为中性灰（避免品牌紫/纯黑）
+              backgroundColor: c.isLight ? const Color(0xFF6B7280) : const Color(0xFF8A8D94),
+              disabledBackgroundColor: c.isLight ? const Color(0xFFC9CBD0) : const Color(0xFF8A8D94).withValues(alpha: 0.5),
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
             ),
             onPressed: s.maimemoToken.trim().isEmpty || _maimemoBusy
@@ -743,6 +752,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
       c: c,
       icon: Icons.travel_explore,
       title: '联网搜索服务',
+      iconColor: c.textTertiary,
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         TextField(
           controller: _searchUrlCtrl,
@@ -858,6 +868,9 @@ class _SettingsDialogState extends State<SettingsDialog> {
   InputDecoration _deco(AppColors c, {String? hint}) => InputDecoration(
     hintText: hint, hintStyle: TextStyle(color: c.inputHint),
     isDense: true,
+    // 显式透明填充，避免 Material 3 默认的 surfaceTint 浅紫色渗入
+    filled: true,
+    fillColor: Colors.transparent,
     contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
     border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
     enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
@@ -1449,6 +1462,9 @@ class _ChatSettingsDialogState extends State<ChatSettingsDialog> {
   InputDecoration _deco(AppColors c, {String? hint}) => InputDecoration(
     hintText: hint, hintStyle: TextStyle(color: c.inputHint),
     isDense: true,
+    // 显式透明填充，避免 Material 3 默认的 surfaceTint 浅紫色渗入
+    filled: true,
+    fillColor: Colors.transparent,
     contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
     border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
     enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),

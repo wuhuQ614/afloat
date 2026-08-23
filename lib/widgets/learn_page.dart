@@ -306,6 +306,21 @@ class _AnswerPageState extends State<AnswerPage> {
             Text('分析中...', style: TextStyle(fontSize: 12, color: c.textTertiary)),
           ]),
         ],
+        // 剖析失败提示（有异常时展示具体原因，避免"转一下就没"无反馈）
+        if ((_showAnalysis || s.chatTriggeredAnalysis) && s.analysisError.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              color: c.dangerBg,
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: Text(
+              '词汇剖析失败：${s.analysisError}',
+              style: TextStyle(fontSize: 12, color: kDanger),
+            ),
+          ),
+        ],
       ]),
     );
   }
@@ -322,7 +337,10 @@ class _AnswerPageState extends State<AnswerPage> {
   Widget _buildAnalysisButton(Question q, AppColors c) {
     return InkWell(
       onTap: () {
-        if ((s.analysisMode == 'normal' || s.analysisMode == 'deep') && !s.apiConfig.ready) {
+        // 剖析需要 API：全局未配但对话助手独立配置可用时，走回退链路放行
+        final canUseApi = s.apiConfig.ready ||
+            (s.chatApiIndependent && s.chatApiConfig.ready);
+        if ((s.analysisMode == 'normal' || s.analysisMode == 'deep') && !canUseApi) {
           showDialog(
             context: context,
             builder: (ctx) => AlertDialog(
@@ -374,8 +392,10 @@ class _AnswerPageState extends State<AnswerPage> {
                 ? null
                 : () {
                     if (s.analysisMode == mode) return;
-                    // 检查API配置（正常/深度模式需要API）
-                    if ((mode == 'normal' || mode == 'deep') && !s.apiConfig.ready) {
+                    // 检查API配置（全局或对话助手独立配置可用时放行）
+                    final canUseApi = s.apiConfig.ready ||
+                        (s.chatApiIndependent && s.chatApiConfig.ready);
+                    if ((mode == 'normal' || mode == 'deep') && !canUseApi) {
                       showDialog(
                         context: context,
                         builder: (ctx) => AlertDialog(
@@ -401,7 +421,7 @@ class _AnswerPageState extends State<AnswerPage> {
                     s.setAnalysisMode(mode);
                     // 已有剖析结果时按新模式重新剖析（缓存 key 含 mode，命中缓存则即时切换）
                     if (_showAnalysis && s.analysisTokens.isNotEmpty) {
-                      s.analyzeWords(q.text);
+                      s.analyzeWords(_analysisSource(q));
                     }
                   },
             borderRadius: BorderRadius.circular(5),

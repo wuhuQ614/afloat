@@ -459,6 +459,8 @@ class AppState extends ChangeNotifier {
   // 词汇剖析状态
   bool analysisLoading = false;
   List<WordToken> analysisTokens = [];
+  /// 剖析失败原因（用于 UI 提示，避免"转一下就没"的静默消失）
+  String analysisError = '';
   /// Agent 通过聊天触发了剖析，答题区监听此标志自动打开剖析视图
   bool chatTriggeredAnalysis = false;
 
@@ -1676,28 +1678,58 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> analyzeWords(String text, {bool force = false}) async {
+    analysisError = '';
+    // 兼容：剖析链路需要 API 时，若仅在"对话助手独立配置"里填过 API，
+    // 而全局未配，则临时回退到对话助手的配置，避免剖析静默失败。
+    final fallbackCfg = (!apiConfig.ready && chatApiIndependent && chatApiConfig.ready)
+        ? chatApiConfig
+        : null;
     try {
-      await _analyzeWordsImpl(text, force: force);
-    } finally {
-      // 兜底：任何异常路径都要复位，否则 analyzing 永久卡 true，
-      // 剖析入口被重入保护静默吞掉（后续请求全部无效）
-      if (analyzing) {
-        analyzing = false;
-        notifyListeners();
+      await _analyzeWordsImpl(text, force: force, overrideConfig: fallbackCfg);
+    } catch (e, st) {
+      // 剖析失败不得静默消失：记录原因，缺失词给"暂无释义"，方便 UI 提示
+      analysisError = e.toString();
+      devLogAdd('✗ 词汇剖析失败: $e\n$st');
+      if (analysisTokens.isEmpty) {
+        final tokens = text.trim().isEmpty
+            ? <WordToken>[]
+            : DictService.fallbackTokens(text, isZh2En);
+        analysisTokens = tokens.map((t) => (t.isMissing || t.translation.isEmpty)
+            ? WordToken(text: t.text, type: t.type, word: t.text, pos: t.pos, translation: '暂无释义', other: t.other)
+            : t).toList();
       }
+      analyzing = false;
+      notifyListeners();
     }
   }
 
-  Future<void> _analyzeWordsImpl(String text, {bool force = false}) async {
-    if (text.isEmpty || analyzing) return; // 重入保护：剖析进行中不发起第二轮
-    
+  Future<void> _analyzeWordsImpl(String text, {bool force = false, ApiConfig? overrideConfig}) async {
+    if (text.trim().isEmpty) {
+      // 空源文本：不能静默消失，抛错让上层提示
+      analyzing = false;
+      notifyListeners();
+      throw Exception('剖析源文本为空');
+    }
+    if (analyzing) return; // 重入保护：剖析进行中不发起第二轮
+
+    // 剖析实际使用的 API 配置：正常/深度需要 API。优先级 override（对话助手回退）> 全局
+    final ai = overrideConfig ?? apiConfig;
+
     // 检查API配置（正常/深度模式需要API）
-    if ((analysisMode == 'normal' || analysisMode == 'deep') && !apiConfig.ready) {
+    if ((analysisMode == 'normal' || analysisMode == 'deep') && !ai.ready) {
       analyzing = false;
       notifyListeners();
       throw Exception('API_NOT_CONFIGURED');
     }
-    
+
+    // 深度模式（AI 剖析）也依赖 API 判定，统一用 ai
+    final vDeep = analysisMode == 'deep';
+    if (vDeep && !ai.ready) {
+      analyzing = false;
+      notifyListeners();
+      throw Exception('API_NOT_CONFIGURED');
+    }
+
     analyzing = true;
     analysisTokens = [];
     notifyListeners();
@@ -1768,7 +1800,7 @@ class AppState extends ChangeNotifier {
     notifyListeners();
 
     // 无 API 配置，标记缺失词
-    if (!apiConfig.ready) {
+    if (!ai.ready) {
       for (final i in missingIdx) {
         tokens[i] = WordToken(text: tokens[i].text, type: tokens[i].type, word: tokens[i].word, pos: tokens[i].pos, translation: '暂无释义');
       }
@@ -1841,7 +1873,7 @@ class AppState extends ChangeNotifier {
       final reply = await ApiService.callAI(
         [{'role': 'user', 'content': isZh ? '请剖析这些中文词组的用法' : '请剖析这些单词的用法'}],
         buildPrompt(batch),
-        config: apiConfig,
+        config: ai,
         maxTokens: 200000, // 默认 200k，避免批量剖析输出被截断
         extraParams: _noThinkingParams(),
       );
@@ -5981,18 +6013,18 @@ class AppState extends ChangeNotifier {
   }
 
   /// 保存全局配置库并切换当前使用的配置
-  void saveApiProfiles(List<ApiProfile> profiles, int activeIdx) {
+  void saveApiProfiles(List<ApiProfile> profiles, int activeIdx, {bool notify = true}) {
     apiProfiles = List.of(profiles);
     if (activeIdx >= 0 && activeIdx < apiProfiles.length) {
       apiConfig = apiProfiles[activeIdx].config;
       Storage.saveApiConfig(apiConfig);
     }
     Storage.saveApiProfiles(apiProfiles);
-    notifyListeners();
+    if (notify) notifyListeners();
   }
 
   /// 保存对话助手配置库并切换当前选中的配置
-  void saveChatProfiles(List<ApiProfile> profiles, int idx) {
+  void saveChatProfiles(List<ApiProfile> profiles, int idx, {bool notify = true}) {
     chatProfiles = List.of(profiles);
     chatProfileIdx = (idx >= 0 && idx < chatProfiles.length) ? idx : (chatProfiles.isEmpty ? -1 : 0);
     if (chatProfileIdx >= 0 && chatProfileIdx < chatProfiles.length) {
@@ -6001,7 +6033,7 @@ class AppState extends ChangeNotifier {
     }
     Storage.saveChatProfiles(chatProfiles);
     Storage.saveChatProfileIdx(chatProfileIdx);
-    notifyListeners();
+    if (notify) notifyListeners();
   }
 
   /// 对话助手底层切换模型（index 为 chatProfiles 索引；-1 表示使用全局配置）

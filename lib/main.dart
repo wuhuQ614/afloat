@@ -2437,8 +2437,8 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
     const cAmber = Color(0xFFF59E0B);
     const cGreen = Color(0xFF34D399);
 
-    const popupWidth = 380.0;
-    const popupMaxHeight = 440.0;
+    const popupWidth = 190.0;
+    const popupMaxHeight = 220.0;
 
     // 胶囊 chip 标签（参考图：半透明色底 + 同色细边 + 同色文字）
     Widget tagPill(String text, Color color) {
@@ -2535,73 +2535,79 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
       required List<({String text, Color color})> tags,
       required VoidCallback onTap,
     }) {
-      return InkWell(
-        onTap: onTap,
-        // hover 时仅显示亮度微调（surfaceHighlight），不用 hoverColor 防止在某些
-        // 主题里出现 underline-like 视觉假象
-        hoverColor: Colors.transparent,
-        splashColor: Colors.transparent,
-        highlightColor: Colors.transparent,
-        focusColor: Colors.transparent,
-        child: Container(
-          color: selected ? surfaceHighlight : Colors.transparent,
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
-          child: Row(
-            children: [
-              SizedBox(width: 22, height: 22, child: icon),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Row(
-                  children: [
-                    Flexible(
-                      child: Text(
-                        title,
-                        style: const TextStyle(
-                          fontSize: 13.5,
-                          color: textPrimary,
-                          fontWeight: FontWeight.w600,
-                          height: 1.2,
-                          decoration: TextDecoration.none,
-                          decorationColor: Colors.transparent,
+      return StatefulBuilder(builder: (ctx, setState) {
+        bool hover = false;
+        return MouseRegion(
+          onEnter: (_) => setState(() => hover = true),
+          onExit: (_) => setState(() => hover = false),
+          cursor: SystemMouseCursors.click,
+          child: InkWell(
+            onTap: onTap,
+            hoverColor: Colors.transparent,
+            splashColor: Colors.transparent,
+            highlightColor: Colors.transparent,
+            focusColor: Colors.transparent,
+            child: Container(
+              color: (selected || hover) ? surfaceHighlight : Colors.transparent,
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+              child: Row(
+                children: [
+                  SizedBox(width: 22, height: 22, child: icon),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Row(
+                      children: [
+                        Flexible(
+                          child: Text(
+                            title,
+                            style: const TextStyle(
+                              fontSize: 13.5,
+                              color: textPrimary,
+                              fontWeight: FontWeight.w600,
+                              height: 1.2,
+                              decoration: TextDecoration.none,
+                              decorationColor: Colors.transparent,
+                            ),
+                            overflow: TextOverflow.ellipsis,
+                            maxLines: 1,
+                          ),
                         ),
-                        overflow: TextOverflow.ellipsis,
-                        maxLines: 1,
+                        if (tags.isNotEmpty) const SizedBox(width: 6),
+                        ...List.generate(tags.length, (i) {
+                          final t = tags[i];
+                          return Padding(
+                            padding: EdgeInsets.only(right: i == tags.length - 1 ? 0 : 4),
+                            child: tagPill(t.text, t.color),
+                          );
+                        }),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  SizedBox(
+                    width: 48,
+                    child: Text(
+                      priceLabel ?? '',
+                      textAlign: TextAlign.right,
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: (priceLabel == null || priceLabel!.isEmpty)
+                            ? textMuted
+                            : textPrimary,
+                        fontWeight: FontWeight.w600,
+                        fontFeatures: const [FontFeature.tabularFigures()],
+                        height: 1.2,
+                        decoration: TextDecoration.none,
+                        decorationColor: Colors.transparent,
                       ),
                     ),
-                    if (tags.isNotEmpty) const SizedBox(width: 6),
-                    ...List.generate(tags.length, (i) {
-                      final t = tags[i];
-                      return Padding(
-                        padding: EdgeInsets.only(right: i == tags.length - 1 ? 0 : 4),
-                        child: tagPill(t.text, t.color),
-                      );
-                    }),
-                  ],
-                ),
-              ),
-              const SizedBox(width: 10),
-              SizedBox(
-                width: 48,
-                child: Text(
-                  priceLabel ?? '',
-                  textAlign: TextAlign.right,
-                  style: TextStyle(
-                    fontSize: 13,
-                    color: (priceLabel == null || priceLabel!.isEmpty)
-                        ? textMuted
-                        : textPrimary,
-                    fontWeight: FontWeight.w600,
-                    fontFeatures: const [FontFeature.tabularFigures()],
-                    height: 1.2,
-                    decoration: TextDecoration.none,
-                    decorationColor: Colors.transparent,
                   ),
-                ),
+                ],
               ),
-            ],
+            ),
           ),
-        ),
-      );
+        );
+      });
     }
 
     // 把 ApiProfile.tags（{text, colorValue}）转成 UI 用的 {text, color}
@@ -2678,18 +2684,19 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
           buildRow(
             icon: modelIcon(profiles[i].config.model),
             title: profiles[i].config.model.isNotEmpty
-                ? profiles[i].config.model
-                : profiles[i].name,
+                ? profiles[i].config.model.toUpperCase()
+                : profiles[i].name.toUpperCase(),
             priceLabel: profiles[i].priceLabel,
             selected: selectedIdx == i,
             tags: profileTags(profiles[i]),
             onTap: () {
               s.disableAutoModel();
               // 开启"独立配置"时写入对话助手配置库，否则写全局配置库
+              // notify: false 避免弹窗内触发全量重建导致卡顿
               if (s.chatApiIndependent) {
-                s.saveChatProfiles(s.chatProfiles, i);
+                s.saveChatProfiles(s.chatProfiles, i, notify: false);
               } else {
-                s.saveApiProfiles(s.apiProfiles, i);
+                s.saveApiProfiles(s.apiProfiles, i, notify: false);
               }
               onChanged(i, maxMode);
             },
@@ -2871,7 +2878,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                     builder: (ctx, scale, child) => Opacity(
                       opacity: ((scale - 0.94) / 0.06).clamp(0.0, 1.0),
                       child: Transform.scale(
-                        scale: scale,
+                        scale: scale * 1.25,
                         alignment: Alignment.bottomRight,
                         child: child,
                       ),
