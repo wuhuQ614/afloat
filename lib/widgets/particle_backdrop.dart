@@ -1,15 +1,14 @@
 /// 引导页第一页粒子动效背景（仅 PC / 桌面端启用）。
 ///
-/// 由两层叠加，还原 deepseek.com/harness 首页 hero 的鼠标动态粒子观感：
-///  1. 蓝白流动光晕 —— 若干缓慢游走的大半径径向光斑 + 以鼠标为中心的光晕扰动；
-///  2. 蓝色网格光点 + 点间连线 —— 90px 网格点阵，鼠标靠近排斥、弹性回位，
-///     点/线随拉伸距离改变透明度，近鼠标处变亮放大（算法参考其 2D 网格粒子）。
+/// 还原 deepseek.com/harness 首页 hero 的鼠标动态粒子观感：
+///  1. 蓝色网格光点 + 点间连线 —— 90px 网格点阵，鼠标靠近排斥、弹性回位，
+///     点/线随拉伸距离改变透明度，近鼠标处变亮放大（算法参考其 2D 网格粒子）；
+///  2. 以鼠标为中心的光晕扰动。
 ///
 /// 实现说明：
 ///  - 用 Ticker 驱动（非 AnimationController），每帧更新粒子模型并只重绘画布，
 ///    通过 CustomPainter 的 repaint listenable 触发，避免重建 widget 子树。
-///  - 网格与光晕都是轻量绘制（点数 = (w/90+1)*(h/90+1)，桌面窗口约一两百个点），
-///    径向渐变 shader 按尺寸缓存，性能友好。
+///  - 网格绘制轻量（点数 = (w/90+1)*(h/90+1)，桌面窗口约一两百个点）。
 ///  - 仅要求 PC 端：非 Windows 直接返回空组件，不影响手机端原有引导页。
 library;
 
@@ -59,17 +58,6 @@ class _GridPoint {
         vy = 0;
 }
 
-/// 缓慢游走的流动光斑
-class _Blob {
-  double cx, cy; // 游走中心
-  double ampX, ampY;
-  double speed;
-  double phase;
-  double radius;
-  int colorIndex;
-  _Blob(this.cx, this.cy, this.ampX, this.ampY, this.speed, this.phase, this.radius, this.colorIndex);
-}
-
 /// 粒子上层数据 + 触发重绘的 listenable
 class _PModel extends ChangeNotifier {
   bool dark;
@@ -81,7 +69,6 @@ class _PModel extends ChangeNotifier {
   double elapsed = 0;
   Size size = Size.zero;
   List<_GridPoint> points = [];
-  List<_Blob> blobs = [];
   int cols = 0;
   int rows = 0;
 
@@ -103,23 +90,6 @@ class _PModel extends ChangeNotifier {
       final r = i ~/ cols;
       return _GridPoint(offX + c * spacing, offY + r * spacing);
     });
-    // 流动光斑：基于窗口尺寸居中布局，少量即可营造氛围
-    final blobs = <_Blob>[];
-    final rng = math.Random(7);
-    const count = 5;
-    for (var i = 0; i < count; i++) {
-      blobs.add(_Blob(
-        w * rng.nextDouble(),
-        h * rng.nextDouble(),
-        w * (0.06 + 0.08 * rng.nextDouble()),
-        h * (0.06 + 0.08 * rng.nextDouble()),
-        0.25 + 0.45 * rng.nextDouble(),
-        rng.nextDouble() * 6.28,
-        240 + 180 * rng.nextDouble(),
-        i % 3,
-      ));
-    }
-    this.blobs = blobs;
   }
 
   void step(double dt) {
@@ -248,24 +218,6 @@ class _ParticlePainter extends CustomPainter {
 
     final isDark = m.dark;
 
-    // —— 1. 流动光晕（底层氛围） ——
-    // 每个光斑一次径向渐变；Flutter 对相同 colors/stops 的 Gradient 内部复用 shader
-    for (final b in m.blobs) {
-      final ox = b.ampX * math.sin(m.elapsed * b.speed + b.phase);
-      final oy = b.ampY * math.cos(m.elapsed * b.speed * 0.8 + b.phase);
-      final cx = b.cx + ox;
-      final cy = b.cy + oy;
-      final col = _blobColor(b.colorIndex, isDark);
-      canvas.drawCircle(
-        Offset(cx, cy),
-        b.radius,
-        Paint()
-          ..shader = RadialGradient(colors: [col, col.withValues(alpha: 0.5), const Color(0x00000000)], stops: const [0, 0.5, 1])
-              .createShader(Rect.fromCircle(center: Offset(cx, cy), radius: b.radius * 1.7))
-          ..blendMode = BlendMode.plus,
-      );
-    }
-
     // —— 2. 鼠标光晕扰动（随鼠标位置，浅色更淡以避免刺眼） ——
     if (m.mouseActive && !m.mouseX.isNaN) {
       const r = 220.0;
@@ -343,15 +295,6 @@ class _ParticlePainter extends CustomPainter {
         canvas.drawRect(Rect.fromLTWH(p.x - half, p.y - half, 1.8, 1.8), dotPaint);
       }
     }
-  }
-
-  Color _blobColor(int i, bool dark) {
-    if (dark) {
-      const pal = [Color(0x33FFFFFF), Color(0x2E9BC4FF), Color(0x3D5A8BD6)];
-      return pal[i % pal.length];
-    }
-    const pal = [Color(0x1E7FB3E8), Color(0x1A8FC0FF), Color(0x1E6B9AD4)];
-    return pal[i % pal.length];
   }
 
   @override
