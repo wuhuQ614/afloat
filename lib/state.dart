@@ -2129,7 +2129,10 @@ class AppState extends ChangeNotifier {
   int _askSeq = 0;
 
   /// UI 层用户点"确认"后回填答案，唤醒挂起的 ask_user_question 工具调用
+  /// 若 answers 全空则拒绝唤醒（避免误触或重复触发导致 agent 拿到空答案继续走）
   void completeAskAnswers(Map<String, List<String>> answers) {
+    final hasAny = answers.values.any((v) => v.isNotEmpty);
+    if (!hasAny) return;
     final entries = _askCompleters.entries.toList();
     _askCompleters.clear();
     for (final e in entries) {
@@ -3810,15 +3813,28 @@ class AppState extends ChangeNotifier {
     }
     _notifyChatUpdate();
     // 挂起等待用户在 UI 选择并点"确认"（completeAskAnswers 唤醒），
-    // 最多等 5 分钟，超时按当前已选（可能为空）返回
+    // 最多等 10 分钟；超时后不再用空答案继续（之前返回空 answers 会让模型
+    // 误以为用户"已回答"而继续推进，体感是"还没答完 agent 就开始下一步"）
     final key = 'ask_${_askSeq++}';
     final completer = Completer<Map<String, List<String>>>();
     _askCompleters[key] = completer;
     Map<String, List<String>> answers = {};
+    bool timedOut = false;
     try {
-      answers = await completer.future.timeout(const Duration(minutes: 5), onTimeout: () => {});
+      answers = await completer.future.timeout(const Duration(minutes: 10), onTimeout: () {
+        timedOut = true;
+        return const <String, List<String>>{};
+      });
     } catch (_) {}
     _askCompleters.remove(key);
+    if (timedOut) {
+      // 超时：明确告知模型用户未作答，让它知道要再次询问或简化问题
+      return const ToolExecResult(
+        content: '{"ok":false,"reason":"user_did_not_answer_in_time","hint":"用户尚未作答。请换一个更直接的问题重新询问，或基于默认假设继续。"}',
+        ok: false,
+        actionLabel: '用户未在 10 分钟内回答',
+      );
+    }
     final answerList = <Map<String, dynamic>>[];
     for (final q in qs) {
       final sel = answers[q.id] ?? const <String>[];
@@ -4547,8 +4563,9 @@ class AppState extends ChangeNotifier {
       String partialReport() =>
           steps.isNotEmpty ? steps.map((s) => '${s['ok'] == true ? '✓' : '✗'} ${s['label']}').join('\n') : '（无）';
 
-      // 最多 8 轮工具循环
-      for (var round = 0; round < 8; round++) {
+      // 最多 15 轮工具循环（比原先 8 轮放宽，留出长任务可继续的余地；
+      // 主循环上限定在 30 轮时，子 Agent 仍独立限轮避免无限空转）
+      for (var round = 0; round < 15; round++) {
         // 用户在主对话点了暂停：子 Agent 立即收工，返回部分报告（不让主循环干等）
         if (_chatAbortRequested) {
           emit({'type': 'aborted'});
@@ -4883,8 +4900,8 @@ class AppState extends ChangeNotifier {
         return (reply: '已暂停', actions: actions);
       }
 
-      // 最多循环 12 轮（比原先 5 轮放宽，复杂多步任务不会因轮次耗尽提前收尾）
-      for (var round = 0; round < 12; round++) {
+      // 最多循环 30 轮（比原先 12 轮放宽，复杂多步任务不会因轮次耗尽提前收尾）
+      for (var round = 0; round < 30; round++) {
         // R10: 用户点了发送按钮的"中止"——立即跳出循环，保留已有占位消息
         if (_chatAbortRequested) {
           return finishAbort();
@@ -4974,8 +4991,8 @@ class AppState extends ChangeNotifier {
           final replyText = (resp.content ?? '').trim();
 
           // R8: 上一轮只调了辅助工具（load_skill/list_user_skills 等）就停 → 强制继续
-          // 提醒最多追加 2 次，避免同一提醒反复堆积污染上下文、空转满 12 轮后仍落到兜底
-          if (nudgeCount < 2 &&
+          // 提醒最多追加 4 次，超过后落到轮次耗尽兜底（R15），由用户回复"继续"驱动
+          if (nudgeCount < 4 &&
               lastRoundTools.isNotEmpty &&
               lastRoundTools.every((n) => _helperTools.contains(n))) {
             nudgeCount++;
@@ -5004,7 +5021,7 @@ class AppState extends ChangeNotifier {
                 replyText.startsWith('已搞定') ||
                 (replyText.length < 60 &&
                     (replyText.contains('完成') || replyText.contains('搞定')));
-            if (looksLikeStub && nudgeCount < 2) {
+            if (looksLikeStub && nudgeCount < 4) {
               nudgeCount++;
               messages.add({
                 'role': 'user',
@@ -5025,7 +5042,7 @@ class AppState extends ChangeNotifier {
               .where((t) => t.status != 'completed')
               .map((t) => t.content)
               .toList();
-          if (pendingTodos.isNotEmpty && replyText.isNotEmpty && todoNudge < 3) {
+          if (pendingTodos.isNotEmpty && replyText.isNotEmpty && todoNudge < 5) {
             todoNudge++;
             messages.add({
               'role': 'assistant',
@@ -5095,7 +5112,7 @@ class AppState extends ChangeNotifier {
               'content': attachedText,
             });
           }
-          if (brokenRetry < 2) {
+          if (brokenRetry < 3) {
             // 直接提示模型参数不完整，让它重新发起（最多重试 2 次）
             brokenRetry++;
             messages.add({
@@ -5256,11 +5273,16 @@ class AppState extends ChangeNotifier {
       }
       await _simulateStreamOutput(placeholder, reply, actions);
       return (reply: reply, actions: actions);
-    } catch (e) {
-      // 异常时移除占位消息，回退
-      chatHistory.remove(placeholder);
+    } catch (e, st) {
+      // 异常时不再静默吞掉：保留占位消息并展示具体错误原因，让用户知道发生了什么
+      // （之前直接 chatHistory.remove + return null 会让 UI 看起来"消息从未发出过"）
+      debugPrint('[AgentLoop] 异常: $e\n$st');
+      placeholder.content = '抱歉，处理过程中出现异常：$e\n请重试或换个说法。';
+      placeholder.statusLabel = null;
       _notifyChatUpdate();
-      return null;
+      chatSending = false;
+      notifyListeners();
+      return (reply: placeholder.content, actions: actions);
     }
   }
 
