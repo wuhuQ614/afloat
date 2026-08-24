@@ -9,6 +9,7 @@ import 'package:flutter/services.dart';
 
 import '../models.dart';
 import '../state.dart';
+import '../theme_colors.dart';
 
 /// 整个考试（含答题、成绩）外层容器。会根据 AppState.page 自动切换。
 class ExamShell extends StatefulWidget {
@@ -1958,88 +1959,106 @@ class ExamResultPage extends StatelessWidget {
   Widget build(BuildContext context) {
     final r = state.currentExamResult!;
     final isMobile = state.uiMode == 'mobile';
+    final pal = ReportPalette(isLight: Theme.of(context).brightness == Brightness.light);
     return Scaffold(
-      backgroundColor: const Color(0xFFF6F7FB),
-      body: Container(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: [Color(0xFFEEF2FF), Color(0xFFF6F7FB)],
-          ),
-        ),
-        child: SingleChildScrollView(
-          padding: EdgeInsets.all(isMobile ? 14 : 20),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // 顶部按钮行（手机端两个按钮等宽撑满）
+      backgroundColor: pal.pageBg,
+      body: SingleChildScrollView(
+        padding: EdgeInsets.all(isMobile ? 14 : 20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // 顶栏：返回首页（复盘/重考收进底部行动条，避免同功能双入口）
+            Align(
+              alignment: Alignment.centerLeft,
+              child: OutlinedButton.icon(
+                onPressed: state.exitFullExam,
+                icon: const Icon(Icons.arrow_back_rounded, size: 15),
+                label: const Text('返回首页', style: TextStyle(fontSize: 12.5)),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: const Color(0xFF475569),
+                  side: const BorderSide(color: Color(0xFFE2E8F0)),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            _ResultHero(r: r, isMobile: isMobile),
+            const SizedBox(height: 16),
+            // AI 批改状态轻提示（进行中 / 已完成）
+            if (r.aiGrading) const _AiGradingBanner(text: 'AI 正在批改英译汉与写作，稍后自动更新评语与得分…', done: false)
+            else if (r.aiGraded) const _AiGradingBanner(text: '主观题已由 AI 智能批改，评语与得分已更新。', done: true),
+            if (r.aiGrading || r.aiGraded) const SizedBox(height: 16),
+            if (isMobile)
+              Column(
+                children: [
+                  _SectionBreakdown(r: r, isMobile: true),
+                  const SizedBox(height: 16),
+                  _OverallStats(r: r, dur: fmtDur(r.durationSec), isMobile: true),
+                ],
+              )
+            else
               Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(flex: 3, child: _SectionBreakdown(r: r, isMobile: false)),
+                  const SizedBox(width: 16),
+                  Expanded(flex: 2, child: _OverallStats(r: r, dur: fmtDur(r.durationSec), isMobile: false)),
+                ],
+              ),
+            const SizedBox(height: 16),
+            // 英译汉逐句反馈（AI 批改后展示逐句评语；批改中显示轻提示）
+            if (r.paper.en2zh5 != null)
+              _En2zhFeedbackCard(r: r),
+            if (r.paper.en2zh5 != null) const SizedBox(height: 16),
+            // 写作单独点评
+            if (r.writingScore.isNotEmpty || r.aiGrading)
+              _WritingScoreCard(r: r),
+            // 底部行动条：考完的自然动线（复盘错题 / 重考一套）
+            SizedBox(
+              width: double.infinity,
+              height: 46,
+              child: Row(
                 children: [
                   Expanded(
-                    flex: isMobile ? 1 : 0,
                     child: OutlinedButton.icon(
-                      onPressed: state.exitFullExam,
-                      icon: const Icon(Icons.arrow_back_rounded, size: 16),
-                      label: const Text('返回首页', style: TextStyle(fontSize: 12.5)),
-                      style: OutlinedButton.styleFrom(shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)), padding: const EdgeInsets.symmetric(vertical: 9)),
+                      onPressed: () => state.setPage(5),
+                      icon: const Icon(Icons.fact_check_rounded, size: 17),
+                      label: const Text('去错题本复盘', style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w700)),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: pal.accent,
+                        side: BorderSide(color: pal.accent.withValues(alpha: 0.35)),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      ),
                     ),
                   ),
-                  if (isMobile) const SizedBox(width: 10) else const Spacer(),
+                  const SizedBox(width: 12),
                   Expanded(
-                    flex: isMobile ? 1 : 0,
                     child: ElevatedButton.icon(
-                      onPressed: () {
-                        // 去错题本复盘：错题本页索引为 5（见 main.dart 页面索引注释）
-                        state.setPage(5);
+                      onPressed: () async {
+                        final ok = await state.generateFullExam();
+                        if (!ok && context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('正在生成上一套，请稍后再试'), duration: Duration(seconds: 2)),
+                          );
+                        }
                       },
-                      icon: const Icon(Icons.analytics_rounded, size: 16),
-                      label: const Text('去错题本复盘', style: TextStyle(fontSize: 12.5)),
+                      icon: const Icon(Icons.refresh_rounded, size: 17),
+                      label: const Text('重考一套', style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w700)),
                       style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF3B82F6),
+                        backgroundColor: pal.accent,
                         foregroundColor: Colors.white,
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                        padding: const EdgeInsets.symmetric(vertical: 9),
+                        elevation: 0,
+                        shadowColor: Colors.transparent,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                       ),
                     ),
                   ),
                 ],
               ),
-              const SizedBox(height: 16),
-              _ResultHero(r: r, isMobile: isMobile),
-              const SizedBox(height: 18),
-              // AI 批改状态轻提示（进行中 / 已完成）
-              if (r.aiGrading) const _AiGradingBanner(text: 'AI 正在批改英译汉与写作，稍后自动更新评语与得分…', done: false)
-              else if (r.aiGraded) const _AiGradingBanner(text: '主观题已由 AI 智能批改，评语与得分已更新。', done: true),
-              if (r.aiGrading || r.aiGraded) const SizedBox(height: 18),
-              if (isMobile)
-                Column(
-                  children: [
-                    _SectionBreakdown(r: r, isMobile: true),
-                    const SizedBox(height: 16),
-                    _OverallStats(r: r, dur: fmtDur(r.durationSec), isMobile: true),
-                  ],
-                )
-              else
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Expanded(flex: 3, child: _SectionBreakdown(r: r, isMobile: false)),
-                    const SizedBox(width: 18),
-                    Expanded(flex: 2, child: _OverallStats(r: r, dur: fmtDur(r.durationSec), isMobile: false)),
-                  ],
-                ),
-              const SizedBox(height: 18),
-              // 英译汉逐句反馈（AI 批改后展示逐句评语；批改中显示轻提示）
-              if (r.paper.en2zh5 != null)
-                _En2zhFeedbackCard(r: r),
-              if (r.paper.en2zh5 != null) const SizedBox(height: 18),
-              // 写作单独点评
-              if (r.writingScore.isNotEmpty || r.aiGrading)
-                _WritingScoreCard(r: r),
-              const SizedBox(height: 40),
-            ],
-          ),
+            ),
+            const SizedBox(height: 40),
+          ],
         ),
       ),
     );
@@ -2051,185 +2070,222 @@ class _ResultHero extends StatelessWidget {
   final bool isMobile;
   const _ResultHero({required this.r, required this.isMobile});
 
+  String _fmtDate(int ts) {
+    final d = DateTime.fromMillisecondsSinceEpoch(ts);
+    String pad(int n) => n < 10 ? '0$n' : '$n';
+    return '${d.year}年${d.month}月${d.day}日 ${pad(d.hour)}:${pad(d.minute)}';
+  }
+
   @override
   Widget build(BuildContext context) {
+    final pal = ReportPalette(isLight: Theme.of(context).brightness == Brightness.light);
     final pct = r.maxScore == 0 ? 0.0 : r.totalScore / r.maxScore;
+    final isZero = r.totalScore == 0;
     final totalCorrect = r.sectionCorrect.values.fold<int>(0, (a, b) => a + b);
-    return Container(
-      padding: EdgeInsets.all(isMobile ? 18 : 26),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(isMobile ? 16 : 20),
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: pct >= 0.7
-              ? const [Color(0xFF1E3A8A), Color(0xFF6366F1), Color(0xFF8B5CF6)]
-              : pct >= 0.6
-                  ? const [Color(0xFF047857), Color(0xFF10B981), Color(0xFF34D399)]
-                  : const [Color(0xFFB45309), Color(0xFFF59E0B), Color(0xFFFCD34D)],
+    final totalQ = r.sectionTotal.values.fold<int>(0, (a, b) => a + b);
+    final (rankLabel, rankFg, rankBg) = pal.rankOf(pct);
+
+    final meta = <(String, String)>[
+      ('考试时间', _fmtDate(r.submittedAt)),
+      ('答题用时', '${r.durationSec ~/ 60}分${(r.durationSec % 60).toString().padLeft(2, '0')}秒'),
+      ('做对', '$totalCorrect / $totalQ'),
+    ];
+
+    final scoreBlock = Row(
+      crossAxisAlignment: CrossAxisAlignment.end,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(isZero ? '--' : '${r.totalScore}',
+            style: TextStyle(
+                fontSize: isMobile ? 46 : 56,
+                fontWeight: FontWeight.w800,
+                color: const Color(0xFF0F172A),
+                height: 1,
+                letterSpacing: -1.5)),
+        const SizedBox(width: 6),
+        Padding(
+          padding: const EdgeInsets.only(bottom: 6),
+          child: Text('/ ${r.maxScore} 分',
+              style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: const Color(0xFF94A3B8))),
         ),
-        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.15), blurRadius: 22, offset: const Offset(0, 10))],
+      ],
+    );
+
+    final ring = SizedBox(
+      width: isMobile ? 104 : 116,
+      height: isMobile ? 104 : 116,
+      child: CustomPaint(
+        painter: _ScoreRingPainter(pct: isZero ? null : pct, pal: pal),
+        child: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(isZero ? '--' : '${(pct * 100).round()}%',
+                  style: const TextStyle(
+                      fontSize: 22, fontWeight: FontWeight.w800, color: Color(0xFF0F172A), letterSpacing: -0.3)),
+              const SizedBox(height: 2),
+              Text(isZero ? '暂无成绩' : '得分率',
+                  style: const TextStyle(fontSize: 10.5, color: Color(0xFF94A3B8), height: 1)),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    final infoColumn = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        // 评级徽章（语义色，替代原 E 字母大圆环）
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+          decoration: BoxDecoration(color: rankBg, borderRadius: BorderRadius.circular(999)),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.military_tech_rounded, size: 14, color: rankFg),
+              const SizedBox(width: 5),
+              Text(rankLabel, style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w700, color: rankFg)),
+            ],
+          ),
+        ),
+        const SizedBox(height: 12),
+        Text(r.paper.title,
+            style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800, color: Color(0xFF0F172A), letterSpacing: 0.2),
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis),
+        const SizedBox(height: 10),
+        Wrap(
+          spacing: 16,
+          runSpacing: 6,
+          children: [
+            for (final (lb, v) in meta)
+              Text.rich(
+                TextSpan(children: [
+                  TextSpan(text: '$lb ', style: const TextStyle(fontSize: 12.5, color: Color(0xFF94A3B8))),
+                  TextSpan(text: v, style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: Color(0xFF475569))),
+                ]),
+              ),
+          ],
+        ),
+      ],
+    );
+
+    return Container(
+      width: double.infinity,
+      padding: EdgeInsets.all(isMobile ? 20 : 28),
+      decoration: BoxDecoration(
+        color: pal.cardBg,
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 18, offset: const Offset(0, 6))],
       ),
       child: isMobile
           ? Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // 评级圆环居中
-                Container(
-                  width: 92,
-                  height: 92,
-                  alignment: Alignment.center,
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.12),
-                    shape: BoxShape.circle,
-                    border: Border.all(color: Colors.white.withOpacity(0.4), width: 3),
-                  ),
-                  child: Text(
-                    r.rank,
-                    style: const TextStyle(color: Colors.white, fontSize: 40, fontWeight: FontWeight.w900, letterSpacing: 2),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                const Text('考试已结束 · 成绩分析报告', style: TextStyle(color: Colors.white70, fontSize: 11.5, letterSpacing: 0.4), textAlign: TextAlign.center),
-                const SizedBox(height: 5),
-                Text(
-                  r.paper.title,
-                  style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w700, letterSpacing: 0.3),
-                  textAlign: TextAlign.center,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                const SizedBox(height: 14),
-                // 4个指标 2x2 网格
+                infoColumn,
+                const SizedBox(height: 18),
                 Row(
-                  children: [
-                    Expanded(child: _ScoreBadge(label: '总分', value: '${r.totalScore}', sub: '/ ${r.maxScore}')),
-                    const SizedBox(width: 10),
-                    Expanded(child: _ScoreBadge(label: '百分位', value: '${(pct * 100).toStringAsFixed(1)}', sub: '%')),
-                  ],
-                ),
-                const SizedBox(height: 10),
-                Row(
-                  children: [
-                    Expanded(child: _ScoreBadge(label: '评级', value: r.rank, sub: '等级')),
-                    const SizedBox(width: 10),
-                    Expanded(child: _ScoreBadge(label: '做对', value: '$totalCorrect', sub: '/ 76')),
-                  ],
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [scoreBlock, ring],
                 ),
               ],
             )
           : Row(
               children: [
-                Container(
-                  width: 120,
-                  height: 120,
-                  alignment: Alignment.center,
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.12),
-                    shape: BoxShape.circle,
-                    border: Border.all(color: Colors.white.withOpacity(0.4), width: 3),
-                  ),
-                  child: Text(
-                    r.rank,
-                    style: const TextStyle(color: Colors.white, fontSize: 52, fontWeight: FontWeight.w900, letterSpacing: 2),
-                  ),
-                ),
-                const SizedBox(width: 22),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text('考试已结束 · 成绩分析报告', style: TextStyle(color: Colors.white70, fontSize: 13, letterSpacing: 0.6)),
-                      const SizedBox(height: 6),
-                      Text(
-                        r.paper.title,
-                        style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.w700, letterSpacing: 0.3),
-                      ),
-                      const SizedBox(height: 16),
-                      Row(
-                        children: [
-                          _ScoreBadge(label: '总分', value: '${r.totalScore}', sub: '/ ${r.maxScore}'),
-                          const SizedBox(width: 18),
-                          _ScoreBadge(label: '百分位', value: '${(pct * 100).toStringAsFixed(1)}', sub: '%'),
-                          const SizedBox(width: 18),
-                          _ScoreBadge(label: '评级', value: r.rank, sub: '等级'),
-                          const SizedBox(width: 18),
-                          _ScoreBadge(label: '做对', value: '$totalCorrect', sub: '/ 76'),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
+                Expanded(child: infoColumn),
+                const SizedBox(width: 28),
+                scoreBlock,
+                const SizedBox(width: 28),
+                ring,
               ],
             ),
     );
   }
 }
 
-class _ScoreBadge extends StatelessWidget {
-  final String label;
-  final String value;
-  final String sub;
-  const _ScoreBadge({required this.label, required this.value, required this.sub});
+/// 得分率环形图：企业蓝渐变进度（顶部起点、圆角端点）+ 中性轨道。
+/// [pct] 为 null 时只画轨道（暂无成绩态）。
+class _ScoreRingPainter extends CustomPainter {
+  final double? pct;
+  final ReportPalette pal;
+  _ScoreRingPainter({required this.pct, required this.pal});
+
   @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-      decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.12),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.white.withOpacity(0.18)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(label, style: const TextStyle(color: Colors.white70, fontSize: 11)),
-          const SizedBox(height: 4),
-          Row(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              Text(value,
-                  style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.w800, letterSpacing: 0.5)),
-              const SizedBox(width: 3),
-              Padding(
-                padding: const EdgeInsets.only(bottom: 3),
-                child: Text(sub, style: const TextStyle(color: Colors.white60, fontSize: 11)),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
+  void paint(Canvas canvas, Size size) {
+    const pi2 = 2 * 3.141592653589793;
+    const start = -1.5707963267948966; // 正上方
+    const stroke = 10.0;
+    final rect = EdgeInsets.all(stroke / 2 + 1).deflateRect(Offset.zero & size);
+    final track = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = stroke
+      ..strokeCap = StrokeCap.round
+      ..color = pal.ringTrack;
+    canvas.drawArc(rect, 0, pi2, false, track);
+
+    final p = pct?.clamp(0.0, 1.0) ?? 0.0;
+    if (p <= 0) return;
+    final progress = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = stroke
+      ..strokeCap = StrokeCap.round
+      ..shader = SweepGradient(
+        startAngle: start,
+        endAngle: start + pi2,
+        colors: [pal.accentBright, pal.accent],
+        transform: const GradientRotation(start),
+      ).createShader(rect);
+    canvas.drawArc(rect, start, pi2 * p, false, progress);
   }
+
+  @override
+  bool shouldRepaint(covariant _ScoreRingPainter old) => old.pct != pct || old.pal.isLight != pal.isLight;
 }
 
 class _SectionBreakdown extends StatelessWidget {
   final ExamResult r;
   final bool isMobile;
   const _SectionBreakdown({required this.r, required this.isMobile});
+
+  /// 各题型图标（Material 线性风格，与设计稿 Lucide 一致）
+  static const Map<ExamSection, IconData> _sectionIcons = {
+    ExamSection.vocab: Icons.menu_book_rounded,
+    ExamSection.reading: Icons.article_rounded,
+    ExamSection.cloze: Icons.extension_rounded,
+    ExamSection.dialogue: Icons.forum_rounded,
+    ExamSection.bankedCloze: Icons.edit_note_rounded,
+    ExamSection.en2zh5: Icons.translate_rounded,
+    ExamSection.writing: Icons.history_edu_rounded,
+  };
+
   @override
   Widget build(BuildContext context) {
+    final pal = ReportPalette(isLight: Theme.of(context).brightness == Brightness.light);
+    final state = AppScope.of(context);
     return Container(
-      padding: EdgeInsets.all(isMobile ? 14 : 18),
+      padding: EdgeInsets.all(isMobile ? 14 : 20),
       decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(isMobile ? 14 : 18),
+        color: pal.cardBg,
+        borderRadius: BorderRadius.circular(isMobile ? 14 : 20),
         boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 18, offset: const Offset(0, 6))],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('各题型得分', style: TextStyle(fontSize: isMobile ? 14.5 : 16, fontWeight: FontWeight.w700, color: const Color(0xFF0F172A))),
+          Text('各题型得分', style: TextStyle(fontSize: isMobile ? 14.5 : 15.5, fontWeight: FontWeight.w800, color: const Color(0xFF0F172A))),
           const SizedBox(height: 4),
-          Text('逐题型展示得分/满分/正确率，帮助定位薄弱环节', style: TextStyle(fontSize: isMobile ? 11 : 12, color: Colors.grey[500])),
-          const SizedBox(height: 14),
+          Text('逐题型展示得分/满分/正确率，薄弱题型可一键专项练习', style: TextStyle(fontSize: isMobile ? 11 : 12, color: const Color(0xFF94A3B8))),
+          const SizedBox(height: 10),
           ...ExamSection.values.map((s) {
             final sc = r.sectionScores[s] ?? 0;
             final max = r.sectionMax[s] ?? s.totalScore;
             final correct = r.sectionCorrect[s] ?? 0;
             final total = s.questionCount;
             final pct = max == 0 ? 0.0 : sc / max;
+            final isZero = r.totalScore == 0;
+            final weak = !isZero && pct < 0.5;
+            final barColor = isZero ? const Color(0xFFCBD5E1) : pal.barByPct(pct);
             return Padding(
               padding: EdgeInsets.symmetric(vertical: isMobile ? 6 : 8),
               child: Column(
@@ -2237,16 +2293,36 @@ class _SectionBreakdown extends StatelessWidget {
                 children: [
                   Row(
                     children: [
+                      Icon(_sectionIcons[s] ?? Icons.menu_book_rounded,
+                          size: isMobile ? 14 : 15, color: const Color(0xFF94A3B8)),
+                      const SizedBox(width: 8),
                       Expanded(
                         child: Text(s.shortLabel,
-                            style: TextStyle(fontSize: isMobile ? 12.5 : 13.5, fontWeight: FontWeight.w600, color: const Color(0xFF1E293B)),
+                            style: TextStyle(fontSize: isMobile ? 12.5 : 13.5, fontWeight: FontWeight.w700, color: const Color(0xFF1E293B)),
                             overflow: TextOverflow.ellipsis),
                       ),
-                      Text('做对 $correct/$total',
-                          style: TextStyle(fontSize: isMobile ? 10.5 : 11.5, color: Colors.grey[500])),
+                      // 正确率 chip
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                        decoration: BoxDecoration(color: const Color(0xFFF3F4F6), borderRadius: BorderRadius.circular(6)),
+                        child: Text('正确率 ${isZero || total == 0 ? '--' : '${(correct / total * 100).round()}%'}',
+                            style: TextStyle(fontSize: isMobile ? 10.5 : 11.5, fontWeight: FontWeight.w600, color: const Color(0xFF475569))),
+                      ),
                       SizedBox(width: isMobile ? 8 : 12),
-                      Text('$sc/$max',
-                          style: TextStyle(fontSize: isMobile ? 12 : 13, fontWeight: FontWeight.w700, color: const Color(0xFF1E3A8A))),
+                      Text('做对 $correct/$total',
+                          style: TextStyle(fontSize: isMobile ? 10.5 : 11.5, color: const Color(0xFF94A3B8))),
+                      SizedBox(width: isMobile ? 8 : 12),
+                      Text.rich(
+                        TextSpan(children: [
+                          TextSpan(
+                              text: '$sc',
+                              style: TextStyle(
+                                  fontSize: isMobile ? 12 : 13,
+                                  fontWeight: FontWeight.w800,
+                                  color: isZero ? const Color(0xFF94A3B8) : barColor)),
+                          TextSpan(text: '/$max', style: TextStyle(fontSize: isMobile ? 10 : 11, fontWeight: FontWeight.w600, color: const Color(0xFF94A3B8))),
+                        ]),
+                      ),
                     ],
                   ),
                   const SizedBox(height: 6),
@@ -2254,19 +2330,52 @@ class _SectionBreakdown extends StatelessWidget {
                     borderRadius: BorderRadius.circular(6),
                     child: LinearProgressIndicator(
                       value: pct,
-                      backgroundColor: const Color(0xFFF1F5F9),
-                      valueColor: AlwaysStoppedAnimation<Color>(
-                        pct >= 0.8
-                            ? const Color(0xFF10B981)
-                            : pct >= 0.6
-                                ? const Color(0xFF3B82F6)
-                                : pct >= 0.4
-                                    ? const Color(0xFFF59E0B)
-                                    : const Color(0xFFEF4444),
-                      ),
-                      minHeight: isMobile ? 8 : 10,
+                      backgroundColor: pal.barTrack,
+                      valueColor: AlwaysStoppedAnimation<Color>(barColor),
+                      minHeight: isMobile ? 8 : 9,
                     ),
                   ),
+                  // 薄弱题型：低于 50% 展开快捷专项练习入口
+                  if (weak)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: Row(
+                        children: [
+                          Icon(Icons.trending_down_rounded, size: 13, color: const Color(0xFFDC4A4A)),
+                          const SizedBox(width: 5),
+                          const Text('薄弱项 · 低于 50%',
+                              style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w700, color: Color(0xFFDC4A4A))),
+                          const Spacer(),
+                          InkWell(
+                            borderRadius: BorderRadius.circular(8),
+                            onTap: () async {
+                              final ok = await state.startSectionPractice(s);
+                              if (!ok && context.mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(content: Text('请先在设置中配置 API 后再使用专项练习'), duration: Duration(seconds: 2)),
+                                );
+                              }
+                            },
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 5),
+                              decoration: BoxDecoration(
+                                color: pal.accentSoft,
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(color: pal.accent.withValues(alpha: 0.25)),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(Icons.gps_fixed_rounded, size: 12, color: pal.accent),
+                                  const SizedBox(width: 5),
+                                  Text('专项练习', style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w700, color: pal.accent)),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                 ],
               ),
             );
@@ -2284,98 +2393,49 @@ class _OverallStats extends StatelessWidget {
   const _OverallStats({required this.r, required this.dur, required this.isMobile});
   @override
   Widget build(BuildContext context) {
+    final pal = ReportPalette(isLight: Theme.of(context).brightness == Brightness.light);
     final totalCorrect = r.sectionCorrect.values.fold<int>(0, (a, b) => a + b);
     final totalQ = r.sectionTotal.values.fold<int>(0, (a, b) => a + b);
-    final qpm = r.durationSec == 0 ? 0 : totalQ / (r.durationSec / 60);
+    final isZero = r.totalScore == 0;
+    final qpm = r.durationSec == 0 || isZero ? 0.0 : totalQ / (r.durationSec / 60);
+    final rows = <(IconData, String, String, Color, Color)>[
+      (Icons.timer_rounded, '答题用时', dur, pal.accent, pal.accentSoft),
+      (Icons.check_circle_rounded, '客观做对', '$totalCorrect 题', pal.green, pal.greenSoft),
+      (Icons.checklist_rounded, '作答题数', '${isZero ? 0 : totalQ} 题', pal.teal, pal.tealSoft),
+      (Icons.bolt_rounded, '平均速度', '${qpm.toStringAsFixed(1)} 题/分钟', pal.amber, pal.amberSoft),
+    ];
     return Container(
-      padding: EdgeInsets.all(isMobile ? 14 : 18),
+      padding: EdgeInsets.all(isMobile ? 14 : 20),
       decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(isMobile ? 14 : 18),
+        color: pal.cardBg,
+        borderRadius: BorderRadius.circular(isMobile ? 14 : 20),
         boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 18, offset: const Offset(0, 6))],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('整体表现', style: TextStyle(fontSize: isMobile ? 14.5 : 16, fontWeight: FontWeight.w700, color: const Color(0xFF0F172A))),
-          SizedBox(height: isMobile ? 10 : 14),
-          _StatRow(icon: Icons.timer_rounded, label: '答题用时', value: dur, accent: const Color(0xFF3B82F6)),
-          _StatRow(icon: Icons.gavel_rounded, label: '客观做对', value: '$totalCorrect 题', accent: const Color(0xFF10B981)),
-          _StatRow(icon: Icons.track_changes_rounded, label: '客观作答', value: '$totalQ 题', accent: const Color(0xFF8B5CF6)),
-          _StatRow(icon: Icons.speed_rounded, label: '平均速度', value: '${qpm.toStringAsFixed(1)} 题/分钟', accent: const Color(0xFFF59E0B)),
-          const SizedBox(height: 14),
-          const Divider(height: 1, color: Color(0xFFF1F5F9)),
-          const SizedBox(height: 12),
-          const Text('教练建议', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: Color(0xFF0F172A))),
-          const SizedBox(height: 8),
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: const Color(0xFFEFF6FF),
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: const Color(0xFFBFDBFE)),
-            ),
-            child: Text(
-              _advice(r),
-              style: const TextStyle(fontSize: 12.5, color: Color(0xFF1E3A8A), height: 1.7),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  String _advice(ExamResult r) {
-    final pct = r.percentage;
-    final weak = <String>[];
-    for (final s in ExamSection.values) {
-      final max = r.sectionMax[s] ?? s.totalScore;
-      final sc = r.sectionScores[s] ?? 0;
-      if (max > 0 && sc / max < 0.5) weak.add(s.label);
-    }
-    final sb = StringBuffer();
-    if (pct >= 0.85) {
-      sb.writeln('表现优秀！保持节奏，建议重点突破薄弱环节并进行限时训练。');
-    } else if (pct >= 0.7) {
-      sb.writeln('表现良好！建议对阅读和写作做专项强化，提升稳定度。');
-    } else if (pct >= 0.6) {
-      sb.writeln('及格附近，再提分机会很大！建议先攻克词汇语法和完形两大基础题型。');
-    } else {
-      sb.writeln('基础尚需加强：建议先过一遍专升本核心词，并做专项模块练习再做套卷。');
-    }
-    if (weak.isNotEmpty) {
-      sb.write('\n当前薄弱：${weak.join("、")}，请针对性训练。');
-    }
-    return sb.toString();
-  }
-}
-
-class _StatRow extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final String value;
-  final Color accent;
-  const _StatRow({required this.icon, required this.label, required this.value, required this.accent});
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8),
-      child: Row(
-        children: [
-          Container(
-            width: 34,
-            height: 34,
-            alignment: Alignment.center,
-            decoration: BoxDecoration(
-              color: accent.withOpacity(0.12),
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: Icon(icon, color: accent, size: 18),
-          ),
-          const SizedBox(width: 12),
-          Text(label, style: TextStyle(fontSize: 13, color: Colors.grey[600])),
-          const Spacer(),
-          Text(value, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: Color(0xFF0F172A))),
+          Text('整体表现', style: TextStyle(fontSize: isMobile ? 14.5 : 15.5, fontWeight: FontWeight.w800, color: const Color(0xFF0F172A))),
+          SizedBox(height: isMobile ? 8 : 10),
+          ...rows.map((row) {
+            final (icon, label, value, fg, bg) = row;
+            return Padding(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              child: Row(
+                children: [
+                  Container(
+                    width: 36,
+                    height: 36,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(11)),
+                    child: Icon(icon, color: fg, size: 18),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(child: Text(label, style: const TextStyle(fontSize: 13, color: Color(0xFF475569)))),
+                  Text(value, style: const TextStyle(fontSize: 14.5, fontWeight: FontWeight.w800, color: Color(0xFF0F172A))),
+                ],
+              ),
+            );
+          }),
         ],
       ),
     );

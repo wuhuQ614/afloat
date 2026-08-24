@@ -11,7 +11,7 @@ import '../services/dict_service.dart';
 import '../services/storage.dart';
 import '../services/tts_service.dart';
 import '../state.dart';
-import '../theme_colors.dart' show kPrimary, kSuccess, kDanger, kDarkCard, AppColors;
+import '../theme_colors.dart' show kPrimary, kSuccess, kDanger, kDarkCard, AppColors, ReportPalette;
 import 'learn_page.dart' show AppScope;
 
 const _primary = kPrimary;
@@ -215,10 +215,14 @@ String _fmtTime(int ts) {
 // ===== 学习报告 =====
 /// 一比一还原用户提供的参考图：
 ///  - 顶部 header：标题"学习报告"，副标题"YYYY年M月D日 星期X"，右上角三个点菜单
-///  - 4 个统计卡：圆图标背景 + 数值 + 标签，第一个卡底部带紫色指示条
-///  - 最近一次模拟考试：左文字（超大分数 + 用时 + 正确率） + 右 3D E图标
-///  - 最近7天答题趋势：左Y轴刻度 + 今日高亮紫色渐变柱 + 顶部数字气泡 + 右上角"题目数"下拉
-///  - 历史考试记录：左分数 /Max + 中标题 + 右时间+箭头 + 右上"查看全部"
+///  - 4 个统计卡：圆图标背景 + 数值 + 标签，第一个卡底部带指示条
+///  - 最近一次模拟考试：左文字（超大分数 + 用时 + 正确率） + 右得分率环形图
+///  - 最近7天答题趋势：左Y轴刻度 + 今日高亮蓝色渐变柱 + 顶部数字气泡 + 右上角"题目数"下拉
+///  - 历史考试记录：左分数 /Max + 中标题 + 右时间+箭头
+///
+/// 配色：企业蓝主色 + 语义色（绿=达标/青=得分/琥珀=时长）+ 中性灰图表，
+/// 不随应用紫色主题（大厂数据面板风格：中性底 + 单一强调色 + 语义点缀）。
+/// 配色定义见 theme_colors.dart 的 ReportPalette（与成绩分析页共用）。
 class ReportPage extends StatelessWidget {
   const ReportPage({super.key});
 
@@ -241,6 +245,9 @@ class ReportPage extends StatelessWidget {
     final now = DateTime.now();
     final wkday = ['一', '二', '三', '四', '五', '六', '日'][now.weekday - 1];
     final dateSubtitle = '${now.year}年${now.month}月${now.day}日 星期$wkday';
+
+    // 学习报告页配色（企业蓝 + 语义色，不随应用紫色主题）
+    final pal = ReportPalette(isLight: Theme.of(context).brightness == Brightness.light);
 
     // 检测小屏（手机端）
     final screenWidth = MediaQuery.of(context).size.width;
@@ -291,7 +298,10 @@ class ReportPage extends StatelessWidget {
                     icon: Icons.edit_note_rounded,
                     value: '$total',
                     label: '累计练习',
+                    iconColor: pal.accent,
+                    iconBg: pal.accentSoft,
                     isActive: true,
+                    activeColor: pal.accent,
                   )),
                   const SizedBox(width: 10),
                   Expanded(
@@ -300,6 +310,8 @@ class ReportPage extends StatelessWidget {
                     icon: Icons.star_rounded,
                     value: total == 0 ? '-' : avg.toStringAsFixed(1),
                     label: '平均得分',
+                    iconColor: pal.teal,
+                    iconBg: pal.tealSoft,
                   )),
                 ],
               ),
@@ -312,6 +324,8 @@ class ReportPage extends StatelessWidget {
                     icon: Icons.gps_fixed_rounded,
                     value: total == 0 ? '-' : '$rate%',
                     label: '达标率(≥70分)',
+                    iconColor: pal.green,
+                    iconBg: pal.greenSoft,
                   )),
                   const SizedBox(width: 10),
                   Expanded(
@@ -320,6 +334,8 @@ class ReportPage extends StatelessWidget {
                     icon: Icons.schedule_rounded,
                     value: totalMin,
                     label: '学习时长',
+                    iconColor: pal.amber,
+                    iconBg: pal.amberSoft,
                   )),
                 ],
               ),
@@ -332,7 +348,10 @@ class ReportPage extends StatelessWidget {
                     icon: Icons.edit_note_rounded,
                     value: '$total',
                     label: '累计练习',
+                    iconColor: pal.accent,
+                    iconBg: pal.accentSoft,
                     isActive: true,
+                    activeColor: pal.accent,
                   )),
                   const SizedBox(width: 14),
                   Expanded(
@@ -341,6 +360,8 @@ class ReportPage extends StatelessWidget {
                     icon: Icons.star_rounded,
                     value: total == 0 ? '-' : avg.toStringAsFixed(1),
                     label: '平均得分',
+                    iconColor: pal.teal,
+                    iconBg: pal.tealSoft,
                   )),
                   const SizedBox(width: 14),
                   Expanded(
@@ -349,6 +370,8 @@ class ReportPage extends StatelessWidget {
                     icon: Icons.gps_fixed_rounded,
                     value: total == 0 ? '-' : '$rate%',
                     label: '达标率(≥70分)',
+                    iconColor: pal.green,
+                    iconBg: pal.greenSoft,
                   )),
                   const SizedBox(width: 14),
                   Expanded(
@@ -357,6 +380,8 @@ class ReportPage extends StatelessWidget {
                     icon: Icons.schedule_rounded,
                     value: totalMin,
                     label: '学习时长',
+                    iconColor: pal.amber,
+                    iconBg: pal.amberSoft,
                   )),
                 ],
               ),
@@ -434,23 +459,28 @@ class _KpiCard extends StatelessWidget {
   final String value;
   final String label;
   final bool isActive;
+  /// 语义色：图标前景 / 图标底（学习报告页企业蓝+语义色方案）
+  final Color? iconColor;
+  final Color? iconBg;
+  /// 底部指示条颜色
+  final Color? activeColor;
   const _KpiCard(
       {required this.c,
       required this.icon,
       required this.value,
       required this.label,
-      this.isActive = false});
+      this.isActive = false,
+      this.iconColor,
+      this.iconBg,
+      this.activeColor});
 
   @override
   Widget build(BuildContext context) {
     final isLight = c.isLight;
     // 按图：纯白卡 + 柔和圆角 + 轻阴影
     final bg = isLight ? Colors.white : const Color(0xFF2A2A32);
-    final iconBg = (c.isLight
-            ? const Color(0xFFF3EEFF)
-            : const Color(0xFF3D3258))
-        .withValues(alpha: isLight ? 1.0 : 0.55);
-    final iconColor = c.primaryText;
+    final chipBg = iconBg ?? (c.isLight ? const Color(0xFFF3F4F6) : const Color(0xFF33333A));
+    final chipFg = iconColor ?? c.textSecondary;
 
     return Stack(
       alignment: Alignment.bottomCenter,
@@ -479,11 +509,11 @@ class _KpiCard extends StatelessWidget {
                 width: 40,
                 height: 40,
                 decoration: BoxDecoration(
-                  color: iconBg,
+                  color: chipBg,
                   shape: BoxShape.circle,
                 ),
                 alignment: Alignment.center,
-                child: Icon(icon, size: 20, color: iconColor),
+                child: Icon(icon, size: 20, color: chipFg),
               ),
               const SizedBox(height: 14),
               Text(value,
@@ -502,7 +532,7 @@ class _KpiCard extends StatelessWidget {
             ],
           ),
         ),
-        // 第一张卡底部紫色小指示条
+        // 第一张卡底部小指示条（企业蓝）
         if (isActive)
           Positioned(
             bottom: -1,
@@ -510,14 +540,11 @@ class _KpiCard extends StatelessWidget {
               width: 34,
               height: 3.5,
               decoration: BoxDecoration(
-                gradient: LinearGradient(colors: [
-                  c.gradientEnd.withValues(alpha: 0.9),
-                  c.gradientStart.withValues(alpha: 0.9),
-                ]),
+                color: activeColor ?? c.primary,
                 borderRadius: BorderRadius.circular(3),
                 boxShadow: [
                   BoxShadow(
-                    color: c.primary.withValues(alpha: 0.4),
+                    color: (activeColor ?? c.primary).withValues(alpha: 0.35),
                     blurRadius: 6,
                     offset: const Offset(0, 2),
                   ),
@@ -548,6 +575,7 @@ class _PaperCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final isLight = c.isLight;
     final bg = isLight ? Colors.white : const Color(0xFF2A2A32);
+    final pal = ReportPalette(isLight: isLight);
 
     // 检测小屏
     final screenWidth = MediaQuery.of(context).size.width;
@@ -604,7 +632,7 @@ class _PaperCard extends StatelessWidget {
                     style: TextStyle(
                         fontSize: 42,
                         fontWeight: FontWeight.w800,
-                        color: c.primaryText,
+                        color: c.text,
                         height: 0.95,
                         letterSpacing: -1)),
                 const SizedBox(width: 4),
@@ -641,7 +669,7 @@ class _PaperCard extends StatelessWidget {
                   style: TextStyle(
                       fontSize: 12, color: c.textTertiary)),
             ]),
-            // 查看成绩分析
+            // 查看成绩分析（企业蓝链接）
             if (hasCur) ...[
               const SizedBox(height: 12),
               GestureDetector(
@@ -653,11 +681,11 @@ class _PaperCard extends StatelessWidget {
                     Text('查看成绩分析',
                         style: TextStyle(
                             fontSize: 12.5,
-                            color: c.primaryText,
+                            color: pal.accent,
                             fontWeight: FontWeight.w600)),
                     const SizedBox(width: 2),
                     Icon(Icons.arrow_forward_rounded,
-                        size: 14, color: c.primaryText),
+                        size: 14, color: pal.accent),
                   ],
                 ),
               ),
@@ -680,7 +708,7 @@ class _PaperCard extends StatelessWidget {
                               style: TextStyle(
                                   fontSize: 56,
                                   fontWeight: FontWeight.w800,
-                                  color: c.primaryText,
+                                  color: c.text,
                                   height: 0.95,
                                   letterSpacing: -1)),
                           const SizedBox(width: 4),
@@ -720,106 +748,46 @@ class _PaperCard extends StatelessWidget {
                     ],
                   ),
                 ),
-                // 右：3D E 字图标 + 查看成绩分析
+                // 右：得分率环形图 + 查看成绩分析
                 SizedBox(
                   width: 146,
                   child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.end,
+                    crossAxisAlignment: CrossAxisAlignment.center,
                     children: [
-                      // 3D E 字（紫色渐变玻璃方块 + 光晕）
+                      // 得分率环形图（企业蓝进度 + 中性轨道，替代原装饰性 3D E 字）
                       SizedBox(
-                        height: 110,
-                        child: Stack(
-                          alignment: Alignment.center,
-                          children: [
-                            // 外层光环
-                            Container(
-                              width: 100,
-                              height: 100,
-                              decoration: BoxDecoration(
-                                shape: BoxShape.circle,
-                                gradient: RadialGradient(
-                                  colors: [
-                                    c.primary.withValues(alpha: 0.22),
-                                    c.primary.withValues(alpha: 0.0),
-                                  ],
-                                  stops: const [0.3, 1.0],
-                                ),
-                              ),
-                            ),
-                            // 玻璃方块
-                            Transform.rotate(
-                              angle: -0.18,
-                              child: Container(
-                                width: 84,
-                                height: 84,
-                                decoration: BoxDecoration(
-                                  borderRadius: BorderRadius.circular(22),
-                                  gradient: LinearGradient(
-                                    begin: Alignment.topLeft,
-                                    end: Alignment.bottomRight,
-                                    colors: [
-                                      (c.isLight
-                                              ? const Color(0xFFE9DFFF)
-                                              : const Color(0xFF58477A))
-                                          .withValues(alpha: 0.85),
-                                      (c.isLight
-                                              ? const Color(0xFFC8B8FA)
-                                              : const Color(0xFF7D66B3))
-                                          .withValues(alpha: 0.82),
-                                    ],
-                                  ),
-                                  border: Border.all(
-                                      color: (c.isLight
-                                              ? Colors.white
-                                              : Colors.white.withValues(
-                                                  alpha: 0.3))
-                                          .withValues(alpha: 0.85),
-                                      width: 1.5),
-                                  boxShadow: [
-                                    BoxShadow(
-                                        color: c.primary.withValues(alpha: 0.28),
-                                        blurRadius: 22,
-                                        offset: const Offset(2, 8)),
-                                  ],
-                                ),
-                                alignment: Alignment.center,
-                                child: Text('E',
+                        width: 108,
+                        height: 108,
+                        child: CustomPaint(
+                          painter: _ScoreRingPainter(
+                            pct: hasExam ? pct : null,
+                            pal: pal,
+                          ),
+                          child: Center(
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(hasExam ? '${(pct * 100).round()}%' : '--',
                                     style: TextStyle(
-                                        fontSize: 48,
+                                        fontSize: 22,
                                         fontWeight: FontWeight.w800,
-                                        color: (c.isLight
-                                                ? const Color(0xFF7E5CE8)
-                                                : const Color(0xFFD9CEFF))
-                                            .withValues(alpha: 0.92),
-                                        letterSpacing: -1)),
-                              ),
+                                        color: c.text,
+                                        height: 1.05,
+                                        letterSpacing: -0.3)),
+                                const SizedBox(height: 2),
+                                Text(hasExam ? '得分率' : '暂无成绩',
+                                    style: TextStyle(
+                                        fontSize: 10.5,
+                                        color: c.textTertiary,
+                                        height: 1)),
+                              ],
                             ),
-                            // 右下侧环
-                            Positioned(
-                              right: 6,
-                              bottom: 8,
-                              child: Container(
-                                width: 86,
-                                height: 6,
-                                decoration: BoxDecoration(
-                                  borderRadius: BorderRadius.circular(3),
-                                  gradient: LinearGradient(
-                                    colors: [
-                                      c.primary.withValues(alpha: 0.0),
-                                      c.primary.withValues(alpha: 0.55),
-                                      c.primary.withValues(alpha: 0.0),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ],
+                          ),
                         ),
                       ),
                       // 查看成绩分析
                       if (hasCur) ...[
-                        const SizedBox(height: 4),
+                        const SizedBox(height: 10),
                         GestureDetector(
                           behavior: HitTestBehavior.opaque,
                           onTap: () => s.setPage(11),
@@ -829,11 +797,11 @@ class _PaperCard extends StatelessWidget {
                               Text('查看成绩分析',
                                   style: TextStyle(
                                       fontSize: 12.5,
-                                      color: c.primaryText,
+                                      color: pal.accent,
                                       fontWeight: FontWeight.w600)),
                               const SizedBox(width: 2),
                               Icon(Icons.arrow_forward_rounded,
-                                  size: 14, color: c.primaryText),
+                                  size: 14, color: pal.accent),
                             ],
                           ),
                         ),
@@ -848,6 +816,44 @@ class _PaperCard extends StatelessWidget {
       ),
     );
   }
+}
+
+/// 得分率环形图：企业蓝渐变进度（顶部起点、圆角端点）+ 中性轨道。
+/// [pct] 为 null 时只画轨道（暂无成绩态）。
+class _ScoreRingPainter extends CustomPainter {
+  final double? pct;
+  final ReportPalette pal;
+  _ScoreRingPainter({required this.pct, required this.pal});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final stroke = 9.0;
+    final rect = EdgeInsets.all(stroke / 2 + 1).deflateRect(Offset.zero & size);
+    final trackPaint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = stroke
+      ..strokeCap = StrokeCap.round
+      ..color = pal.ringTrack;
+    canvas.drawArc(rect, 0, 2 * 3.141592653589793, false, trackPaint);
+
+    final p = pct?.clamp(0.0, 1.0) ?? 0.0;
+    if (p <= 0) return;
+    final progressPaint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = stroke
+      ..strokeCap = StrokeCap.round
+      ..shader = SweepGradient(
+        startAngle: -1.5707963267948966, // 从正上方开始
+        endAngle: 2 * 3.141592653589793,
+        colors: [pal.accentBright, pal.accent],
+        transform: const GradientRotation(-1.5707963267948966),
+      ).createShader(rect);
+    canvas.drawArc(rect, -1.5707963267948966, 2 * 3.141592653589793 * p, false, progressPaint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _ScoreRingPainter old) =>
+      old.pct != pct || old.pal.isLight != pal.isLight;
 }
 
 // =========================================================
@@ -1019,20 +1025,23 @@ class _MetricDropdown extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // 中性 chip（大厂下拉样式：浅灰底 + 次级文字，不抢数据主体）
+    final chipBg = c.isLight ? const Color(0xFFF3F4F6) : const Color(0xFF33333A);
+    final fg = c.textSecondary;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
       decoration: BoxDecoration(
-        color: c.isLight ? const Color(0xFFF3EEFF) : const Color(0xFF3D3258),
+        color: chipBg,
         borderRadius: BorderRadius.circular(8),
       ),
       child: DropdownButtonHideUnderline(
         child: DropdownButton<String>(
           value: value,
           isDense: true,
-          icon: Icon(Icons.keyboard_arrow_down_rounded, size: 16, color: c.primaryText),
+          icon: Icon(Icons.keyboard_arrow_down_rounded, size: 16, color: fg),
           iconSize: 16,
           style: TextStyle(
-              fontSize: 12, color: c.primaryText, fontWeight: FontWeight.w600),
+              fontSize: 12, color: fg, fontWeight: FontWeight.w600),
           dropdownColor: c.isLight ? Colors.white : const Color(0xFF2A2A32),
           items: _labels.entries
               .map((e) => DropdownMenuItem(
@@ -1040,7 +1049,7 @@ class _MetricDropdown extends StatelessWidget {
                     child: Text(e.value,
                         style: TextStyle(
                             fontSize: 12,
-                            color: c.primaryText,
+                            color: fg,
                             fontWeight: FontWeight.w600)),
                   ))
               .toList(),
@@ -1108,16 +1117,12 @@ class _BarCell extends StatelessWidget {
     final chartH = 150.0;
     final ratio = value == 0 ? 0.0 : (value / max(1.0, maxCount));
     final barH = value == 0 ? 4.0 : (6 + ratio * (chartH - 10));
+    final pal = ReportPalette(isLight: c.isLight);
 
-    final lightBar = c.isLight
-        ? const Color(0xFFE4DCFF)
-        : const Color(0xFF463B62);
-    final darkBarTop = c.isLight
-        ? const Color(0xFFA48BFF)
-        : const Color(0xFFC7B5FF);
-    final darkBarBot = c.isLight
-        ? const Color(0xFF7E5CE8)
-        : const Color(0xFF9378EA);
+    // 非今日柱：中性灰；今日柱：企业蓝渐变
+    final lightBar = pal.barTrack;
+    final darkBarTop = pal.accentBright;
+    final darkBarBot = pal.accent;
 
     return Column(
       mainAxisAlignment: MainAxisAlignment.end,
@@ -1128,11 +1133,7 @@ class _BarCell extends StatelessWidget {
             padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
             margin: const EdgeInsets.only(bottom: 6),
             decoration: BoxDecoration(
-              color: isToday
-                  ? (c.isLight
-                      ? const Color(0xFF8B6EF5)
-                      : const Color(0xFFA78BFA))
-                  : Colors.transparent,
+              color: isToday ? pal.accent : Colors.transparent,
               borderRadius: BorderRadius.circular(7),
             ),
             child: Text(text,
@@ -1175,7 +1176,7 @@ class _BarCell extends StatelessWidget {
         Text(label,
             style: TextStyle(
                 fontSize: 11,
-                color: isToday ? c.primaryText : c.textTertiary,
+                color: isToday ? pal.accent : c.textTertiary,
                 fontWeight: isToday ? FontWeight.w700 : FontWeight.w500,
                 height: 1)),
       ],
@@ -1218,11 +1219,7 @@ class _HistoryCard extends StatelessWidget {
   /// 点击历史记录：弹出该次考试的成绩详情弹窗
   void _showHistoryDetail(BuildContext context, ExamHistoryEntry e) {
     final pct = e.maxScore == 0 ? 0.0 : e.totalScore / e.maxScore;
-    final color = pct >= 0.7
-        ? (c.isLight ? const Color(0xFFFB7A1C) : const Color(0xFFFF9955))
-        : (pct >= 0.4
-            ? (c.isLight ? const Color(0xFFF05A2C) : const Color(0xFFFF7B52))
-            : (c.isLight ? const Color(0xFFE84242) : const Color(0xFFFF6565)));
+    final color = ReportPalette(isLight: c.isLight).scoreByPct(pct);
     final isLight = c.isLight;
     final bg = isLight ? Colors.white : const Color(0xFF2A2A32);
     final d = DateTime.fromMillisecondsSinceEpoch(e.submittedAt);
@@ -1299,7 +1296,7 @@ class _HistoryCard extends StatelessWidget {
                           style: TextStyle(
                               fontSize: 12.5,
                               fontWeight: FontWeight.w700,
-                              color: c.primaryText)),
+                              color: c.textSecondary)),
                     ),
                   ],
                 ),
@@ -1431,15 +1428,8 @@ class _HistoryRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final pct = maxScore == 0 ? 0.0 : score / maxScore;
-    // 颜色：>=70% 橙红色偏亮，低分红色
-    late Color scoreColor;
-    if (pct >= 0.7) {
-      scoreColor = c.isLight ? const Color(0xFFFB7A1C) : const Color(0xFFFF9955);
-    } else if (pct >= 0.4) {
-      scoreColor = c.isLight ? const Color(0xFFF05A2C) : const Color(0xFFFF7B52);
-    } else {
-      scoreColor = c.isLight ? const Color(0xFFE84242) : const Color(0xFFFF6565);
-    }
+    // 分数分档色：橙（≥70%）→ 深橙（≥40%）→ 红（<40%）
+    final scoreColor = ReportPalette(isLight: c.isLight).scoreByPct(pct);
 
     return InkWell(
       onTap: onTap,

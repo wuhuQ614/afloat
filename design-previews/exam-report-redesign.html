@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>成绩分析报告 · 重设计稿</title>
+<style>
+  :root {
+    --accent: #2563EB;
+    --accent-bright: #60A5FA;
+    --accent-soft: #EFF6FF;
+    --teal: #0F766E;   --teal-soft: #F0FDFA;
+    --green: #16A34A;  --green-soft: #F0FDF4;
+    --amber: #D97706;  --amber-soft: #FFFBED;
+    --ink: #0F172A;
+    --ink-2: #475569;
+    --ink-3: #94A3B8;
+    --track: #EDF0F5;
+    --card: #FFFFFF;
+    --page: #F5F6FA;
+    --line: #EEF1F5;
+    --s-high: #EA8A1F;   /* ≥70% */
+    --s-mid: #E0642A;    /* ≥40% */
+    --s-low: #DC4A4A;    /* <40% */
+    --radius: 20px;
+    --shadow: 0 8px 24px -6px rgba(15, 23, 42, .06), 0 2px 6px rgba(15, 23, 42, .04);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { -webkit-font-smoothing: antialiased; }
+  body {
+    font-family: "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", sans-serif;
+    background: var(--page);
+    color: var(--ink);
+    font-variant-numeric: tabular-nums;
+    padding: 20px 24px 48px;
+  }
+  .wrap { max-width: 1200px; margin: 0 auto; }
+
+  /* 图标（Lucide 风格线性图标，随 currentColor 着色） */
+  .ic {
+    width: 1em; height: 1em; flex: none;
+    fill: none; stroke: currentColor; stroke-width: 2;
+    stroke-linecap: round; stroke-linejoin: round;
+    vertical-align: -0.12em;
+  }
+
+  /* ===== 顶栏 ===== */
+  .topbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+  .btn-ghost {
+    display: inline-flex; align-items: center; gap: 7px;
+    background: #fff; border: 1px solid var(--line); color: var(--ink-2);
+    font-size: 13px; font-weight: 600; padding: 8px 14px; border-radius: 10px;
+    cursor: pointer; transition: .15s;
+  }
+  .btn-ghost:hover { border-color: #D8DEE8; color: var(--ink); }
+  .btn-ghost .ic { font-size: 15px; color: var(--ink-3); }
+
+  /* ===== Hero 白卡 ===== */
+  .hero {
+    background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow);
+    padding: 26px 30px; display: flex; align-items: center; gap: 32px; margin-bottom: 16px;
+  }
+  .hero-left { flex: 1; min-width: 0; }
+  .rank-badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 12.5px; font-weight: 700; padding: 5px 12px; border-radius: 999px; margin-bottom: 12px;
+  }
+  .rank-badge .ic { font-size: 12px; }
+  .hero-title { font-size: 22px; font-weight: 800; letter-spacing: .2px; }
+  .hero-sub { font-size: 12.5px; color: var(--ink-3); margin-top: 8px; display: flex; gap: 16px; flex-wrap: wrap; }
+  .hero-sub b { color: var(--ink-2); font-weight: 600; }
+
+  .hero-right { display: flex; align-items: center; gap: 28px; }
+  .score-block { text-align: right; }
+  .score-num { display: flex; align-items: baseline; gap: 6px; justify-content: flex-end; }
+  .score-num .v { font-size: 56px; font-weight: 800; letter-spacing: -1.5px; line-height: 1; color: var(--ink); }
+  .score-num .m { font-size: 14px; color: var(--ink-3); font-weight: 600; }
+  .score-label { font-size: 12px; color: var(--ink-3); margin-top: 6px; letter-spacing: 2px; }
+
+  .ring-box { position: relative; width: 116px; height: 116px; flex: none; }
+  .ring-box svg.ring { width: 100%; height: 100%; transform: rotate(-90deg); }
+  .ring-center {
+    position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 2px;
+  }
+  .ring-center .pct { font-size: 22px; font-weight: 800; letter-spacing: -.3px; }
+  .ring-center .cap { font-size: 10.5px; color: var(--ink-3); }
+
+  /* ===== 主体两栏 ===== */
+  .grid { display: grid; grid-template-columns: 1.55fr 1fr; gap: 16px; align-items: start; }
+  .card {
+    background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow);
+    padding: 22px 24px;
+  }
+  .card h3 { font-size: 15.5px; font-weight: 800; }
+  .card .desc { font-size: 12px; color: var(--ink-3); margin-top: 4px; }
+
+  /* 题型行 */
+  .section-row { padding: 13px 0; border-bottom: 1px solid var(--line); }
+  .section-row:last-child { border-bottom: none; padding-bottom: 2px; }
+  .sec-head { display: flex; align-items: center; gap: 10px; }
+  .sec-name { font-size: 13.5px; font-weight: 700; flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; }
+  .sec-name .ic { font-size: 15px; color: var(--ink-3); }
+  .sec-correct { font-size: 11.5px; color: var(--ink-3); }
+  .sec-rate { font-size: 11.5px; color: var(--ink-2); background: #F3F4F6; padding: 2px 8px; border-radius: 6px; font-weight: 600; }
+  .sec-score { font-size: 13px; font-weight: 800; min-width: 64px; text-align: right; }
+  .sec-score .m { color: var(--ink-3); font-weight: 600; font-size: 11px; }
+  .sec-bar { height: 8px; background: var(--track); border-radius: 5px; margin-top: 9px; overflow: hidden; }
+  .sec-bar i { display: block; height: 100%; border-radius: 5px; transition: width .6s cubic-bezier(.2,.7,.3,1); }
+  .sec-foot { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; }
+  .weak-tag { font-size: 11.5px; font-weight: 700; color: var(--s-low); display: inline-flex; align-items: center; gap: 5px; }
+  .weak-tag .ic { font-size: 12px; }
+  .btn-mini {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 11.5px; font-weight: 700; color: var(--accent);
+    background: var(--accent-soft); border: 1px solid #DBEAFE;
+    padding: 4px 11px; border-radius: 8px; cursor: pointer; transition: .15s;
+  }
+  .btn-mini:hover { background: #DBEAFE; }
+  .btn-mini .ic { font-size: 12px; }
+
+  /* 整体表现 */
+  .stat-row { display: flex; align-items: center; gap: 12px; padding: 9px 0; }
+  .stat-ico {
+    width: 36px; height: 36px; border-radius: 11px; flex: none;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .stat-ico .ic { font-size: 17px; }
+  .stat-label { font-size: 13px; color: var(--ink-2); flex: 1; }
+  .stat-value { font-size: 14.5px; font-weight: 800; }
+
+  /* ===== 底部行动条 ===== */
+  .actions { display: flex; gap: 12px; margin-top: 16px; justify-content: flex-end; }
+  .btn {
+    font-size: 13.5px; font-weight: 700; padding: 11px 22px; border-radius: 12px;
+    cursor: pointer; border: 1px solid transparent; transition: .15s;
+    display: inline-flex; align-items: center; gap: 8px;
+  }
+  .btn .ic { font-size: 15px; }
+  .btn-primary { background: var(--accent); color: #fff; box-shadow: 0 4px 14px -4px rgba(37,99,235,.5); }
+  .btn-primary:hover { background: #1D4FD8; }
+  .btn-secondary { background: #fff; border-color: #DBEAFE; color: var(--accent); }
+  .btn-secondary:hover { background: var(--accent-soft); }
+
+  /* ===== 示例数据切换器 ===== */
+  .demo-switch {
+    position: fixed; right: 22px; bottom: 22px; z-index: 10;
+    background: #fff; border-radius: 14px; box-shadow: 0 10px 30px -8px rgba(15,23,42,.25);
+    padding: 8px; display: flex; gap: 4px; border: 1px solid var(--line);
+  }
+  .demo-switch button {
+    font-size: 12px; font-weight: 700; color: var(--ink-2);
+    background: transparent; border: none; padding: 7px 13px; border-radius: 9px; cursor: pointer;
+  }
+  .demo-switch button.on { background: var(--ink); color: #fff; }
+
+  @media (max-width: 920px) {
+    .grid { grid-template-columns: 1fr; }
+    .hero { flex-direction: column; align-items: stretch; gap: 20px; }
+    .hero-right { justify-content: space-between; }
+    .score-block { text-align: left; }
+    .score-num { justify-content: flex-start; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ============ 图标库（Lucide，线性风格，随 currentColor 着色） ============ -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-arrow-left" viewBox="0 0 24 24"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></symbol>
+    <symbol id="i-clipboard-list" viewBox="0 0 24 24"><rect width="8" height="4" x="8" y="2" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="M12 11h4"/><path d="M12 16h4"/><path d="M8 11h.01"/><path d="M8 16h.01"/></symbol>
+    <symbol id="i-rotate-ccw" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></symbol>
+    <symbol id="i-award" viewBox="0 0 24 24"><circle cx="12" cy="8" r="6"/><path d="M15.477 12.89 17 22l-5-3-5 3 1.523-9.11"/></symbol>
+    <symbol id="i-book-open" viewBox="0 0 24 24"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></symbol>
+    <symbol id="i-file-text" viewBox="0 0 24 24"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></symbol>
+    <symbol id="i-puzzle" viewBox="0 0 24 24"><path d="M19.439 7.85c-.049.322.059.648.289.878l1.568 1.568c.47.47.706 1.087.706 1.704s-.235 1.233-.706 1.704l-1.611 1.611a.98.98 0 0 1-.837.276c-.47-.07-.802-.48-.968-.925a2.501 2.501 0 1 0-3.214 3.214c.446.166.855.497.925.968a.979.979 0 0 1-.276.837l-1.61 1.61a2.404 2.404 0 0 1-1.705.707 2.402 2.402 0 0 1-1.704-.706l-1.568-1.568a1.026 1.026 0 0 0-.877-.29c-.493.074-.84.504-1.02.968a2.5 2.5 0 1 1-3.237-3.237c.464-.18.894-.527.967-1.02a1.026 1.026 0 0 0-.289-.877l-1.568-1.568A2.402 2.402 0 0 1 1.998 12c0-.617.236-1.234.706-1.704L4.23 8.77c.24-.24.581-.353.917-.303.515.077.877.528 1.073 1.01a2.5 2.5 0 1 0 3.259-3.259c-.482-.196-.933-.558-1.01-1.073-.05-.336.062-.676.303-.917l1.525-1.525A2.402 2.402 0 0 1 12 1.998c.617 0 1.234.236 1.704.706l1.568 1.568c.23.23.556.338.877.29.493-.074.84-.504 1.02-.968a2.5 2.5 0 1 1 3.237 3.237c-.464.18-.894.527-.967 1.02Z"/></symbol>
+    <symbol id="i-message-circle" viewBox="0 0 24 24"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/></symbol>
+    <symbol id="i-pen-line" viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.376 3.622a1 1 0 0 1 3.002 3.002L7.368 18.635a2 2 0 0 1-.855.506l-2.872.838a.5.5 0 0 1-.62-.62l.838-2.872a2 2 0 0 1 .506-.854z"/></symbol>
+    <symbol id="i-languages" viewBox="0 0 24 24"><path d="m5 8 6 6"/><path d="m4 14 6-6 2-3"/><path d="M2 5h12"/><path d="M7 2h1"/><path d="m22 22-5-10-5 10"/><path d="M14 18h6"/></symbol>
+    <symbol id="i-feather" viewBox="0 0 24 24"><path d="M20.24 12.24a6 6 0 0 0-8.49-8.49L5 10.5V19h8.5z"/><line x1="16" x2="2" y1="8" y2="22"/><line x1="17.5" x2="9" y1="15" y2="15"/></symbol>
+    <symbol id="i-timer" viewBox="0 0 24 24"><line x1="10" x2="14" y1="2" y2="2"/><line x1="12" x2="15" y1="14" y2="11"/><circle cx="12" cy="14" r="8"/></symbol>
+    <symbol id="i-circle-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></symbol>
+    <symbol id="i-list-checks" viewBox="0 0 24 24"><path d="m3 17 2 2 4-4"/><path d="m3 7 2 2 4-4"/><path d="M13 6h8"/><path d="M13 12h8"/><path d="M13 18h8"/></symbol>
+    <symbol id="i-zap" viewBox="0 0 24 24"><path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/></symbol>
+    <symbol id="i-trending-down" viewBox="0 0 24 24"><polyline points="22 17 13.5 8.5 8.5 13.5 2 7"/><polyline points="16 17 22 17 22 11"/></symbol>
+    <symbol id="i-target" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></symbol>
+  </defs>
+</svg>
+
+<div class="wrap">
+
+  <!-- 顶栏 -->
+  <div class="topbar">
+    <button class="btn-ghost"><svg class="ic"><use href="#i-arrow-left"/></svg>返回首页</button>
+    <button class="btn-ghost"><svg class="ic"><use href="#i-clipboard-list"/></svg>去错题本复盘</button>
+  </div>
+
+  <!-- Hero：白卡 + 总分 + 环形得分率 -->
+  <div class="hero">
+    <div class="hero-left">
+      <span class="rank-badge" id="rankBadge"><svg class="ic"><use href="#i-award"/></svg><span id="rankText">良好</span></span>
+      <div class="hero-title" id="paperTitle">2025年专升本综合模拟全卷</div>
+      <div class="hero-sub">
+        <span>考试时间 <b id="examDate">2025年6月14日 14:30</b></span>
+        <span>答题用时 <b id="heroDur">86分12秒</b></span>
+        <span>做对 <b id="heroCorrect">56 / 76</b></span>
+      </div>
+    </div>
+    <div class="hero-right">
+      <div class="score-block">
+        <div class="score-num"><span class="v" id="scoreV">112</span><span class="m">/ 150 分</span></div>
+        <div class="score-label">TOTAL SCORE</div>
+      </div>
+      <div class="ring-box">
+        <svg class="ring" viewBox="0 0 120 120">
+          <defs>
+            <linearGradient id="ringGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stop-color="#60A5FA"/>
+              <stop offset="100%" stop-color="#2563EB"/>
+            </linearGradient>
+          </defs>
+          <circle cx="60" cy="60" r="52" fill="none" stroke="#EDF0F5" stroke-width="10"/>
+          <circle id="ringFg" cx="60" cy="60" r="52" fill="none" stroke="url(#ringGrad)"
+                  stroke-width="10" stroke-linecap="round"
+                  stroke-dasharray="326.7" stroke-dashoffset="326.7"/>
+        </svg>
+        <div class="ring-center">
+          <span class="pct" id="ringPct">75%</span>
+          <span class="cap">得分率</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 主体 -->
+  <div class="grid">
+    <!-- 各题型得分 -->
+    <div class="card">
+      <h3>各题型得分</h3>
+      <div class="desc">逐题型展示得分/满分/正确率，薄弱题型可一键专项练习</div>
+      <div id="sections" style="margin-top:8px"></div>
+    </div>
+
+    <!-- 整体表现 -->
+    <div class="card">
+      <h3>整体表现</h3>
+      <div style="margin-top:10px" id="stats"></div>
+    </div>
+  </div>
+
+  <!-- 底部行动条 -->
+  <div class="actions">
+    <button class="btn btn-secondary"><svg class="ic"><use href="#i-clipboard-list"/></svg>去错题本复盘</button>
+    <button class="btn btn-primary"><svg class="ic"><use href="#i-rotate-ccw"/></svg>重考一套</button>
+  </div>
+</div>
+
+<!-- 示例数据切换 -->
+<div class="demo-switch">
+  <button data-scene="good" class="on">高分示例</button>
+  <button data-scene="weak">低分示例</button>
+  <button data-scene="zero">零分未作答</button>
+</div>
+
+<script>
+/* ============ 图标助手 ============ */
+const icon = name => `<svg class="ic"><use href="#i-${name}"/></svg>`;
+
+/* ============ 题型定义（与 76 题/150 分卷一致） ============ */
+const SECTIONS = [
+  { key: 'vocab',    name: '一、词汇语法', icon: 'book-open',      total: 20, q: 20 },
+  { key: 'reading',  name: '二、阅读',     icon: 'file-text',      total: 40, q: 20 },
+  { key: 'cloze',    name: '三、完形填空', icon: 'puzzle',         total: 15, q: 15 },
+  { key: 'dialogue', name: '四、补全对话', icon: 'message-circle', total: 10, q: 5  },
+  { key: 'banked',   name: '五、选词填空', icon: 'pen-line',       total: 10, q: 10 },
+  { key: 'en2zh',    name: '六、英译汉',   icon: 'languages',      total: 20, q: 5  },
+  { key: 'writing',  name: '七、写作',     icon: 'feather',        total: 35, q: 1  },
+];
+
+/* ============ 三套示例数据 ============ */
+const SCENES = {
+  good: {
+    title: '2025年专升本综合模拟全卷', date: '2025年6月14日 14:30',
+    score: 112, max: 150, dur: '86分12秒',
+    sec: { vocab:[18,16], reading:[30,15], cloze:[11,10], dialogue:[8,4], banked:[7,7], en2zh:[12,3], writing:[26,1] },
+  },
+  weak: {
+    title: '2025年专升本综合模拟全卷', date: '2025年6月14日 14:30',
+    score: 58, max: 150, dur: '102分40秒',
+    sec: { vocab:[9,8], reading:[14,7], cloze:[5,5], dialogue:[4,2], banked:[3,3], en2zh:[13,3], writing:[10,1] },
+  },
+  zero: {
+    title: '2025年专升本综合模拟全卷', date: '2025年6月14日 14:30',
+    score: 0, max: 150, dur: '0分40秒',
+    sec: Object.fromEntries(SECTIONS.map(s => [s.key, [0, 0]])),
+  },
+};
+
+const rankOf = p => p >= .85 ? ['优秀', 'var(--green)', 'var(--green-soft)']
+              : p >= .70 ? ['良好', 'var(--accent)', 'var(--accent-soft)']
+              : p >= .60 ? ['合格', 'var(--amber)', 'var(--amber-soft)']
+              :           ['待提升', 'var(--s-low)', '#FEF2F2'];
+const tierColor = p => p >= .8 ? 'var(--green)' : p >= .6 ? 'var(--accent)' : p >= .4 ? 'var(--amber)' : 'var(--s-low)';
+
+function render(scene) {
+  const d = SCENES[scene];
+  const pct = d.score / d.max;
+  const totalQ = SECTIONS.reduce((a, s) => a + s.q, 0);
+  const totalCorrect = SECTIONS.reduce((a, s) => a + d.sec[s.key][1], 0);
+  const isZero = d.score === 0;
+
+  /* hero */
+  const [rk, rfg, rbg] = rankOf(pct);
+  document.getElementById('rankText').textContent = rk;
+  const badge = document.getElementById('rankBadge');
+  badge.style.color = rfg; badge.style.background = rbg;
+  document.getElementById('paperTitle').textContent = d.title;
+  document.getElementById('examDate').textContent = d.date;
+  document.getElementById('heroDur').textContent = d.dur;
+  document.getElementById('heroCorrect').textContent = `${totalCorrect} / ${totalQ}`;
+  document.getElementById('scoreV').textContent = isZero ? '--' : d.score;
+  document.getElementById('ringPct').textContent = isZero ? '--' : Math.round(pct * 100) + '%';
+  const C = 2 * Math.PI * 52;
+  const fg = document.getElementById('ringFg');
+  fg.style.transition = 'none';
+  fg.style.strokeDashoffset = C;
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    fg.style.transition = 'stroke-dashoffset .9s cubic-bezier(.2,.7,.3,1)';
+    fg.style.strokeDashoffset = C * (1 - (isZero ? 0 : pct));
+  }));
+
+  /* 各题型 */
+  document.getElementById('sections').innerHTML = SECTIONS.map(s => {
+    const [sc, corr] = d.sec[s.key];
+    const p = sc / s.total;
+    const weak = !isZero && p < .5;
+    return `
+    <div class="section-row">
+      <div class="sec-head">
+        <span class="sec-name">${icon(s.icon)}${s.name}</span>
+        <span class="sec-rate">正确率 ${isZero || s.q === 0 ? '--' : Math.round(corr / s.q * 100) + '%'}</span>
+        <span class="sec-correct">做对 ${corr}/${s.q}</span>
+        <span class="sec-score" style="color:${isZero ? 'var(--ink-3)' : tierColor(p)}">${sc}<span class="m">/${s.total}</span></span>
+      </div>
+      <div class="sec-bar"><i style="width:${Math.max(p * 100, isZero ? 0 : 2)}%;background:${tierColor(p)}"></i></div>
+      ${weak ? `
+      <div class="sec-foot">
+        <span class="weak-tag">${icon('trending-down')}薄弱项 · 低于 50%</span>
+        <button class="btn-mini">${icon('target')}专项练习</button>
+      </div>` : ''}
+    </div>`;
+  }).join('');
+
+  /* 整体表现 */
+  const answered = isZero ? 0 : totalQ;
+  const qpm = isZero ? 0 : (answered / 86).toFixed(1);
+  const stats = [
+    ['timer',        '答题用时', d.dur, 'var(--accent)', 'var(--accent-soft)'],
+    ['circle-check', '客观做对', `${Math.min(totalCorrect, 70)} 题`, 'var(--green)', 'var(--green-soft)'],
+    ['list-checks',  '作答题数', `${answered} 题`, 'var(--teal)', 'var(--teal-soft)'],
+    ['zap',          '平均速度', `${qpm} 题/分钟`, 'var(--amber)', 'var(--amber-soft)'],
+  ];
+  document.getElementById('stats').innerHTML = stats.map(([ic2, lb, v, fg2, bg2]) => `
+    <div class="stat-row">
+      <div class="stat-ico" style="background:${bg2};color:${fg2}">${icon(ic2)}</div>
+      <span class="stat-label">${lb}</span>
+      <span class="stat-value">${v}</span>
+    </div>`).join('');
+}
+
+/* 切换器 */
+document.querySelectorAll('.demo-switch button').forEach(b => {
+  b.onclick = () => {
+    document.querySelectorAll('.demo-switch button').forEach(x => x.classList.remove('on'));
+    b.classList.add('on');
+    render(b.dataset.scene);
+  };
+});
+
+render('good');
+</script>
+</body>
+</html>

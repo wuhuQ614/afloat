@@ -735,9 +735,23 @@ class AppState extends ChangeNotifier {
   }
 
   /// 「换一道」：按上次出题规则换题
-  /// - AI 生成题（lastQuestionSource='ai'）：按同参数重新生成
+  /// - 已生成多道题（generatedQuestions>1）：在缓冲内循环切换，零网络请求、即时响应
+  /// - 单道 AI 生成题（lastQuestionSource='ai'）：按同参数重新生成
   /// - 题库题（lastQuestionSource='bank'）：从题库随机选一道不同的题（优先同题型）
   Future<void> nextQuestion() async {
+    // 优先轮转已生成的题目序列：此前这里直接重走 AI 生成（十几秒网络请求、
+    // 失败静默、成功后整套重出且索引归零），表现为"点下一题没反应"
+    if (generatedQuestions.length > 1) {
+      final curDir = direction;
+      generatedQuestionIdx = (generatedQuestionIdx + 1) % generatedQuestions.length;
+      textAnswerValue = '';
+      loadGeneratedQuestion();
+      // loadGeneratedQuestion 会重置为 zh2en；用户已选的方向应保留
+      if (direction != curDir) setDirection(curDir);
+      notifyListeners();
+      return;
+    }
+
     if (lastQuestionSource == 'ai') {
       // AI 生成：按相同参数重新出题
       await generateQuestions(
@@ -7938,5 +7952,28 @@ class AppState extends ChangeNotifier {
       // 时间到，自动交卷
       submitFullExam();
     }
+  }
+
+  /// 成绩分析页「专项练习」：按薄弱题型出 5 道新题并进入答题页。
+  /// 返回 false 表示未配置 API 或生成失败（UI 层据此轻提示）。
+  Future<bool> startSectionPractice(ExamSection section) async {
+    if (!apiConfig.ready) return false;
+    final type = switch (section) {
+      ExamSection.vocab => 'choice',
+      ExamSection.reading => 'reading',
+      ExamSection.cloze => 'cloze',
+      ExamSection.dialogue => 'dialogue',
+      ExamSection.bankedCloze => 'bankedCloze',
+      ExamSection.en2zh5 => 'en2zh5',
+      ExamSection.writing => 'writing',
+    };
+    selectedType = type;
+    if (selectedLevel.isEmpty || selectedLevel == 'maimemo') selectedLevel = 'zsb';
+    lastQuestionCount = 5;
+    lastCustomReq = '';
+    final ok = await generateQuestions(count: 5, customReq: '', wordCount: lastWordCount);
+    if (!ok) return false;
+    _gotoAnswerPage();
+    return true;
   }
 }

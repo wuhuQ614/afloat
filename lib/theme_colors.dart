@@ -176,3 +176,53 @@ class AppColors {
   static AppColors of(BuildContext context) =>
       AppColors(Theme.of(context).brightness == Brightness.light);
 }
+
+/// 学习报告 / 成绩分析页专属配色：企业蓝 + 语义色（绿/青/琥珀）+ 中性灰图表，
+/// 不随应用紫色主题（大厂数据面板风格：中性底 + 单一强调色 + 语义点缀）。
+class ReportPalette {
+  final bool isLight;
+  const ReportPalette({required this.isLight});
+
+  /// 主强调：企业蓝（链接/今日柱/环形进度/指示条）
+  Color get accent => isLight ? const Color(0xFF2563EB) : const Color(0xFF60A5FA);
+  Color get accentSoft => isLight ? const Color(0xFFEFF6FF) : const Color(0xFF1C2B4D);
+  Color get accentBright => isLight ? const Color(0xFF60A5FA) : const Color(0xFF93C5FD);
+
+  /// 语义色：平均得分（青）、达标率（绿）、学习时长（琥珀）
+  Color get teal => isLight ? const Color(0xFF0F766E) : const Color(0xFF2DD4BF);
+  Color get tealSoft => isLight ? const Color(0xFFF0FDFA) : const Color(0xFF10312D);
+  Color get green => isLight ? const Color(0xFF16A34A) : const Color(0xFF4ADE80);
+  Color get greenSoft => isLight ? const Color(0xFFF0FDF4) : const Color(0xFF12301D);
+  Color get amber => isLight ? const Color(0xFFD97706) : const Color(0xFFFBBF24);
+  Color get amberSoft => isLight ? const Color(0xFFFFFBEB) : const Color(0xFF3A2C10);
+
+  /// 图表中性与轨道色
+  Color get barTrack => isLight ? const Color(0xFFE8ECF2) : const Color(0xFF3A3A44);
+  Color get ringTrack => isLight ? const Color(0xFFEDF0F5) : const Color(0xFF3A3A44);
+  Color get chip => isLight ? const Color(0xFFF3F4F6) : const Color(0xFF33333A);
+  Color get pageBg => isLight ? const Color(0xFFF5F6FA) : const Color(0xFF1A1A1E);
+  Color get cardBg => isLight ? Colors.white : const Color(0xFF2A2A32);
+
+  /// 得分分档色（历史记录/成绩分析共用）：橙（≥70%）→ 深橙（≥40%）→ 红（<40%）
+  Color scoreByPct(double pct) {
+    if (pct >= 0.7) return isLight ? const Color(0xFFEA8A1F) : const Color(0xFFFBA24C);
+    if (pct >= 0.4) return isLight ? const Color(0xFFE0642A) : const Color(0xFFFF8A5C);
+    return isLight ? const Color(0xFFDC4A4A) : const Color(0xFFFF7070);
+  }
+
+  /// 题型进度条四档：绿（≥80%）/ 蓝（≥60%）/ 琥珀（≥40%）/ 红
+  Color barByPct(double pct) {
+    if (pct >= 0.8) return green;
+    if (pct >= 0.6) return accent;
+    if (pct >= 0.4) return amber;
+    return isLight ? const Color(0xFFDC4A4A) : const Color(0xFFFF7070);
+  }
+
+  /// 评级：(标签, 前景色, 底色)。≥85% 优秀 / ≥70% 良好 / ≥60% 合格 / 其余待提升
+  (String, Color, Color) rankOf(double pct) {
+    if (pct >= 0.85) return ('优秀', green, greenSoft);
+    if (pct >= 0.70) return ('良好', accent, accentSoft);
+    if (pct >= 0.60) return ('合格', amber, amberSoft);
+    return ('待提升', isLight ? const Color(0xFFDC4A4A) : const Color(0xFFFF7070), isLight ? const Color(0xFFFEF2F2) : const Color(0xFF3A1A1A));
+  }
+}
