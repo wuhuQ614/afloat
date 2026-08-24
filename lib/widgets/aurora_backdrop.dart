@@ -218,9 +218,11 @@ class _AuroraBackdropState extends State<AuroraBackdrop>
 
   @override
   Widget build(BuildContext context) {
-    // RepaintBoundary：每帧重绘限制在本画布，不扩散到引导页内容树
+    // RepaintBoundary：每帧重绘限制在本画布，不扩散到引导页内容树。
+    // size: Size.infinite —— 即使处于宽松约束（如主题切换时 AnimatedSwitcher 内部）
+    // 也能撑满父容器，否则 CustomPaint 无约束时默认 Size.zero 画不出来
     return RepaintBoundary(
-      child: CustomPaint(painter: _AuroraPainter(_m)),
+      child: CustomPaint(size: Size.infinite, painter: _AuroraPainter(_m)),
     );
   }
 }

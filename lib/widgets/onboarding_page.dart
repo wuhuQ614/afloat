@@ -162,15 +162,33 @@ class _OnboardingPageState extends State<OnboardingPage> {
   Widget build(BuildContext context) {
     final pal = _Pal(s.darkMode); // 深空黑 → 深色向导；其余五套 → 浅色向导
     return Scaffold(
-      backgroundColor: pal.bg,
+      // 背景色交给 Stack 底层的 AnimatedContainer 做渐变，此处透明避免瞬变
+      backgroundColor: Colors.transparent,
       body: Stack(children: [
-        // 主题氛围背景（最底层）：经典浅色=清新蓝极光带；深色模式=深海霓虹光带；
-        // 毛玻璃主题=液态玻璃液滴。动画由内部 Ticker 驱动，只重绘自身画布
+        // 页面底色：主题切换时 400ms 平滑渐变（深空黑 ↔ 近白）
         Positioned.fill(
-          child: AuroraBackdrop(
-            dark: s.darkMode,
-            liquidGlass: !s.darkMode && s.uiStyle == 'glass',
-            active: true,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 400),
+            curve: Curves.easeOutCubic,
+            color: pal.bg,
+          ),
+        ),
+        // 主题氛围背景：经典浅色=清新蓝极光带；深色模式=深海霓虹光带；
+        // 毛玻璃主题=液态玻璃液滴。切换主题时 AnimatedSwitcher 按形态 key
+        // 触发 400ms 交叉淡入淡出，旧形态淡出期间仍在播放自身动画
+        Positioned.fill(
+          child: AnimatedSwitcher(
+            duration: const Duration(milliseconds: 400),
+            switchInCurve: Curves.easeOut,
+            switchOutCurve: Curves.easeIn,
+            child: AuroraBackdrop(
+              key: ValueKey(s.darkMode
+                  ? 'dark'
+                  : (s.uiStyle == 'glass' ? 'glass' : 'classic')),
+              dark: s.darkMode,
+              liquidGlass: !s.darkMode && s.uiStyle == 'glass',
+              active: true,
+            ),
           ),
         ),
         // 引导页粒子动效背景：仅桌面端生效（内部非桌面直接返回空）。
@@ -293,12 +311,12 @@ class _OnboardingPageState extends State<OnboardingPage> {
   /// 页标题（26px w600），可选副标题（14px）；间距 12；底部→内容区 32
   Widget _pageHead(_Pal pal, String title, [String? subtitle]) {
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Text(title, style: TextStyle(fontSize: 26, fontWeight: FontWeight.w600, color: pal.h1)),
+      Text(title, style: TextStyle(fontSize: 32, fontWeight: FontWeight.w600, color: pal.h1)),
       if (subtitle != null) ...[
-        const SizedBox(height: 12),
-        Text(subtitle, style: TextStyle(fontSize: 14, color: pal.sub)),
+        const SizedBox(height: 14),
+        Text(subtitle, style: TextStyle(fontSize: 16, color: pal.sub)),
       ],
-      const SizedBox(height: 32),
+      const SizedBox(height: 38),
     ]);
   }
 
@@ -394,24 +412,24 @@ class _OnboardingPageState extends State<OnboardingPage> {
       // API Key
       _fieldLabel(pal, 'API Key'),
       _input(pal, _keyCtrl, 'sk-...'),
-      const SizedBox(height: 6),
+      const SizedBox(height: 8),
       Align(
         alignment: Alignment.centerLeft,
         child: TextButton(
           onPressed: () => _showApiKeyHelp(pal),
-          style: TextButton.styleFrom(padding: EdgeInsets.zero, minimumSize: const Size(0, 28)),
-          child: const Text('如何获取 API Key?', style: TextStyle(fontSize: 12, color: _kAccent)),
+          style: TextButton.styleFrom(padding: EdgeInsets.zero, minimumSize: const Size(0, 32)),
+          child: const Text('如何获取 API Key?', style: TextStyle(fontSize: 13, color: _kAccent)),
         ),
       ),
-      const SizedBox(height: 14),
+      const SizedBox(height: 18),
       // API 地址
       _fieldLabel(pal, 'API 地址'),
       _input(pal, _urlCtrl, 'https://api.openai.com/v1'),
-      const SizedBox(height: 6),
+      const SizedBox(height: 8),
       // 完整 URL 开关
       Row(children: [
         SizedBox(
-          height: 20,
+          height: 24,
           child: Checkbox(
             value: s.apiConfig.fullUrl,
             onChanged: (v) {
@@ -424,22 +442,22 @@ class _OnboardingPageState extends State<OnboardingPage> {
                 fullUrl: v ?? false,
               ));
             },
-            side: BorderSide(color: pal.border, width: 1.5),
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+            side: BorderSide(color: pal.border, width: 1.8),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(5)),
             materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
             visualDensity: VisualDensity.compact,
           ),
         ),
-        const SizedBox(width: 6),
-        Text('完整 URL', style: TextStyle(fontSize: 12, color: pal.body)),
-        const SizedBox(width: 6),
-        Expanded(child: Text('关闭时自动在地址后添加 /chat/completions', style: TextStyle(fontSize: 11, color: pal.dim))),
+        const SizedBox(width: 8),
+        Text('完整 URL', style: TextStyle(fontSize: 14, color: pal.body)),
+        const SizedBox(width: 8),
+        Expanded(child: Text('关闭时自动在地址后添加 /chat/completions', style: TextStyle(fontSize: 13, color: pal.dim))),
       ]),
-      const SizedBox(height: 14),
+      const SizedBox(height: 18),
       // 模型
       _fieldLabel(pal, '模型'),
       _input(pal, _modelCtrl, 'gpt-4o'),
-      const SizedBox(height: 24),
+      const SizedBox(height: 32),
       Row(children: [
         TextButton(
           onPressed: () {
@@ -447,40 +465,40 @@ class _OnboardingPageState extends State<OnboardingPage> {
             _saveApiIfFilled();
             _goTo(3);
           },
-          style: TextButton.styleFrom(padding: EdgeInsets.zero, minimumSize: const Size(0, 28)),
-          child: Text('跳过此步骤', style: TextStyle(fontSize: 12, color: pal.dim)),
+          style: TextButton.styleFrom(padding: EdgeInsets.zero, minimumSize: const Size(0, 32)),
+          child: Text('跳过此步骤', style: TextStyle(fontSize: 13, color: pal.dim)),
         ),
         const Spacer(),
-        Text('你可以在设置中随时修改', style: TextStyle(fontSize: 12, color: pal.dim)),
+        Text('你可以在设置中随时修改', style: TextStyle(fontSize: 13, color: pal.dim)),
       ]),
     ]));
   }
 
-  /// 字段标签（12px，dim 色，输入框上方 6px）
+  /// 字段标签（14px，dim 色，输入框上方 8px）
   Widget _fieldLabel(_Pal pal, String text) {
     return Padding(
-      padding: const EdgeInsets.only(bottom: 6),
-      child: Text(text, style: TextStyle(fontSize: 12, color: pal.dim)),
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Text(text, style: TextStyle(fontSize: 14, color: pal.dim)),
     );
   }
 
-  /// 单行输入框：高 40、圆角 8、同卡片边框，聚焦变强调色
+  /// 单行输入框：高 48、圆角 10、同卡片边框，聚焦变强调色
   Widget _input(_Pal pal, TextEditingController ctrl, String hint) {
     return SizedBox(
-      height: 40,
+      height: 48,
       child: TextField(
         controller: ctrl,
-        style: TextStyle(fontSize: 13, color: pal.body),
+        style: TextStyle(fontSize: 15, color: pal.body),
         decoration: InputDecoration(
           filled: true,
           fillColor: pal.card,
           isCollapsed: true,
-          contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+          contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
           hintText: hint,
-          hintStyle: TextStyle(fontSize: 13, color: pal.dim),
-          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide(color: pal.border)),
-          enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide(color: pal.border)),
-          focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: _kAccent, width: 1.2)),
+          hintStyle: TextStyle(fontSize: 15, color: pal.dim),
+          border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: pal.border)),
+          enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: pal.border)),
+          focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: const BorderSide(color: _kAccent, width: 1.4)),
         ),
       ),
     );
