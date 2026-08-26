@@ -769,8 +769,9 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
   Widget _animatedPage() {
     return AnimatedSwitcher(
       duration: const Duration(milliseconds: 220),
+      // 旧页立即移除（不播淡出），避免切换时闪现上一个页面的内容
+      reverseDuration: Duration.zero,
       switchInCurve: Curves.easeOut,
-      switchOutCurve: Curves.easeIn,
       transitionBuilder: (child, anim) => FadeTransition(
         opacity: anim,
         child: SlideTransition(
