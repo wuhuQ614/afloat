@@ -1833,6 +1833,17 @@ class DictionaryPage extends StatefulWidget {
 
 class _DictionaryPageState extends State<DictionaryPage> {
   final TextEditingController _ctrl = TextEditingController();
+
+  // ===== 单词查询页清新配色（不随应用紫色主题）=====
+  // 主色：薄荷绿（按钮/发音/生词本）；来源徽章分色：本地词库=绿、AI 生成=天蓝
+  static Color _freshTeal(bool isLight) => isLight ? const Color(0xFF14A08C) : const Color(0xFF2DD4BF);
+  static Color _freshTealSoft(bool isLight) => isLight ? const Color(0xFFE6F7F4) : const Color(0xFF14A08C).withValues(alpha: 0.14);
+  static Color _freshTealText(bool isLight) => isLight ? const Color(0xFF0F766E) : const Color(0xFF2DD4BF);
+  static Color _freshSky(bool isLight) => isLight ? const Color(0xFF0284C7) : const Color(0xFF7DD3FC);
+  static Color _freshSkySoft(bool isLight) => isLight ? const Color(0xFFE8F4FC) : const Color(0xFF0284C7).withValues(alpha: 0.14);
+  static Color _freshGreen(bool isLight) => isLight ? const Color(0xFF059669) : const Color(0xFF6EE7B7);
+  static Color _freshGreenSoft(bool isLight) => isLight ? const Color(0xFFECFDF5) : const Color(0xFF059669).withValues(alpha: 0.14);
+
   String? _result;
   String? _foundWord; // 本地词库命中的单词（结构化展示）
   DictEntry? _foundEntry;
@@ -1912,7 +1923,7 @@ class _DictionaryPageState extends State<DictionaryPage> {
               Padding(
                 padding: const EdgeInsets.only(right: 6),
                 child: FilledButton(
-                  style: FilledButton.styleFrom(backgroundColor: _primary, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
+                  style: FilledButton.styleFrom(backgroundColor: _freshTeal(c.isLight), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
                   onPressed: _searching ? null : () => _search(s),
                   child: const Text('查询'),
                 ),
@@ -1937,17 +1948,21 @@ class _DictionaryPageState extends State<DictionaryPage> {
     }
   }
 
-  /// 来源徽章（圆角胶囊）
+  /// 来源徽章（圆角胶囊）：本地词库=薄荷绿，AI 生成=天蓝
   Widget _sourceBadge(String label, AppColors c) {
+    final isLight = c.isLight;
+    final isAi = label.contains('AI');
+    final fg = isAi ? _freshSky(isLight) : _freshGreen(isLight);
+    final bg = isAi ? _freshSkySoft(isLight) : _freshGreenSoft(isLight);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
       decoration: BoxDecoration(
-        color: _primary.withValues(alpha: 0.10),
+        color: bg,
         borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: _primary.withValues(alpha: 0.30)),
+        border: Border.all(color: fg.withValues(alpha: 0.30)),
       ),
       child: Text(label,
-          style: TextStyle(fontSize: 11, color: _primary, fontWeight: FontWeight.w500)),
+          style: TextStyle(fontSize: 11, color: fg, fontWeight: FontWeight.w500)),
     );
   }
 
@@ -1955,7 +1970,7 @@ class _DictionaryPageState extends State<DictionaryPage> {
     final c = AppColors.of(context);
     if (_searching) {
       return Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
-        const SizedBox(width: 28, height: 28, child: CircularProgressIndicator(strokeWidth: 3, color: _primary)),
+        const SizedBox(width: 28, height: 28, child: CircularProgressIndicator(strokeWidth: 3, color: Color(0xFF14A08C))),
         const SizedBox(height: 12),
         Text('查询中...', style: TextStyle(fontSize: 13, color: c.textTertiary)),
       ]));
@@ -1990,7 +2005,7 @@ class _DictionaryPageState extends State<DictionaryPage> {
                   Padding(
                     padding: const EdgeInsets.only(left: 8),
                     child: IconButton(
-                      icon: Icon(Icons.volume_up_rounded, size: 22, color: _primary),
+                      icon: Icon(Icons.volume_up_rounded, size: 22, color: _freshTeal(c.isLight)),
                       tooltip: '发音',
                       onPressed: () => TtsService.instance.speakWord(word),
                     ),
@@ -2061,19 +2076,20 @@ class _DictionaryPageState extends State<DictionaryPage> {
                   )
                 else if (noteList.isEmpty)
                   Text('暂无助记', style: TextStyle(fontSize: 13, color: c.textTertiary))
-                else
-                  ...noteList.map((m) => Padding(
-                        padding: const EdgeInsets.only(bottom: 8),
-                        child: Container(
-                          width: double.infinity,
-                          padding: const EdgeInsets.all(10),
-                          decoration: BoxDecoration(
-                            color: c.primaryBg.withValues(alpha: 0.35),
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: Text(m, style: TextStyle(fontSize: 13, height: 1.5, color: c.text)),
-                        ),
-                      )),
+                 else
+                   ...noteList.map((m) => Padding(
+                         padding: const EdgeInsets.only(bottom: 8),
+                         child: Container(
+                           width: double.infinity,
+                           padding: const EdgeInsets.all(10),
+                           decoration: BoxDecoration(
+                             color: _freshTealSoft(c.isLight),
+                             borderRadius: BorderRadius.circular(8),
+                             border: Border.all(color: _freshTeal(c.isLight).withValues(alpha: 0.15)),
+                           ),
+                           child: Text(m, style: TextStyle(fontSize: 13, height: 1.5, color: c.text)),
+                         ),
+                       )),
                 const SizedBox(height: 16),
                 // 常见搭配
                 Text('常见搭配', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: c.text)),
@@ -2217,8 +2233,8 @@ class _DictionaryPageState extends State<DictionaryPage> {
                 width: double.infinity,
                 child: OutlinedButton.icon(
                   style: OutlinedButton.styleFrom(
-                    foregroundColor: _primary,
-                    side: BorderSide(color: _primary.withValues(alpha: 0.3)),
+                    foregroundColor: _freshTealText(c.isLight),
+                    side: BorderSide(color: _freshTeal(c.isLight).withValues(alpha: 0.35)),
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                   ),
                   onPressed: () {
@@ -2297,13 +2313,15 @@ class _DictionaryPageState extends State<DictionaryPage> {
   }
 
   Widget _Chip({required String text, required AppColors? c}) {
+    // 清新配色：薄荷绿浅底 + 青绿文字（无主题上下文时退化为中性灰）
+    final isLight = c?.isLight ?? true;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       decoration: BoxDecoration(
-        color: c?.primaryBg ?? const Color(0xFFF0F0F0),
+        color: c == null ? const Color(0xFFF0F0F0) : _freshTealSoft(isLight),
         borderRadius: BorderRadius.circular(20),
       ),
-      child: Text(text, style: TextStyle(fontSize: 12, color: c?.textSecondary ?? const Color(0xFF888888))),
+      child: Text(text, style: TextStyle(fontSize: 12, color: c == null ? const Color(0xFF888888) : _freshTealText(isLight))),
     );
   }
 

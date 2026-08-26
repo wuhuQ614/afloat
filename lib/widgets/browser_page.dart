@@ -1,6 +1,7 @@
 /// 轻量浏览器页面：地址栏 + 前进/后退/刷新 + 内嵌 WebView（基于 flutter_inappwebview / Windows WebView2）
 library;
 
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
@@ -60,6 +61,14 @@ class _BrowserPageState extends State<BrowserPage> {
       final lower = url.toLowerCase();
       if (lower.startsWith('localhost') || lower.startsWith('127.0.0.1')) {
         url = 'http://$url';
+      } else if (lower.endsWith('.html') || lower.endsWith('.htm') || lower.endsWith('.svg')) {
+        // 本地文件路径（含盘符 / 相对路径 / file:// 之外的写法）→ file:/// URI
+        var p = url.replaceAll('/', r'\');
+        if (p.startsWith(r'.\')) p = p.substring(2);
+        if (!RegExp(r'^[a-zA-Z]:[\\/]').hasMatch(p)) {
+          p = '${Directory.current.path}\\$p';
+        }
+        url = Uri.file(p).toString();
       } else {
         url = 'https://$url';
       }
