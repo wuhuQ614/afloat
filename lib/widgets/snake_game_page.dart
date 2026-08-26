@@ -6,6 +6,7 @@
 /// - 手机端：显示 D-pad 方向键，支持触屏操作
 library;
 
+import 'dart:async';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
@@ -76,6 +77,16 @@ class _SnakeGamePageState extends State<SnakeGamePage>
   // 已规划到食物的最短路径（坐标序列，不含蛇头、含食物格）；重开时清零
   List<(int, int)> _nextPath = [];
 
+  // ===== 恢复倒计时（暂停→继续：3 秒倒数后才开始走）=====
+  int _countdown = 0; // >0 = 倒计时剩余秒数
+  Timer? _countdownTimer;
+
+  // ===== 长蛇保命：哈密顿回路 + 安全捷径 =====
+  // 蛇长超过棋盘 1/4 后切换此策略：沿预生成的哈密顿回路行进，
+  // 只在"不会追上尾巴"的前提下沿回路方向跳捷径（优先朝食物）。
+  // 回路单调性保证蛇身永不自交——数学上保证不会死。
+  List<int>? _hamOrder; // cell(y*_cols+x) → 回路序号
+
   // ===== 渲染循环 =====
   late final Ticker _ticker;
   Duration? _lastFrameTime; // 上一帧时间（用于计算帧间隔）
@@ -106,6 +117,7 @@ class _SnakeGamePageState extends State<SnakeGamePage>
 
   @override
   void dispose() {
+    _countdownTimer?.cancel();
     _logic?.dispose();
     _ticker.dispose();
     _frameSignal.dispose();
@@ -169,6 +181,8 @@ class _SnakeGamePageState extends State<SnakeGamePage>
     final logic = _logic;
     if (logic == null) return;
     // 重开：清空方向镜像队列，dir 回到初始（与 C++ reset 一致），避免残影
+    _countdownTimer?.cancel();
+    _countdown = 0;
     _pendingQueue.clear();
     _nextPath.clear();
     _renderDir = const Offset(1, 0);
@@ -187,6 +201,8 @@ class _SnakeGamePageState extends State<SnakeGamePage>
     final logic = _logic;
     if (logic == null || !_over) return;
     // 复活前清空方向镜像队列与自动玩路径，方向由玩家重新接管
+    _countdownTimer?.cancel();
+    _countdown = 0;
     _pendingQueue.clear();
     _nextPath.clear();
     _renderDir = const Offset(1, 0);
@@ -203,15 +219,43 @@ class _SnakeGamePageState extends State<SnakeGamePage>
   void _togglePause() {
     final logic = _logic;
     if (logic == null || !_playing || _over) return;
-    logic.togglePause();
-    _syncFromLogic();
-    setState(() {});
-    if (_paused) {
+    if (!_paused) {
+      // —— 暂停：立即停帧 ——
+      _countdownTimer?.cancel();
+      _countdown = 0;
+      logic.togglePause();
+      _syncFromLogic();
+      setState(() {});
       _ticker.stop();
+    } else if (_countdown > 0) {
+      // —— 倒计时中再点 = 取消倒计时，维持暂停 ——
+      _countdownTimer?.cancel();
+      setState(() => _countdown = 0);
     } else {
-      _lastFrameTime = null;
-      _ticker.start();
-      _focusNode.requestFocus();
+      // —— 恢复：先走 3 秒倒计时，倒数结束才真正继续 ——
+      setState(() => _countdown = 3);
+      _countdownTimer = Timer.periodic(const Duration(seconds: 1), (t) {
+        if (!mounted) {
+          t.cancel();
+          return;
+        }
+        if (_countdown > 1) {
+          setState(() => _countdown--);
+          return;
+        }
+        t.cancel();
+        if (!mounted) return;
+        setState(() => _countdown = 0);
+        // 倒计时结束且仍处于暂停中（期间未重开/未结束）→ 真正恢复
+        if (_playing && _paused && !_over) {
+          logic.togglePause();
+          _syncFromLogic();
+          setState(() {});
+          _lastFrameTime = null;
+          if (!_ticker.isActive) _ticker.start();
+          _focusNode.requestFocus();
+        }
+      });
     }
   }
 
@@ -550,6 +594,18 @@ class _SnakeGamePageState extends State<SnakeGamePage>
     final hx = _curX[0], hy = _curY[0];
     final fx = _food.dx.round(), fy = _food.dy.round();
 
+    // —— 长蛇保命（蛇长 ≥ 棋盘 1/4）：哈密顿回路 + 安全捷径 ——
+    // BFS 贪快策略在长蛇期会把身体绕成死区（100 分上下的主要死因）；
+    // 回路策略沿单调序行进，数学上保证永不自困，捷径仍朝食物最短方向。
+    if (_snakeLen * 4 >= _cols * _rows) {
+      final dir = _hamiltonianMove(hx, hy, fx, fy);
+      if (dir != null) {
+        _nextPath = const [];
+        logic.turn(dir.$1, dir.$2);
+        return;
+      }
+    }
+
     // —— 消费已到达的路径格 ——
     while (_nextPath.isNotEmpty &&
         _nextPath.first.$1 == hx &&
@@ -584,6 +640,81 @@ class _SnakeGamePageState extends State<SnakeGamePage>
     final chase = _tailChase(hx, hy, fx, fy);
     if (chase == null) return;
     logic.turn(chase.$1, chase.$2);
+  }
+
+  /// 生成 20×20 的哈密顿回路序号（boustrophedon 蛇形：顶行右行 → 列 1..W-1
+  /// 之字下行 → 末行折回 x=0 → 沿 x=0 上行回到起点）。行数为偶数时回路必然闭合。
+  void _ensureHamiltonian() {
+    if (_hamOrder != null) return;
+    final order = List<int>.filled(_cols * _rows, 0);
+    var idx = 0;
+    for (var x = 0; x < _cols; x++) {
+      order[x] = idx++; // 顶行 (0,0)→(W-1,0)
+    }
+    for (var y = 1; y < _rows; y++) {
+      if (y.isOdd) {
+        for (var x = _cols - 1; x >= 1; x--) {
+          order[y * _cols + x] = idx++;
+        }
+      } else {
+        for (var x = 1; x < _cols; x++) {
+          order[y * _cols + x] = idx++;
+        }
+      }
+    }
+    order[(_rows - 1) * _cols] = idx++; // (1,H-1)→(0,H-1)
+    for (var y = _rows - 2; y >= 0; y--) {
+      order[y * _cols] = idx++; // 沿 x=0 上行回到 (0,0)
+    }
+    _hamOrder = order;
+  }
+
+  /// 哈密顿回路移动决策（Tapsell 捷径规则）：
+  /// - gap = 回路上"蛇头 → 蛇尾"的空档长度，蛇身始终单调占据 [尾..头] 区段；
+  /// - 候选步的回路跳跃 j 必须满足 1 ≤ j ≤ gap-1（不越过尾巴 → 身体永不自交）；
+  /// - 在安全范围内跳得尽量远，且不超过沿回路到食物的距离（跳最短路吃球）；
+  /// - 无捷径可跳时沿回路走一格兜底（该步永远存在 → 永不死）。
+  (int, int)? _hamiltonianMove(int hx, int hy, int fx, int fy) {
+    _ensureHamiltonian();
+    final order = _hamOrder!;
+    final n = _cols * _rows;
+    final h = order[hy * _cols + hx];
+    final t = order[_curY[_snakeLen - 1] * _cols + _curX[_snakeLen - 1]];
+    final f = order[fy * _cols + fx];
+    final gap = (t - h + n) % n; // 头→尾空档（≥ 蛇长）
+    final foodDist = (f - h + n) % n; // 头沿回路到食物的距离
+    // 身体占用（除尾格：不吃时尾会让开；尾格单独排除，保守处理吃/不吃两态）
+    final occupied = List<int>.filled(n, 0);
+    for (var i = 0; i < _snakeLen - 1; i++) {
+      occupied[_curY[i] * _cols + _curX[i]] = 1;
+    }
+    // 捷径上限：不越过尾巴，且不跳过食物（foodDist>0 恒成立）
+    final limit = gap - 1 < foodDist ? gap - 1 : foodDist;
+    (int, int)? best;
+    var bestJ = 0;
+    for (final (dx, dy) in _autoDirs) {
+      final nx = hx + dx, ny = hy + dy;
+      if (nx < 0 || nx >= _cols || ny < 0 || ny >= _rows) continue;
+      final id = ny * _cols + nx;
+      if (_curX[_snakeLen - 1] == nx && _curY[_snakeLen - 1] == ny) continue; // 尾格保守不走
+      if (occupied[id] == 1) continue;
+      final j = (order[id] - h + n) % n;
+      if (j >= 1 && j > bestJ && j <= limit) {
+        bestJ = j;
+        best = (dx, dy);
+      }
+    }
+    if (best != null) return best;
+    // 无捷径 → 沿回路走一格（回路下一格必然空闲：蛇身单调占据 [尾..头]，头+1 在区段外）
+    for (final (dx, dy) in _autoDirs) {
+      final nx = hx + dx, ny = hy + dy;
+      if (nx < 0 || nx >= _cols || ny < 0 || ny >= _rows) continue;
+      final id = ny * _cols + nx;
+      if (_curX[_snakeLen - 1] == nx && _curY[_snakeLen - 1] == ny) continue;
+      if (occupied[id] == 1) continue;
+      if ((order[id] - h + n) % n == 1) return (dx, dy);
+    }
+    return null; // 理论不可达（回路下一格恒可用）；返回 null 走旧兜底
   }
 
   /// 沿 _nextPath 前进一格，并尝试双键位连发实现紧凑转向。
@@ -900,6 +1031,44 @@ class _SnakeGamePageState extends State<SnakeGamePage>
                                                 onStart: _start,
                                                 onResume: _togglePause,
                                                 onRevive: _revive,
+                                              ),
+                                            ),
+                                          // 恢复倒计时：3-2-1 大数字缩放入场，倒数结束才开始走
+                                          if (_countdown > 0)
+                                            Positioned.fill(
+                                              child: ColoredBox(
+                                                color: Colors.black.withValues(alpha: 0.28),
+                                                child: Center(
+                                                  child: TweenAnimationBuilder<double>(
+                                                    key: ValueKey(_countdown),
+                                                    tween: Tween(begin: 1.35, end: 1.0),
+                                                    duration: const Duration(milliseconds: 800),
+                                                    curve: Curves.easeOut,
+                                                    builder: (ctx, scale, child) =>
+                                                        Transform.scale(scale: scale, child: child),
+                                                    child: Container(
+                                                      width: 96,
+                                                      height: 96,
+                                                      decoration: BoxDecoration(
+                                                        gradient: c.primaryGradient,
+                                                        shape: BoxShape.circle,
+                                                        boxShadow: [
+                                                          BoxShadow(
+                                                              color: Colors.black.withValues(alpha: 0.25),
+                                                              blurRadius: 18,
+                                                              offset: const Offset(0, 6)),
+                                                        ],
+                                                      ),
+                                                      child: Center(
+                                                        child: Text('$_countdown',
+                                                            style: const TextStyle(
+                                                                fontSize: 44,
+                                                                fontWeight: FontWeight.w900,
+                                                                color: Colors.white)),
+                                                      ),
+                                                    ),
+                                                  ),
+                                                ),
                                               ),
                                             ),
                                         ],
