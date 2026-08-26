@@ -6468,15 +6468,21 @@ class AppState extends ChangeNotifier {
 
   /// 根据当前 uiMode 切换系统 UI 模式：手机端沉浸式全屏（隐藏状态栏与导航栏），
   /// 电脑端恢复常规显示。SystemChrome 在桌面平台为 no-op，不会影响 Windows 端。
+  /// 系统导航栏一律透明（并关闭 Android 10+ 的对比度强制），
+  /// 否则悬浮导航栏底部会残留一条系统白底。
   void _applySystemUiMode() {
+    const transparentNav = SystemUiOverlayStyle(
+      statusBarColor: Color(0x00000000),
+      systemNavigationBarColor: Color(0x00000000),
+      systemNavigationBarDividerColor: Color(0x00000000),
+      systemNavigationBarContrastEnforced: false,
+    );
     if (uiMode == 'mobile') {
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky, overlays: []);
-      SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
-        statusBarColor: Color(0x00000000),
-        systemNavigationBarColor: Color(0x00000000),
-      ));
+      SystemChrome.setSystemUIOverlayStyle(transparentNav);
     } else {
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+      SystemChrome.setSystemUIOverlayStyle(transparentNav);
     }
   }
 

@@ -936,8 +936,8 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
   }
 
   // ===== 手机端底部导航（酷安 V16 悬浮胶囊风格）=====
-  // 特征：悬浮圆角胶囊条（毛玻璃半透明底）+ 图标/文字标签 tab + 中央大厂蓝 AI 按钮；
-  // 选中态 = 实心图标 + 品牌色文字，切换带缩放动画。
+  // 特征：悬浮圆角胶囊条（毛玻璃半透明底 + 顶部高光）+ 图标/文字标签 tab +
+  // 中央大厂蓝 AI 按钮 + 滑动椭圆选中指示器（切换时胶囊在 tab 间平滑滑动）。
   Widget _buildCoolApkNavBar(BuildContext ctx, AppColors c, int navIndex, bool inMore) {
     // (选中图标, 未选中图标, 页面索引, 标签)；-1 = 打开更多页
     const tabs = [
@@ -956,8 +956,8 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
     // 毛玻璃：玻璃模式下实时模糊；高性能模式退化为高不透明度实底
     final useBlur = _state.isGlassUI && !_state.highPerformanceMode;
     final barColor = c.isLight
-        ? Colors.white.withValues(alpha: useBlur ? 0.86 : 0.98)
-        : const Color(0xFF141418).withValues(alpha: useBlur ? 0.82 : 0.97);
+        ? Colors.white.withValues(alpha: useBlur ? 0.72 : 0.98)
+        : const Color(0xFF141418).withValues(alpha: useBlur ? 0.68 : 0.97);
 
     Widget tabItem(int i, (IconData, IconData, int, String) tab) {
       final selected = selectedTab == i;
@@ -1004,8 +1004,78 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
       );
     }
 
-    final bar = Container(
-      height: 62,
+    const barHeight = 62.0;
+    final bar = LayoutBuilder(builder: (ctx, cons) {
+      // 5 个等宽槽位（tab0 / tab1 / 中央AI / tab2 / tab3），椭圆指示器在槽位间滑动
+      final slotW = cons.maxWidth / 5;
+      const pillH = 44.0;
+      final pillW = (slotW - 12).clamp(48.0, 84.0);
+      // selectedTab(0-3) → 槽位（0,1,3,4；槽位 2 是中央按钮）
+      final slot = switch (selectedTab) { 0 => 0, 1 => 1, 2 => 3, 3 => 4, _ => -1 };
+      return Stack(children: [
+        // 滑动椭圆选中指示器（液态玻璃：半透明主色渐变 + 细描边 + 顶部高光）
+        AnimatedPositioned(
+          duration: const Duration(milliseconds: 280),
+          curve: Curves.easeOutCubic,
+          left: slot < 0 ? slotW / 2 - pillW / 2 : slot * slotW + (slotW - pillW) / 2,
+          top: (barHeight - pillH) / 2,
+          child: AnimatedOpacity(
+            duration: const Duration(milliseconds: 200),
+            opacity: slot < 0 ? 0 : 1,
+            child: Container(
+              width: pillW,
+              height: pillH,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(999),
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [
+                    kPrimary.withValues(alpha: c.isLight ? 0.13 : 0.22),
+                    kPrimary.withValues(alpha: c.isLight ? 0.05 : 0.10),
+                  ],
+                ),
+                border: Border.all(color: kPrimary.withValues(alpha: c.isLight ? 0.22 : 0.32), width: 1),
+                boxShadow: [
+                  // 顶部内高光：液态玻璃的"受光"感
+                  BoxShadow(color: Colors.white.withValues(alpha: c.isLight ? 0.55 : 0.12), blurRadius: 0, spreadRadius: 0, offset: const Offset(0, -0.5)),
+                ],
+              ),
+            ),
+          ),
+        ),
+        Row(children: [
+          tabItem(0, tabs[0]),
+          tabItem(1, tabs[1]),
+          // 中央 AI 助手按钮（酷安"+"位）：大厂蓝圆角方块
+          _NavPressFeedback(
+            pressedScale: 0.88,
+            borderRadius: BorderRadius.circular(20),
+            onTap: () => _showMobileChatSheet(ctx),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              child: Container(
+                width: 54,
+                height: 40,
+                decoration: BoxDecoration(
+                  color: const Color(0xFF2563EB),
+                  borderRadius: BorderRadius.circular(20),
+                  boxShadow: [
+                    BoxShadow(color: const Color(0xFF2563EB).withValues(alpha: 0.4), blurRadius: 12, offset: const Offset(0, 4)),
+                  ],
+                ),
+                child: const Icon(Icons.auto_awesome_rounded, size: 20, color: Colors.white),
+              ),
+            ),
+          ),
+          tabItem(2, tabs[2]),
+          tabItem(3, tabs[3]),
+        ]),
+      ]);
+    });
+
+    final barShell = Container(
+      height: barHeight,
       decoration: BoxDecoration(
         color: barColor,
         borderRadius: BorderRadius.circular(999),
@@ -1014,32 +1084,23 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
           BoxShadow(color: Colors.black.withValues(alpha: c.isLight ? 0.08 : 0.3), blurRadius: 18, offset: const Offset(0, 6)),
         ],
       ),
-      child: Row(children: [
-        tabItem(0, tabs[0]),
-        tabItem(1, tabs[1]),
-        // 中央 AI 助手按钮（酷安"+"位）：大厂蓝圆角方块
-        _NavPressFeedback(
-          pressedScale: 0.88,
-          borderRadius: BorderRadius.circular(20),
-          onTap: () => _showMobileChatSheet(ctx),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 8),
-            child: Container(
-              width: 54,
-              height: 40,
+      child: Stack(children: [
+        // 液态玻璃顶部高光：一条自上而下渐隐的白色柔光
+        Positioned.fill(
+          child: IgnorePointer(
+            child: DecoratedBox(
               decoration: BoxDecoration(
-                color: const Color(0xFF2563EB),
-                borderRadius: BorderRadius.circular(20),
-                boxShadow: [
-                  BoxShadow(color: const Color(0xFF2563EB).withValues(alpha: 0.4), blurRadius: 12, offset: const Offset(0, 4)),
-                ],
+                borderRadius: BorderRadius.circular(999),
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [Colors.white.withValues(alpha: c.isLight ? 0.5 : 0.08), Colors.white.withValues(alpha: 0.0)],
+                ),
               ),
-              child: const Icon(Icons.auto_awesome_rounded, size: 20, color: Colors.white),
             ),
           ),
         ),
-        tabItem(2, tabs[2]),
-        tabItem(3, tabs[3]),
+        bar,
       ]),
     );
 
@@ -1053,7 +1114,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
           child: BackdropFilter(
             enabled: useBlur,
             filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
-            child: bar,
+            child: barShell,
           ),
         ),
       ),
