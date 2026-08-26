@@ -848,6 +848,9 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
           // 始终透明：根 Stack 最底层已有全局背景层兜底，Scaffold 再铺白底会在
           // 悬浮导航栏后露出一截白色残带（页面内容区有自己的背景色不受影响）
           backgroundColor: Colors.transparent,
+          // body 延伸到导航栏之后：玻璃染色层连续覆盖全屏，否则 bottomNavigationBar
+          // 槽位露出未染色的玻璃底层，与 body 之间会出现一条锋利的色差接缝
+          extendBody: true,
           appBar: immersiveMode
               ? null
               : AppBar(
@@ -872,10 +875,18 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                       decoration: BoxDecoration(
                         color: c.bg.withValues(alpha: _state.darkMode ? 0.4 : 0.45),
                       ),
-                      child: _animatedPage(),
+                      // extendBody 后 Scaffold 会把导航栏高度注入 body 的 MediaQuery
+                      // padding.bottom，内容避开悬浮导航栏，染色层则连续铺满全屏
+                      child: Builder(builder: (bctx) => Padding(
+                        padding: EdgeInsets.only(bottom: MediaQuery.of(bctx).padding.bottom),
+                        child: _animatedPage(),
+                      )),
                     ),
                   ))
-                : _animatedPage(),
+                : Builder(builder: (bctx) => Padding(
+                    padding: EdgeInsets.only(bottom: MediaQuery.of(bctx).padding.bottom),
+                    child: _animatedPage(),
+                  )),
             ),
             // 浏览器沉浸模式下，底部上滑区域唤出导航栏
             if (browserMode && !_showBrowserNav)
