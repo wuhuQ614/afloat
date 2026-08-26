@@ -787,8 +787,8 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
   Widget _buildMainContent() {
     final isGlass = _state.isGlassUI;
     final c = AppColors(!_state.darkMode);
-    // 考场/游戏沉浸模式（page==10/11/20）：隐藏 AI 对话栏（右侧30%），内容独占
-    if (_state.page == 10 || _state.page == 11 || _state.page == 20) {
+    // 考场/游戏/浏览器沉浸模式（page==10/11/20/19）：隐藏 AI 对话栏（右侧30%），内容独占
+    if (_state.page == 10 || _state.page == 11 || _state.page == 20 || _state.page == 19) {
       return Row(children: [
         Expanded(child: _animatedPage()),
       ]);
