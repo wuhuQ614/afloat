@@ -335,11 +335,16 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
   static const _frameRateChannel = MethodChannel('com.smartenglish/framerate');
 
   void _updateFrameRate() {
-    // 省电模式锁60帧；高性能模式不锁帧（解锁），其余锁定120帧
-    final targetFps = _state.powerSavingMode ? 60 : 120;
-    if (!_isWindows) {
-      _frameRateChannel.invokeMethod('setFrameRate', {'fps': targetFps});
-    }
+    // 帧率策略：
+    // - 电脑端（Windows）：跟随显示器刷新率，165Hz 屏即 165fps——Flutter 桌面端
+    //   垂直同步渲染，无程序化锁帧通道，不做任何限制；
+    // - 手机端：省电模式锁 60；高性能模式解锁（fps=0，跟随系统最高档，120/144Hz 跑满）；
+    //   默认锁 120。
+    if (_isWindows) return;
+    final targetFps = _state.powerSavingMode
+        ? 60
+        : (_state.highPerformanceMode ? 0 : 120);
+    _frameRateChannel.invokeMethod('setFrameRate', {'fps': targetFps});
   }
 
   @override
@@ -759,13 +764,31 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
   }
 
   // ===== 主内容区 =====
+  /// 页面切换动画：轻量淡入 + 微上移（220ms），避免生硬跳变。
+  /// 以 page 索引为 key，切换时旧页淡出、新页淡入。
+  Widget _animatedPage() {
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 220),
+      switchInCurve: Curves.easeOut,
+      switchOutCurve: Curves.easeIn,
+      transitionBuilder: (child, anim) => FadeTransition(
+        opacity: anim,
+        child: SlideTransition(
+          position: Tween<Offset>(begin: const Offset(0, 0.02), end: Offset.zero).animate(anim),
+          child: child,
+        ),
+      ),
+      child: KeyedSubtree(key: ValueKey(_state.page), child: _buildPage()),
+    );
+  }
+
   Widget _buildMainContent() {
     final isGlass = _state.isGlassUI;
     final c = AppColors(!_state.darkMode);
     // 考场/游戏沉浸模式（page==10/11/20）：隐藏 AI 对话栏（右侧30%），内容独占
     if (_state.page == 10 || _state.page == 11 || _state.page == 20) {
       return Row(children: [
-        Expanded(child: _buildPage()),
+        Expanded(child: _animatedPage()),
       ]);
     }
     return Row(children: [
@@ -779,10 +802,10 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                 decoration: BoxDecoration(
                   color: c.bg.withValues(alpha: _state.darkMode ? 0.45 : 0.5),
                 ),
-                child: _buildPage(),
+                child: _animatedPage(),
               ),
             ))
-          : _buildPage(),
+          : _animatedPage(),
       ),
       // 右侧 AI 对话助手（30%）— 监听 darkMode + chatUpdate，避免流式输出时全应用重建
       Expanded(
@@ -817,7 +840,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
           (Icons.grid_view_outlined, '更多', -1),
           (Icons.search_outlined, '查询', 3),
         ];
-        final inMore = _state.page >= 4;
+        final inMore = _state.page >= 4 || _state.page == 3;
         final navIndex = inMore ? 3 : (_state.page == 3 ? 4 : _state.page.clamp(0, 2));
         final isGlass = _state.isGlassUI;
         final glassBg = isGlass ? c.sidebar.withValues(alpha: _state.darkMode ? 0.5 : 0.55) : c.sidebar;
@@ -848,10 +871,10 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                       decoration: BoxDecoration(
                         color: c.bg.withValues(alpha: _state.darkMode ? 0.4 : 0.45),
                       ),
-                      child: _buildPage(),
+                      child: _animatedPage(),
                     ),
                   ))
-                : _buildPage(),
+                : _animatedPage(),
             ),
             // 浏览器沉浸模式下，底部上滑区域唤出导航栏
             if (browserMode && !_showBrowserNav)
@@ -906,44 +929,134 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                 ),
             ],
           ) : null)
-              : NavigationBar(
-            selectedIndex: navIndex,
-            onDestinationSelected: (i) {
-              if (navItems[i].$3 == -1) {
-                _state.setPage(_morePageIndex);
-              } else {
-                _state.setPage(navItems[i].$3);
-              }
-            },
-            labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
-            backgroundColor: glassBg,
-            indicatorColor: kPrimary.withValues(alpha: c.isLight ? 0.12 : 0.3),
-            destinations: [
-              for (var i = 0; i < navItems.length; i++)
-                NavigationDestination(
-                  icon: Icon(navItems[i].$1, size: 22, color: (i == 3 ? inMore : navIndex == i) ? kPrimary : c.textTertiary),
-                  selectedIcon: Icon(navItems[i].$1, size: 22, color: kPrimary),
-                  label: navItems[i].$2,
-                ),
-            ],
-          ),
-          floatingActionButton: immersiveMode
-              ? null
-              : _state.highPerformanceMode
-                  // 高性能模式：不使用毛玻璃模糊，改用实色悬浮按钮
-                  ? FloatingActionButton(
-                      onPressed: () => _showMobileChatSheet(ctx),
-                      backgroundColor: _state.darkMode ? const Color(0xFF2B2B32) : Colors.white,
-                      elevation: 2,
-                      child: const Icon(Icons.auto_awesome_rounded, color: Color(0xFF7C3AED), size: 24),
-                    )
-                  : GlassFab(
-                      isLight: !_state.darkMode,
-                      onPressed: () => _showMobileChatSheet(ctx),
-                      icon: const Icon(Icons.auto_awesome_rounded, color: Color(0xFF7C3AED), size: 24),
-                    ),
+              : _buildCoolApkNavBar(ctx, c, navIndex, inMore),
         );
       },
+    );
+  }
+
+  // ===== 手机端底部导航（酷安 V16 悬浮胶囊风格）=====
+  // 特征：悬浮圆角胶囊条（毛玻璃半透明底）+ 图标/文字标签 tab + 中央大厂蓝 AI 按钮；
+  // 选中态 = 实心图标 + 品牌色文字，切换带缩放动画。
+  Widget _buildCoolApkNavBar(BuildContext ctx, AppColors c, int navIndex, bool inMore) {
+    // (选中图标, 未选中图标, 页面索引, 标签)；-1 = 打开更多页
+    const tabs = [
+      (Icons.home_rounded, Icons.home_outlined, 0, '学习'),
+      (Icons.quiz_rounded, Icons.quiz_outlined, 1, '答题'),
+      (Icons.insights_rounded, Icons.insights_outlined, 2, '报告'),
+      (Icons.widgets_rounded, Icons.widgets_outlined, -1, '更多'),
+    ];
+    // 当前选中落在哪个 tab（更多页/查词页时高亮最后一个 tab）
+    final selectedTab = inMore ? 3 : switch (navIndex) {
+      0 => 0,
+      1 => 1,
+      2 => 2,
+      _ => -1,
+    };
+    // 毛玻璃：玻璃模式下实时模糊；高性能模式退化为高不透明度实底
+    final useBlur = _state.isGlassUI && !_state.highPerformanceMode;
+    final barColor = c.isLight
+        ? Colors.white.withValues(alpha: useBlur ? 0.86 : 0.98)
+        : const Color(0xFF141418).withValues(alpha: useBlur ? 0.82 : 0.97);
+
+    Widget tabItem(int i, (IconData, IconData, int, String) tab) {
+      final selected = selectedTab == i;
+      final color = selected ? kPrimary : c.textTertiary;
+      return Expanded(
+        child: _NavPressFeedback(
+          borderRadius: BorderRadius.circular(999),
+          onTap: () {
+            final page = tab.$3;
+            if (page < 0) {
+              _state.setPage(_morePageIndex);
+            } else {
+              _state.setPage(page);
+            }
+          },
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 9),
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              AnimatedSwitcher(
+                duration: const Duration(milliseconds: 180),
+                switchInCurve: Curves.easeOutBack,
+                switchOutCurve: Curves.easeIn,
+                transitionBuilder: (child, anim) => ScaleTransition(scale: anim, child: child),
+                child: Icon(
+                  selected ? tab.$1 : tab.$2,
+                  key: ValueKey(selected),
+                  size: 22,
+                  color: color,
+                ),
+              ),
+              const SizedBox(height: 3),
+              Text(
+                tab.$4,
+                style: TextStyle(
+                  fontSize: 10.5,
+                  height: 1,
+                  fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                  color: color,
+                ),
+              ),
+            ]),
+          ),
+        ),
+      );
+    }
+
+    final bar = Container(
+      height: 62,
+      decoration: BoxDecoration(
+        color: barColor,
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: c.divider),
+        boxShadow: [
+          BoxShadow(color: Colors.black.withValues(alpha: c.isLight ? 0.08 : 0.3), blurRadius: 18, offset: const Offset(0, 6)),
+        ],
+      ),
+      child: Row(children: [
+        tabItem(0, tabs[0]),
+        tabItem(1, tabs[1]),
+        // 中央 AI 助手按钮（酷安"+"位）：大厂蓝圆角方块
+        _NavPressFeedback(
+          pressedScale: 0.88,
+          borderRadius: BorderRadius.circular(20),
+          onTap: () => _showMobileChatSheet(ctx),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            child: Container(
+              width: 54,
+              height: 40,
+              decoration: BoxDecoration(
+                color: const Color(0xFF2563EB),
+                borderRadius: BorderRadius.circular(20),
+                boxShadow: [
+                  BoxShadow(color: const Color(0xFF2563EB).withValues(alpha: 0.4), blurRadius: 12, offset: const Offset(0, 4)),
+                ],
+              ),
+              child: const Icon(Icons.auto_awesome_rounded, size: 20, color: Colors.white),
+            ),
+          ),
+        ),
+        tabItem(2, tabs[2]),
+        tabItem(3, tabs[3]),
+      ]),
+    );
+
+    return SafeArea(
+      top: false,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(999),
+          // 玻璃模式启用实时背景模糊（酷安 V16 同款高斯模糊底）
+          child: BackdropFilter(
+            enabled: useBlur,
+            filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+            child: bar,
+          ),
+        ),
+      ),
     );
   }
 
@@ -991,20 +1104,22 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
             ),
             child: SafeArea(
             child: Column(children: [
-              // 头部
+              // 头部（未配置 AI 时隐藏头像，仅保留标题与操作）
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
                 child: Row(children: [
-                  Container(
-                    width: 28,
-                    height: 28,
-                    decoration: BoxDecoration(
-                      gradient: c.primaryGradient,
-                      borderRadius: BorderRadius.circular(8),
+                  if (cfg.ready) ...[
+                    Container(
+                      width: 28,
+                      height: 28,
+                      decoration: BoxDecoration(
+                        gradient: c.primaryGradient,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: const Icon(Icons.auto_awesome_rounded, size: 14, color: Colors.white),
                     ),
-                    child: const Icon(Icons.auto_awesome_rounded, size: 14, color: Colors.white),
-                  ),
-                  const SizedBox(width: 10),
+                    const SizedBox(width: 10),
+                  ],
                   Text(modelName, style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: c.text)),
                   const Spacer(),
                   IconButton(
@@ -1316,8 +1431,10 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
               border: Border(bottom: BorderSide(color: c.divider)),
             ),
             child: Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
-              _aiLogo(modelName, size: 30),
-              const SizedBox(width: 10),
+              if (cfg.ready == true) ...[
+                _aiLogo(modelName, size: 30),
+                const SizedBox(width: 10),
+              ],
               Expanded(
                 child: Text(modelName, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: c.text), overflow: TextOverflow.ellipsis),
               ),
@@ -1442,21 +1559,8 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
             showDialog(context: ctx, builder: (_) => const SettingsDialog());
           },
           child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Container(
-              width: 32,
-              height: 32,
-              decoration: BoxDecoration(
-                gradient: c.primaryGradient,
-                shape: BoxShape.circle,
-                boxShadow: c.isLight
-                    ? null
-                    : [
-                        BoxShadow(color: const Color(0xFF8B5CF6).withValues(alpha: 0.5), blurRadius: 12, spreadRadius: 1.5),
-                        BoxShadow(color: const Color(0xFFA78BFA).withValues(alpha: 0.25), blurRadius: 18, spreadRadius: 3),
-                      ],
-              ),
-              child: const Center(child: Text('AI', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 12))),
-            ),
+            // 未配置 API 的引导头像：用 DeepSeek 品牌图标，不用"AI"文字占位
+            _aiLogo('deepseek', size: 32),
             const SizedBox(width: 10),
             Expanded(child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
@@ -1546,17 +1650,21 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
     // 全宽无容器展示（仿 deepseek-harness：步骤不属于消息正文）。
     final hasReasoning = msg.reasoning != null && msg.reasoning!.isNotEmpty && msg.showReasoning;
     final hasSteps = msg.toolSteps.isNotEmpty;
+    // 未配置 AI（无 URL/Key）时不显示模型头像与模型名，避免出现无意义的占位标识
+    final aiConfigured = _state.effectiveChatConfig.ready;
     final avatarRow = Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Padding(
-        padding: const EdgeInsets.only(top: 4),
-        child: _aiLogo(aiModelName ?? '', size: 28),
-      ),
-      const SizedBox(width: 8),
+      if (aiConfigured) ...[
+        Padding(
+          padding: const EdgeInsets.only(top: 4),
+          child: _aiLogo(aiModelName ?? '', size: 28),
+        ),
+        const SizedBox(width: 8),
+      ],
       Expanded(child: bubble),
     ]);
     // AI 消息气泡上方的模型名行（与 Reasoning / ToolSteps 独立成行，避免压住头像）
     Widget? modelHeader;
-    if (!isUser && aiModelName != null) {
+    if (!isUser && aiModelName != null && aiConfigured) {
       // 模型名小行：不再额外显示小头像（与下方 28 气泡头像重复），仅显示模型名
       modelHeader = Padding(
         padding: const EdgeInsets.only(left: 4, bottom: 4),
@@ -2124,6 +2232,8 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
   /// [content] 为浮层内容（已用 ClipRRect + Material 包裹好）。
   /// 浮层位置默认在按钮正上方、左对齐到按钮左侧；屏幕边距不足时自动翻转到下方/右对齐。
   /// 浮层外点击空白处自动关闭；返回 OverlayEntry 供调用方在合适时机关闭。
+  /// 手机端（窄屏或锚点不可用——锚点 key 在手机端不挂载）改为底部上滑面板，
+  /// 避免锚点缺失时坐标落到 (0,0)、菜单从屏幕左上角弹出的违和效果。
   OverlayEntry _showOverlayPanel(
     BuildContext context,
     GlobalKey anchorKey, {
@@ -2134,6 +2244,10 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
   }) {
     final overlay = Overlay.of(context, rootOverlay: true);
     final renderBox = anchorKey.currentContext?.findRenderObject() as RenderBox?;
+    final isMobileLayout = MediaQuery.of(context).size.width < 500;
+    if (renderBox == null || isMobileLayout) {
+      return _showBottomSheetPanel(overlay, height, content);
+    }
     double popupX = 0;
     double popupY = 0;
     if (renderBox != null) {
@@ -2188,6 +2302,59 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(16),
                 child: Material(color: const Color(0xFF2B2B32), child: content),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+    overlay.insert(entry);
+    return entry;
+  }
+
+  /// 手机端底部弹出面板：全宽贴底、上滑淡入、半透明遮罩，点击遮罩关闭。
+  OverlayEntry _showBottomSheetPanel(OverlayState overlay, double height, Widget content) {
+    late OverlayEntry entry;
+    entry = OverlayEntry(
+      builder: (ctx) => Stack(
+        children: [
+          Positioned.fill(
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () => entry.remove(),
+              child: AnimatedOpacity(
+                duration: const Duration(milliseconds: 180),
+                opacity: 1,
+                child: ColoredBox(color: Colors.black.withValues(alpha: 0.4)),
+              ),
+            ),
+          ),
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 0,
+            height: height,
+            child: TweenAnimationBuilder<double>(
+              duration: const Duration(milliseconds: 240),
+              curve: Curves.easeOutCubic,
+              tween: Tween(begin: 0, end: 1),
+              builder: (ctx, t, child) => Opacity(
+                opacity: t.clamp(0.0, 1.0),
+                child: Transform.translate(
+                  offset: Offset(0, (1 - t) * 48),
+                  child: child,
+                ),
+              ),
+              child: ClipRRect(
+                borderRadius: const BorderRadius.vertical(top: Radius.circular(18)),
+                child: Material(
+                  color: const Color(0xFF2B2B32),
+                  elevation: 8,
+                  child: Padding(
+                    padding: EdgeInsets.only(bottom: MediaQuery.of(ctx).padding.bottom),
+                    child: content,
+                  ),
+                ),
               ),
             ),
           ),
@@ -3524,7 +3691,13 @@ class _MoreSelectPageState extends State<_MoreSelectPage> {
     final c = AppColors.of(context);
     final isMobile = AppScope.of(context).uiMode == 'mobile';
     final crossCount = isMobile ? 2 : 3;
-    final moreItems = _moreItemsData;
+    // 手机端：隐藏贪吃蛇单机/双人（桌面独占体验）；查询入口从底部导航移入这里
+    final moreItems = isMobile
+        ? [
+            (Icons.search_rounded, '查词', '查单词/翻译', 3),
+            ..._moreItemsData.where((e) => e.$4 != 20 && e.$4 != 24),
+          ]
+        : _moreItemsData;
     // 功能网格（glass/classic 共用）
     final moreGrid = GridView.builder(
       physics: const BouncingScrollPhysics(),

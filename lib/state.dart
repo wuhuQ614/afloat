@@ -388,8 +388,9 @@ class AppState extends ChangeNotifier {
   /// 深色模式开关
   bool darkMode = false;
   bool fullscreen = false;
-  bool powerSavingMode = false; // 省电模式，默认关闭，关闭时支持120帧
-  /// 高性能模式：面向低配设备，关闭毛玻璃/半透明等重特效且不锁帧，功能不受影响
+  bool powerSavingMode = false; // 省电模式，默认关闭；开启时手机端锁 60 帧
+  /// 高性能模式：面向低配设备，关闭毛玻璃/半透明等重特效，且手机端解锁帧率上限
+  /// （跟随系统最高刷新率）；电脑端始终跟随显示器刷新率（165Hz 屏即 165fps）
   bool highPerformanceMode = false;
   /// 首次启动快速引导是否已完成（false 时启动进入引导向导）
   bool onboardingDone = false;

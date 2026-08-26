@@ -1964,7 +1964,6 @@ class _DictionaryPageState extends State<DictionaryPage> {
       return const _EmptyState(
         icon: Icons.search_rounded,
         title: '输入单词开始查询',
-        subtitle: '英文优先匹配本地词库，中文走 AI 翻译',
       );
     }
     final entry = _foundEntry;
