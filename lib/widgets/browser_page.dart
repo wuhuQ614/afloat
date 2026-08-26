@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
+import '../state.dart';
 import '../theme_colors.dart' show AppColors;
 
 class BrowserPage extends StatefulWidget {
@@ -103,6 +104,9 @@ class _BrowserPageState extends State<BrowserPage> {
             border: Border(bottom: BorderSide(color: c.divider)),
           ),
           child: Row(children: [
+            // 退出浏览器：返回首页（浏览器页全屏独占，无侧边栏，退出入口就在工具条最前）
+            _toolBtn(Icons.close_rounded, true, () => AppScope.of(context).setPage(0), '退出浏览器', danger: true),
+            const SizedBox(width: 8),
             _toolBtn(Icons.arrow_back_ios_new_rounded, _canGoBack, _goBack, '后退'),
             const SizedBox(width: 4),
             _toolBtn(Icons.arrow_forward_ios_rounded, _canGoForward, _goForward, '前进'),

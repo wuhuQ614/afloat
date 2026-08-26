@@ -413,7 +413,8 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                                 ? KeyedSubtree(
                                     key: const ValueKey('english_desktop'),
                                     child: Scaffold(
-                                    body: (_state.page == 10 || _state.page == 11 || _state.page == 20)
+                                    // 浏览器页（19）与考场/游戏一样全屏独占：隐藏侧边栏与 AI 对话栏
+                                    body: (_state.page == 10 || _state.page == 11 || _state.page == 20 || _state.page == 19)
                                         ? ListenableBuilder(listenable: _state, builder: (ctx, _) => _buildMainContent())
                                         : Row(children: [
                                             _buildSidebar(),
