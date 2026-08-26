@@ -845,8 +845,9 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
         final isGlass = _state.isGlassUI;
         final glassBg = isGlass ? c.sidebar.withValues(alpha: _state.darkMode ? 0.5 : 0.55) : c.sidebar;
         return Scaffold(
-          // 透明：让全局玻璃背景层透出；高性能模式改用不透明底色，减少合成开销
-          backgroundColor: _state.highPerformanceMode ? c.bg : Colors.transparent,
+          // 始终透明：根 Stack 最底层已有全局背景层兜底，Scaffold 再铺白底会在
+          // 悬浮导航栏后露出一截白色残带（页面内容区有自己的背景色不受影响）
+          backgroundColor: Colors.transparent,
           appBar: immersiveMode
               ? null
               : AppBar(
@@ -1013,12 +1014,13 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
       // selectedTab(0-3) → 槽位（0,1,3,4；槽位 2 是中央按钮）
       final slot = switch (selectedTab) { 0 => 0, 1 => 1, 2 => 3, 3 => 4, _ => -1 };
       return Stack(children: [
-        // 滑动椭圆选中指示器（液态玻璃：半透明主色渐变 + 细描边 + 顶部高光）
+        // 滑动椭圆选中指示器（灰色液态玻璃：半透明渐变 + 细描边 + 顶部高光）
         AnimatedPositioned(
           duration: const Duration(milliseconds: 280),
           curve: Curves.easeOutCubic,
           left: slot < 0 ? slotW / 2 - pillW / 2 : slot * slotW + (slotW - pillW) / 2,
-          top: (barHeight - pillH) / 2,
+          // 略微上移：视觉上与图标主体重心对齐（居中会显得偏下）
+          top: (barHeight - pillH) / 2 - 3,
           child: AnimatedOpacity(
             duration: const Duration(milliseconds: 200),
             opacity: slot < 0 ? 0 : 1,
@@ -1030,15 +1032,14 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                 gradient: LinearGradient(
                   begin: Alignment.topCenter,
                   end: Alignment.bottomCenter,
-                  colors: [
-                    kPrimary.withValues(alpha: c.isLight ? 0.13 : 0.22),
-                    kPrimary.withValues(alpha: c.isLight ? 0.05 : 0.10),
-                  ],
+                  colors: c.isLight
+                      ? [Colors.black.withValues(alpha: 0.055), Colors.black.withValues(alpha: 0.02)]
+                      : [Colors.white.withValues(alpha: 0.10), Colors.white.withValues(alpha: 0.04)],
                 ),
-                border: Border.all(color: kPrimary.withValues(alpha: c.isLight ? 0.22 : 0.32), width: 1),
+                border: Border.all(color: c.isLight ? Colors.black.withValues(alpha: 0.10) : Colors.white.withValues(alpha: 0.16), width: 1),
                 boxShadow: [
                   // 顶部内高光：液态玻璃的"受光"感
-                  BoxShadow(color: Colors.white.withValues(alpha: c.isLight ? 0.55 : 0.12), blurRadius: 0, spreadRadius: 0, offset: const Offset(0, -0.5)),
+                  BoxShadow(color: Colors.white.withValues(alpha: c.isLight ? 0.60 : 0.12), blurRadius: 0, spreadRadius: 0, offset: const Offset(0, -0.5)),
                 ],
               ),
             ),
