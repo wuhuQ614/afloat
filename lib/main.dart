@@ -401,8 +401,10 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
   static final _reEscape = RegExp(r'\\([\\`*_{}\[\]()#+\-.!~>|])');
   // R8: 行内数学公式 $...$：两端 $ 紧邻非空字符，且不与 $$ 块语法混淆
   static final _reInlineMath = RegExp(r'\$(?!\$)(\S(?:[^$\n]*?\S)?)\$(?!\$)');
-  // R5: Markdown 解析缓存（按内容+颜色哈希失效）
-  final Map<int, TextSpan> _markdownCache = {};
+  // R5: Markdown 解析缓存（按 内容+颜色 失效；R29: 键改用完整文本字符串——
+  // 旧版 int 哈希键存在碰撞可能，碰撞时会把别的消息的缓存渲染到当前消息上，
+  // 表现为"发出去的文字/AI 回复间歇性空白"）
+  final Map<String, TextSpan> _markdownCache = {};
   // R6: 滚动节流：记录上次滚动时间
   int _lastScrollTime = 0;
 
@@ -1077,7 +1079,9 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
         final inMore = _state.page >= 4 || _state.page == 3;
         final navIndex = inMore ? 3 : (_state.page == 3 ? 4 : _state.page.clamp(0, 2));
         final isGlass = _state.isGlassUI;
-        final glassBg = isGlass ? c.sidebar.withValues(alpha: _state.darkMode ? 0.5 : 0.55) : c.sidebar;
+        // R29: 顶栏与内容区同底色——此前顶栏用 sidebar 色、内容区玻璃染色用 bg 色，
+        // 两个色相上下相接形成明显的颜色接缝
+        final glassBg = c.bg;
         return Scaffold(
           // 始终透明：根 Stack 最底层已有全局背景层兜底，Scaffold 再铺白底会在
           // 悬浮导航栏后露出一截白色残带（页面内容区有自己的背景色不受影响）
@@ -1436,6 +1440,12 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                   ],
                   Text(modelName, style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: c.text)),
                   const Spacer(),
+                  // R29: 历史对话（移动端此前没有入口）
+                  IconButton(
+                    icon: const Icon(Icons.space_dashboard_rounded, size: 18, color: Color(0xFFADADB8)),
+                    tooltip: '历史对话',
+                    onPressed: () => _showHistoryPicker(ctx, c, _state),
+                  ),
                   // R15: 专注全屏切换（全屏时对话面板满宽）
                   IconButton(
                     icon: Icon(
@@ -1512,13 +1522,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                   },
                 ),
               ),
-              // 上下文用量
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-                child: Row(children: [
-                  _buildContextUsagePill(ctx, c, _state),
-                ]),
-              ),
+              // R29: 上下文占用已由输入栏圆环承担，移除旧式分布长条
               // 输入框
               Padding(
                 padding: EdgeInsets.fromLTRB(12, 0, 12, MediaQuery.of(ctx).padding.bottom + 8),
@@ -2130,7 +2134,8 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
   /// R5: 简易 Markdown 解析：支持 **粗体**、*斜体*、~~删除线~~、`行内代码`、标题、列表、代码块、引用、链接
   /// 带缓存：相同内容+颜色组合直接返回缓存结果
   TextSpan _parseMarkdown(String text, Color textColor) {
-    final cacheKey = text.hashCode * 31 + textColor.value;
+    // R29: 用完整文本做键（Map 字符串键深度相等，彻底避免哈希碰撞串显）
+    final cacheKey = '$text\u0000${textColor.value}';
     final cached = _markdownCache[cacheKey];
     if (cached != null) return cached;
     final result = _parseMarkdownImpl(text, textColor);

@@ -901,6 +901,10 @@ class AgentAskUserPanel extends StatefulWidget {
 }
 
 class _AgentAskUserPanelState extends State<AgentAskUserPanel> {
+  // R29: 用户确认后自动折叠为摘要条，点击可重新展开查看
+  bool _confirmed = false;
+  bool _open = false;
+
   void _toggle(AskUserQuestion q, String label) {
     setState(() {
       final current = List<String>.from(widget.answers[q.id] ?? const <String>[]);
@@ -933,6 +937,8 @@ class _AgentAskUserPanelState extends State<AgentAskUserPanel> {
       content: Text('已选择：${summary.join(" | ")}', style: const TextStyle(fontSize: 12)),
       duration: const Duration(seconds: 2),
     ));
+    // R29: 作答完成 → 自动折叠
+    setState(() => _confirmed = true);
   }
 
   @override
@@ -942,6 +948,44 @@ class _AgentAskUserPanelState extends State<AgentAskUserPanel> {
     final textSecondary = widget.light ? const Color(0xFF6B7280) : const Color(0xFFADADB8);
     final borderColor = widget.light ? const Color(0xFFE5E7EB) : const Color(0xFF3D3D45);
     final cardBg = widget.light ? const Color(0xFFF7F8FA) : const Color(0xFF26262C);
+
+    // R29: 已确认 → 折叠为一条摘要（点击展开完整面板）
+    if (_confirmed) {
+      final answerSummary = widget.questions.map((q) {
+        final sel = widget.answers[q.id] ?? const <String>[];
+        final qq = q.question.length > 14 ? '${q.question.substring(0, 14)}…' : q.question;
+        return '$qq：${sel.isEmpty ? '未选' : sel.join('、')}';
+      }).join('；');
+      return Container(
+        margin: const EdgeInsets.only(top: 4),
+        decoration: BoxDecoration(
+          color: cardBg,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: borderColor),
+        ),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(10),
+          onTap: () => setState(() => _open = !_open),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+            child: Row(children: [
+              const Icon(Icons.check_circle_rounded, size: 15, color: Color(0xFF10B981)),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  '已回答：$answerSummary',
+                  style: TextStyle(fontSize: 12, color: textSecondary),
+                  maxLines: _open ? 6 : 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              Icon(_open ? Icons.keyboard_arrow_up_rounded : Icons.keyboard_arrow_down_rounded, size: 16, color: textSecondary),
+            ]),
+          ),
+        ),
+      );
+    }
+
     return Container(
       margin: const EdgeInsets.only(top: 4),
       decoration: BoxDecoration(
