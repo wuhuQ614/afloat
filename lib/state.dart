@@ -3,12 +3,15 @@ library;
 
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io' show Directory, File, HttpClient, Platform, Process, systemEncoding;
+import 'dart:io' show Directory, File, HttpClient, Platform, Process, ProcessSignal, systemEncoding;
 import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle, SystemChrome, SystemUiMode, SystemUiOverlayStyle;
 import 'package:path_provider/path_provider.dart';
+import 'package:pdf/pdf.dart';
+import 'package:pdf/widgets.dart' as pw;
+import 'package:excel/excel.dart';
 import 'models.dart';
 import 'theme_colors.dart' show AppColors;
 import 'services/api_service.dart';
@@ -57,6 +60,16 @@ class ToolStep {
   /// 子 Agent 派发专属：子 Agent 的执行事件流
   /// 每项 {type: 'tool', name, label, status: running|done|fail} 或 {type: 'round', n}
   List<Map<String, dynamic>> subEvents = [];
+  /// 所属 agent 轮次（第几轮流式决策），工作流时间线穿插排序用
+  int round;
+  /// 开始时间（创建即开始执行）；endedAt 在 done/failed 时写入 → 「持续了 N 秒」
+  final DateTime startedAt = DateTime.now();
+  DateTime? endedAt;
+  /// 文件写入/编辑工具的目标路径（编辑行展示文件名 + 目录 + 行数统计）
+  String? filePath;
+  /// 文件写入/编辑的行数统计（+新增 / -删除）
+  int? addedLines;
+  int? removedLines;
   ToolStep({
     required this.name,
     required this.label,
@@ -70,7 +83,22 @@ class ToolStep {
     this.exitCode,
     this.subType,
     this.subTask,
+    this.round = 0,
+    this.filePath,
+    this.addedLines,
+    this.removedLines,
   });
+}
+
+/// 一段「思考」：一轮流式决策产生的 reasoning，带起止时间（工作流时间线的思考行）。
+/// 此前所有轮次的 reasoning 覆盖写入同一个字符串，时间线上只能显示一段；
+/// 改为分段后可按轮次穿插在工具步骤之间，还原真实的工作流时序。
+class ReasoningSegment {
+  int round;
+  String text = '';
+  final DateTime startedAt = DateTime.now();
+  DateTime? endedAt;
+  ReasoningSegment(this.round);
 }
 
 /// AI 任务清单（dsh-tool-todo 风格）
@@ -178,6 +206,8 @@ class ChatMessage {
   String? reasoning;
   /// Agent 工具调用步骤列表，在气泡上方单独展示（不混入对话文本）
   List<ToolStep> toolSteps = [];
+  /// 思考分段（每轮流式决策一段，带起止时间），工作流时间线按轮次穿插展示
+  List<ReasoningSegment> reasoningSegs = [];
   /// 用户消息携带的图片（base64 data URL），AI 消息为 null
   String? imageData;
   /// 缓存解码后的图片字节，避免每次重建都重新 base64Decode
@@ -403,6 +433,17 @@ class AppState extends ChangeNotifier {
   /// 高性能模式下同样恒为 false：关闭全部 BackdropFilter 模糊以获得最佳性能。
   bool get isGlassUI =>
       uiStyle == 'glass' && !darkMode && !highPerformanceMode;
+
+  /// R14: Agent 专注全屏模式（仅桌面）：图标导航栏 + 全宽聊天页。
+  /// 会话内临时状态，不持久化。
+  bool agentFullscreen = false;
+
+  void toggleAgentFullscreen() {
+    agentFullscreen = !agentFullscreen;
+    Storage.saveAgentFullscreen(agentFullscreen);
+    notifyListeners();
+  }
+
   /// 导航指示器：'underline' = 灰色下划线 | 'pill' = 紫色渐变胶囊
   String navIndicator = 'underline';
   String selectedType = 'translation';
@@ -483,6 +524,14 @@ class AppState extends ChangeNotifier {
     chatShowReasoning = Storage.loadChatShowReasoning();
     chatStream = Storage.loadChatStream();
     chatThinking = Storage.loadChatThinking();
+    // R20: DeepSeek 思考强度档位；旧存档无该键时按"是否思考"推导初始档位
+    chatThinkLevel = Storage.loadChatThinkLevel();
+    if (chatThinkLevel.isEmpty) {
+      chatThinkLevel = chatThinking ? 'high' : 'off';
+      Storage.saveChatThinkLevel(chatThinkLevel);
+    }
+    // R27: 恢复纯净对话模式
+    agentFullscreen = Storage.loadAgentFullscreen();
     chatFullAccess = Storage.loadChatFullAccess();
     workspacePath = Storage.loadWorkspacePath();
     activeSkill = Storage.loadActiveSkill();
@@ -553,6 +602,9 @@ class AppState extends ChangeNotifier {
       chatProfileIdx = chatProfiles.isEmpty ? -1 : 0;
       Storage.saveChatProfileIdx(chatProfileIdx);
     }
+    // 加载会话快照与个性化记忆（每次对话自动保存；历史会话可继续对话）
+    _loadPersistedChatSessions();
+    agentMemory = _decodeMemoryList(Storage.loadAgentMemory());
     // 加载题库
     try {
       final raw = await rootBundle.loadString('assets/questions.json');
@@ -2142,11 +2194,21 @@ class AppState extends ChangeNotifier {
   /// AI 助手本地工作目录。harness 工具（read/write/edit/list_dir/bash）只能在该目录及其子目录下读写。
   /// 空字符串 = 使用默认 C:\Users 下任意位置。
   String workspacePath = '';
+  /// 跨工作区授权：用户选择"本次会话始终允许"后为 true，本次会话内不再弹授权框。
+  bool allowCrossWorkspaceSession = false;
   /// 会话快照（dsh-tool-session-query 使用）：最近 50 个会话的 id/title/createdAt/messageCount + 完整消息。
-  /// 每次 clearChat 时把当前 chatHistory 持久化成一条快照。
+  /// 每次对话（sendChat）完成后自动保存；clearChat 时也会保存当前快照。
   List<Map<String, dynamic>> chatSessions = [];
   List<List<Map<String, dynamic>>> chatSessionMessages = []; // 每个会话的完整消息（content + role + 时间）
   static const int _kMaxSessions = 50;
+  /// 当前活动会话 id：首次对话时创建，之后每次 sendChat 更新同一条快照；从历史加载后切到对应会话。
+  String? _activeSessionId;
+  /// UI 只读访问当前活动会话 id（历史对话列表高亮当前会话）
+  String? get activeSessionIdForUi => _activeSessionId;
+  /// 个性化记忆库：从历史对话中提取的长期信息（偏好 / 目标 / 技术栈 / 一般）。
+  /// 用户发消息时按相关度检索 Top 3 注入模型上下文。
+  List<Map<String, dynamic>> agentMemory = [];
+  static const int _kMaxMemory = 200;
   /// MCP server 配置（dsh-mcp-client）：用户可在设置中编辑 JSON 配置后保存。
   String mcpConfigJson = '[]';
   /// MCP 工具列表（启动时从所有 server 拉取）
@@ -2168,6 +2230,58 @@ class AppState extends ChangeNotifier {
   final Map<String, Completer<Map<String, List<String>>>> _askCompleters = {};
   /// ask completer 自增序号（仅作 key 用）
   int _askSeq = 0;
+
+  // ===== 通用"等待用户在弹窗中选择"机制 =====
+  /// state 侧设置 prompRequest 触发全局弹窗；UI 侧用户点选后调用 respondPrompt 唤醒。
+  /// 用途：墨墨词库导出格式选择、跨工作区授权等需要在工具执行中弹选择框的场景。
+  Map<String, dynamic>? promptRequest;
+  Completer<String?>? _promptCompleter;
+  /// 每次弹窗自增 id，供 UI 区分是否已消费
+  int _promptSeq = 0;
+
+  /// 弹出一个模态选择框并等待用户选择。
+  /// [options] 为 [{ 'id', 'label', 'description'? }, ...]。
+  /// 返回选中的 option id；用户取消/关闭或超时返回 null。
+  Future<String?> _awaitUserChoice({
+    required String title,
+    required String message,
+    required List<Map<String, dynamic>> options,
+  }) async {
+    // 已有一个挂起的弹窗时直接取消本次（避免叠加，被第二个调用覆盖）
+    if (_promptCompleter != null) return null;
+    final c = Completer<String?>();
+    _promptCompleter = c;
+    final seq = ++_promptSeq;
+    promptRequest = {
+      'id': seq,
+      'title': title,
+      'message': message,
+      'options': options,
+    };
+    notifyListeners();
+    String? sel;
+    try {
+      sel = await c.future.timeout(
+        const Duration(minutes: 10),
+        onTimeout: () => '#timeout',
+      );
+    } catch (_) {
+      sel = null;
+    }
+    if (identical(_promptCompleter, c)) {
+      _promptCompleter = null;
+      promptRequest = null;
+    }
+    notifyListeners();
+    return sel == '#timeout' ? null : sel;
+  }
+
+  /// UI 侧用户选择后回调：唤醒挂起的 `_awaitUserChoice`。
+  void respondPrompt(String? selectedId, {int? id}) {
+    if (id != null && id != _promptSeq) return;
+    final c = _promptCompleter;
+    if (c != null && !c.isCompleted) c.complete(selectedId);
+  }
 
   /// UI 层用户点"确认"后回填答案，唤醒挂起的 ask_user_question 工具调用
   /// 若 answers 全空则拒绝唤醒（避免误触或重复触发导致 agent 拿到空答案继续走）
@@ -2296,6 +2410,9 @@ class AppState extends ChangeNotifier {
       chatSending = false;
       notifyListeners();
       _notifyChatUpdate();
+      // 每次对话完成后自动保存会话快照 + 提取长期记忆
+      _snapshotCurrentSession();
+      _extractAndStoreMemory(trimmed, agentResult.reply);
       return agentResult.reply;
     }
 
@@ -2303,6 +2420,8 @@ class AppState extends ChangeNotifier {
     final q = currentQuestion;
     final dirDesc = isZh2En ? '中译英' : '英译中';
     final userAnswer = currentUserAnswer;
+    // 个性化记忆：根据本轮用户消息检索相关历史长期信息，注入对话提示词
+    final memoryCtx = _buildMemoryContext(trimmed);
     final prompt = '你是一个专业的英语学习助手，可以回答任何关于英语的问题（语法、词汇、翻译、写作、阅读理解等）。\n\n' +
         '【当前题目信息】（仅供参考，用户可能问其他英语问题）\n' +
         '题目类型：${qTypeName(q.type)}（$dirDesc）\n' +
@@ -2313,7 +2432,8 @@ class AppState extends ChangeNotifier {
         (userAnswer.isNotEmpty ? '用户当前作答：$userAnswer\n' : '') +
         (q.correctAnswer.isNotEmpty ? '参考答案：${q.correctAnswer}\n' : '') +
         (q.knowledge.isNotEmpty ? '核心知识点：${q.knowledge.join('、')}\n' : '') +
-        buildChatContextPrompt();
+        buildChatContextPrompt() +
+        (memoryCtx.isNotEmpty ? '\n\n$memoryCtx' : '');
     final history = chatHistory
         // 排除系统消息，但保留【早期对话摘要】（压缩工具写入的上下文，
         // 否则模型下一轮完全失忆、压缩对模型无效）
@@ -2382,6 +2502,9 @@ class AppState extends ChangeNotifier {
     chatSending = false;
     notifyListeners();
     _notifyChatUpdate();
+    // 每次对话完成后自动保存会话快照 + 提取长期记忆
+    _snapshotCurrentSession();
+    _extractAndStoreMemory(trimmed, reply);
     return reply;
   }
 
@@ -2439,28 +2562,244 @@ class AppState extends ChangeNotifier {
     return reply;
   }
 
-  void clearChat() {
-    // 在清空前保存一份会话快照（dsh-tool-session-query 用）
-    if (chatHistory.isNotEmpty) {
-      final id = DateTime.now().millisecondsSinceEpoch.toString();
-      final title = chatHistory.firstWhere((m) => m.role == 'user' && m.content.isNotEmpty, orElse: () => ChatMessage(role: 'user', content: '(空)')).content.replaceAll('\n', ' ').trim();
-      chatSessions.insert(0, {
-        'id': id,
-        'title': title.length > 40 ? '${title.substring(0, 40)}...' : title,
-        'createdAt': DateTime.now().toIso8601String(),
-        'messageCount': chatHistory.length,
-      });
-      chatSessionMessages.insert(0, chatHistory.map((m) => {'role': m.role, 'content': m.content}).toList());
-      if (chatSessions.length > _kMaxSessions) {
-        chatSessions.removeRange(_kMaxSessions, chatSessions.length);
-        chatSessionMessages.removeRange(_kMaxSessions, chatSessionMessages.length);
-      }
-      Storage.saveChatSessions(jsonEncode(chatSessions));
-      Storage.saveChatSessionMessages(jsonEncode(chatSessionMessages));
+  /// 将当前 chatHistory 持久化为会话快照（dsh-tool-session-query / 历史对话继续用）。
+  /// 每次对话（sendChat）完成后自动保存；clearChat 清空前也会保存当前快照。
+  void _snapshotCurrentSession() {
+    if (chatHistory.isEmpty) return;
+    final id = _activeSessionId ?? DateTime.now().millisecondsSinceEpoch.toString();
+    final title = chatHistory
+        .firstWhere((m) => m.role == 'user' && m.content.isNotEmpty,
+            orElse: () => ChatMessage(role: 'user', content: '(空)'))
+        .content
+        .replaceAll('\n', ' ')
+        .trim();
+    final existingIdx = chatSessions.indexWhere((s) => s['id'] == id);
+    final createdAt = existingIdx >= 0
+        ? (chatSessions[existingIdx]['createdAt'] as String?)
+        : DateTime.now().toIso8601String();
+    final snap = {
+      'id': id,
+      'title': title.length > 40 ? '${title.substring(0, 40)}...' : title,
+      'createdAt': createdAt ?? DateTime.now().toIso8601String(),
+      'messageCount': chatHistory.length,
+    };
+    final msgs = chatHistory.map((m) => {'role': m.role, 'content': m.content}).toList();
+    if (existingIdx >= 0) {
+      chatSessions[existingIdx] = snap;
+      chatSessionMessages[existingIdx] = msgs;
+    } else {
+      chatSessions.insert(0, snap);
+      chatSessionMessages.insert(0, msgs);
     }
+    _activeSessionId = id;
+    if (chatSessions.length > _kMaxSessions) {
+      chatSessions.removeRange(_kMaxSessions, chatSessions.length);
+      chatSessionMessages.removeRange(_kMaxSessions, chatSessionMessages.length);
+    }
+    Storage.saveChatSessions(jsonEncode(chatSessions));
+    Storage.saveChatSessionMessages(jsonEncode(chatSessionMessages));
+  }
+
+  void clearChat() {
+    _snapshotCurrentSession(); // 清空前保存当前快照
     chatHistory = [];
+    _activeSessionId = null;
     notifyListeners();
     _notifyChatUpdate();
+  }
+
+  /// 开启新对话：保存当前会话快照后清空聊天区，开始全新会话
+  void startNewSession() => clearChat();
+
+  /// 从持久化存储加载会话快照（重启后仍可查看 / 继续历史对话）
+  void _loadPersistedChatSessions() {
+    try {
+      final list = jsonDecode(Storage.loadChatSessions());
+      if (list is List) {
+        chatSessions = list.whereType<Map>().map((e) => e.cast<String, dynamic>()).toList();
+      }
+    } catch (_) {
+      chatSessions = [];
+    }
+    try {
+      final list2 = jsonDecode(Storage.loadChatSessionMessages());
+      if (list2 is List) {
+        chatSessionMessages = list2
+            .whereType<List>()
+            .map((e) => e.whereType<Map>().map((m) => m.cast<String, dynamic>()).toList())
+            .toList();
+      }
+    } catch (_) {
+      chatSessionMessages = [];
+    }
+    if (chatSessions.length > _kMaxSessions) {
+      chatSessions = chatSessions.sublist(0, _kMaxSessions);
+      if (chatSessionMessages.length > _kMaxSessions) {
+        chatSessionMessages = chatSessionMessages.sublist(0, _kMaxSessions);
+      }
+    }
+  }
+
+  /// 加载历史会话到当前对话（继续对话）：重建 chatHistory 并切换到该会话。
+  void loadSession(String id) {
+    final idx = chatSessions.indexWhere((s) => s['id'] == id);
+    if (idx < 0) return;
+    final msgs = (idx < chatSessionMessages.length) ? chatSessionMessages[idx] : <Map<String, dynamic>>[];
+    chatHistory = msgs.map((m) {
+      final role = (m['role'] as String?) == 'ai' ? 'ai' : 'user';
+      return ChatMessage(role: role, content: (m['content'] as String?) ?? '');
+    }).toList();
+    _activeSessionId = id;
+    notifyListeners();
+    _notifyChatUpdate();
+  }
+
+  /// R22: 编辑重答——从第 [index] 条消息起截断会话（含该条），此后消息自动删除。
+  /// 调用后由 UI 把原消息文本回填输入框，用户修改后重新发送，从当前处继续对话。
+  void truncateConversationAt(int index) {
+    if (chatSending) return; // 流式响应中不允许截断，避免占位消息悬挂
+    if (index < 0 || index >= chatHistory.length) return;
+    chatHistory.removeRange(index, chatHistory.length);
+    _notifyChatUpdate();
+    notifyListeners();
+  }
+
+  /// R23: 置顶 / 取消置顶历史会话（最多同时置顶 10 个）
+  void toggleSessionPin(String id) {
+    final idx = chatSessions.indexWhere((s) => s['id'] == id);
+    if (idx < 0) return;
+    final session = chatSessions[idx];
+    final pinned = session['pinned'] == true;
+    if (!pinned) {
+      final pinnedCount = chatSessions.where((s) => s['pinned'] == true).length;
+      if (pinnedCount >= 10) {
+        notifyListeners();
+        return; // 置顶位已满（10 个），忽略
+      }
+      session['pinned'] = true;
+    } else {
+      session['pinned'] = false;
+    }
+    Storage.saveChatSessions(jsonEncode(chatSessions));
+    notifyListeners();
+  }
+
+  /// 删除一条历史会话快照
+  void deleteSession(String id) {
+    final idx = chatSessions.indexWhere((s) => s['id'] == id);
+    if (idx < 0) return;
+    chatSessions.removeAt(idx);
+    if (idx < chatSessionMessages.length) chatSessionMessages.removeAt(idx);
+    if (_activeSessionId == id) _activeSessionId = null;
+    Storage.saveChatSessions(jsonEncode(chatSessions));
+    Storage.saveChatSessionMessages(jsonEncode(chatSessionMessages));
+    notifyListeners();
+  }
+
+  // ===== 个性化记忆服务 =====
+  /// 解析持久化的记忆库 JSON
+  List<Map<String, dynamic>> _decodeMemoryList(String raw) {
+    try {
+      final list = jsonDecode(raw);
+      if (list is List) return list.whereType<Map>().map((e) => e.cast<String, dynamic>()).toList();
+    } catch (_) {}
+    return [];
+  }
+
+  /// 记忆提取：从一轮对话（用户消息 + AI 回复）中规则提取长期信息并入库。
+  /// 命中"目标 / 技术栈 / 偏好 / 反感"句式即作为记忆保存；去重、限量、持久化。
+  void _extractAndStoreMemory(String userText, String aiReply) {
+    if (userText.trim().isEmpty) return;
+    final sentences = '$userText\n$aiReply'.split(RegExp(r'[\n。！？!?；;]'));
+    var added = 0;
+    for (final raw in sentences) {
+      final s = raw.trim();
+      if (s.length < 4 || s.length > 120) continue;
+      final type = _classifyMemorySentence(s);
+      if (type == null) continue;
+      // 去掉常见引导词，保留句子的信息核心
+      final core = s.replaceFirst(RegExp(r'^(我|咱|本人|自己|我现在)?(非常|特别|比较|很|挺|就|一直|平时|一般|经常|通常|现在)?'), '');
+      if (core.isEmpty) continue;
+      final content = core.length > 80 ? core.substring(0, 80) : core;
+      if (_memoryDup(agentMemory, content)) continue;
+      agentMemory.add({
+        'id': DateTime.now().microsecondsSinceEpoch.toString() + '_$added',
+        'type': type,
+        'content': content,
+        'source': 'auto',
+        'createdAt': DateTime.now().toIso8601String(),
+      });
+      added++;
+      if (agentMemory.length > _kMaxMemory) {
+        agentMemory.removeAt(0); // 最旧优先淘汰
+      }
+    }
+    if (added > 0) {
+      Storage.saveAgentMemory(jsonEncode(agentMemory));
+    }
+  }
+
+  /// 判断一句话是否表达长期记忆及其类型（null = 非记忆句）
+  String? _classifyMemorySentence(String s) {
+    if (RegExp(r'我(的)?(目标|计划|打算|理想|梦想)|(想|要|准备|打算)(考|过|拿|上|冲)|备考|目标是').hasMatch(s)) {
+      return 'goal';
+    }
+    if (RegExp(r'技术栈|框架|编程语言|我用(的)?是|我(平时|一般|经常|常用|主要)用|我在(用|学|做|搞)|做(的)?(项目|开发)|用的是').hasMatch(s)) {
+      return 'tech';
+    }
+    if (RegExp(r'喜欢|偏爱|偏好|更(喜欢|倾向|习惯)|习惯(用|看|使用)|风格|主题|配色|颜色|界面|深色|浅色|简洁|简约').hasMatch(s)) {
+      return 'preference';
+    }
+    if (RegExp(r'不喜欢|讨厌|别用|不要用|不用|避免|反感|抗拒').hasMatch(s)) {
+      return 'preference';
+    }
+    return null;
+  }
+
+  /// 记忆去重：与已有记忆内容相似度过高视为重复
+  bool _memoryDup(List<Map<String, dynamic>> mems, String content) {
+    final setA = content.toLowerCase().trim().split('').toSet();
+    if (setA.isEmpty) return true;
+    for (final m in mems) {
+      final old = ((m['content'] as String?) ?? '').toLowerCase().trim();
+      if (old.isEmpty) continue;
+      final setB = old.split('').toSet();
+      final union = setA.union(setB);
+      if (union.isEmpty) continue;
+      if (setA.intersection(setB).length / union.length > 0.6) return true;
+    }
+    return false;
+  }
+
+  /// 记忆检索：根据用户本次说的话，从记忆库找出最相关的 Top [limit] 条。
+  /// 返回格式化后的上下文段落；无相关记忆时返回空串（不注入，避免噪音）。
+  String _buildMemoryContext(String userText, {int limit = 3}) {
+    if (agentMemory.isEmpty || userText.trim().isEmpty) return '';
+    final scored = <({double score, Map<String, dynamic> mem})>[];
+    final queryChars = userText.toLowerCase().trim().split('').toSet();
+    for (final m in agentMemory) {
+      final content = ((m['content'] as String?) ?? '').toLowerCase().trim();
+      if (content.isEmpty) continue;
+      final memChars = content.split('').toSet();
+      if (memChars.isEmpty) continue;
+      final score = queryChars.intersection(memChars).length / memChars.length;
+      if (score > 0.12) {
+        scored.add((score: score, mem: m));
+      }
+    }
+    if (scored.isEmpty) return '';
+    scored.sort((a, b) => b.score.compareTo(a.score));
+    const typeName = {'goal': '目标', 'preference': '偏好', 'tech': '技术栈', 'general': '一般'};
+    final buf = StringBuffer('【个性化记忆】（来自你之前对话的长期信息，仅供参考）');
+    var n = 0;
+    for (final e in scored) {
+      if (n >= limit) break;
+      final t = typeName[(e.mem['type'] as String?) ?? 'general'] ?? '一般';
+      buf.writeln();
+      buf.write('- [$t] ${e.mem['content']}');
+      n++;
+    }
+    return buf.toString().trim();
   }
 
   // ===== Agent 出题工具统一接管 =====
@@ -2547,6 +2886,8 @@ class AppState extends ChangeNotifier {
           return _toolSubmitGeneratedQuestions(args);
         case 'lookup_word':
           return _toolLookupWord(args);
+        case 'route_words':
+          return await _toolRouteWords(args);
         case 'analyze_words':
           return await _toolAnalyzeWords(args);
         case 'get_current_question':
@@ -2575,6 +2916,8 @@ class AppState extends ChangeNotifier {
           return await _toolSearchWeb(args);
         case 'backup_data':
           return await _toolBackupData();
+        case 'export_maimemo_words':
+          return await _toolExportMaimemoWords(args);
         case 'operate_computer':
           return _toolOperateComputer(args);
         // ========== harness 工具：本地文件 & shell ==========
@@ -2919,6 +3262,137 @@ class AppState extends ChangeNotifier {
     );
   }
 
+  /// 单次词库路由的交付上限：防止大词库 "all" 路由一次性灌爆模型上下文
+  static const int _routeWordsCap = 300;
+
+  /// R13: 词库路由工具 —— 从墨墨词库/专升本词库按词性随机路由一批词汇。
+  /// 稀疏选择：模型指定比例（all/1/3/1/4/1/5/1/7/1/9），系统先统计该词性
+  /// 词汇总量，再随机抽取对应数量交付（含词性与释义），教学场景控制上下文占用。
+  /// 词性来源：两个词库词条自带 pos（如 "n."/"adj./adv."）；墨墨已同步词表
+  /// 仅含拼写，逐词回查通用词库补词性，查不到的不交付（保证词性可靠）。
+  Future<ToolExecResult> _toolRouteWords(Map<String, dynamic> args) async {
+    final source = ((args['source'] as String?) ?? 'zsb').trim().toLowerCase();
+    final posRaw = ((args['pos'] as String?) ?? 'all').trim().toLowerCase();
+    final fraction = ((args['fraction'] as String?) ?? 'all').trim();
+
+    // —— 词库池（仅限墨墨词库与专升本词库两个来源）——
+    await DictService.loadExternalDict();
+    final String sourceName;
+    String usingFallback = 'false';
+    List<MapEntry<String, DictEntry>> pool;
+    if (source == 'maimemo') {
+      sourceName = '墨墨词库';
+      final synced = lastMaimemoWords;
+      if (synced != null && synced.isNotEmpty) {
+        // 已同步墨墨词表：逐词回查通用词库补全词性
+        final dictMap = {for (final e in DictService.dictEntries()) e.key: e.value};
+        pool = [
+          for (final w in synced)
+            if (dictMap[w.toLowerCase()] != null)
+              MapEntry(w.toLowerCase(), dictMap[w.toLowerCase()]!),
+        ];
+      } else {
+        pool = DictService.dictEntries();
+        usingFallback = 'true';
+      }
+    } else if (source == 'zsb') {
+      sourceName = '专升本词库';
+      await DictService.loadZsbDict();
+      pool = DictService.zsbEntries();
+    } else {
+      return ToolExecResult(
+        content: '{"ok":false,"reason":"bad_source","source":"$source","allowed":["maimemo","zsb"]}',
+        ok: false,
+        actionLabel: '词库仅支持 maimemo / zsb',
+      );
+    }
+    if (pool.isEmpty) {
+      return ToolExecResult(
+        content: '{"ok":false,"reason":"dict_not_ready","source":"$source"}',
+        ok: false,
+        actionLabel: '$sourceName 尚未加载完成，请稍后重试',
+      );
+    }
+
+    // —— 词性过滤：把 "adj./adv." 拆成标签集合精确匹配（避免 v 误中 adv.）——
+    List<MapEntry<String, DictEntry>> filtered;
+    if (posRaw.isEmpty || posRaw == 'all') {
+      filtered = pool;
+    } else {
+      final want = posRaw.replaceAll('.', '').trim();
+      bool matches(String posField) {
+        final tags = posField
+            .toLowerCase()
+            .split(RegExp(r'[./,&;；、\s（）()]+'))
+            .where((t) => t.isNotEmpty)
+            .toSet();
+        return tags.contains(want);
+      }
+
+      filtered = pool.where((e) => matches(e.value.pos)).toList();
+    }
+    if (filtered.isEmpty) {
+      return ToolExecResult(
+        content: '{"ok":true,"source":"$source","pos":"$posRaw","poolSize":0,"routed":0,"words":[]}',
+        ok: true,
+        actionLabel: '$sourceName 中没有${_posCn(posRaw)}词汇',
+      );
+    }
+
+    // —— 稀疏路由：n = 该词性总量 × fraction，随机抽取（至少 1 个）——
+    filtered.shuffle(Random());
+    var take = filtered.length;
+    final fm = RegExp(r'^1/(\d+)$').firstMatch(fraction);
+    if (fm != null) {
+      final den = int.tryParse(fm.group(1)!) ?? 1;
+      take = max(1, filtered.length ~/ den);
+    }
+    var truncated = 'false';
+    if (take > _routeWordsCap) {
+      take = _routeWordsCap;
+      truncated = 'true';
+    }
+    final picked = filtered.take(take).toList();
+    String esc(String s) => s.replaceAll('\\', '\\\\').replaceAll('"', "'");
+    final wordsJson =
+        picked.map((e) => '{"w":"${esc(e.key)}","pos":"${esc(e.value.pos)}","trans":"${esc(e.value.translation)}"}').join(',');
+    final fracNote = fm != null ? '1/${fm.group(1)}' : 'all';
+    return ToolExecResult(
+      content: '{"ok":true,"source":"$source","pos":"$posRaw","poolSize":${filtered.length},'
+          '"fraction":"$fracNote","routed":${picked.length},"truncated":$truncated,'
+          '"usingFallback":$usingFallback,"words":[$wordsJson]}',
+      ok: true,
+      actionLabel: '路由 ${picked.length} 个${_posCn(posRaw)}词（$sourceName 共 ${filtered.length} 词）',
+    );
+  }
+
+  static String _posCn(String p) {
+    switch (p) {
+      case 'n':
+        return '名词';
+      case 'v':
+        return '动词';
+      case 'adj':
+        return '形容词';
+      case 'adv':
+        return '副词';
+      case 'pron':
+        return '代词';
+      case 'prep':
+        return '介词';
+      case 'conj':
+        return '连词';
+      case 'art':
+        return '冠词';
+      case 'num':
+        return '数词';
+      case 'int':
+        return '感叹词';
+      default:
+        return '';
+    }
+  }
+
   Future<ToolExecResult> _toolAnalyzeWords(Map<String, dynamic> args) async {
     final text = (args['text'] as String?) ?? '';
     final mode = (args['mode'] as String?) ?? 'normal';
@@ -3237,6 +3711,164 @@ class AppState extends ChangeNotifier {
     }
   }
 
+  /// 墨墨词库一键导出：将 maimemoWordbook 的全部单词导出为 PDF / Excel / JSON。
+  /// [format] 未指定时弹出选择框让用户选择；[path] 未指定时默认保存到下载目录。
+  Future<ToolExecResult> _toolExportMaimemoWords(Map<String, dynamic> args) async {
+    try {
+      if (maimemoWordbook.isEmpty) {
+        return const ToolExecResult(
+          content: '{"ok":false,"reason":"empty_wordbook","hint":"墨墨词库为空，请先执行“同步墨墨词库”后再导出。"}',
+          ok: false,
+          actionLabel: '墨墨词库为空，请先同步',
+        );
+      }
+      // 1. 确定导出格式；未指定 → 弹选择框给用户
+      var format = ((args['format'] as String?) ?? '').trim().toLowerCase();
+      if (format != 'pdf' && format != 'excel' && format != 'json') {
+        final sel = await _awaitUserChoice(
+          title: '选择导出格式',
+          message: '墨墨词库共 ${maimemoWordbook.length} 个单词，请选择导出的文件格式：',
+          options: [
+            {'id': 'pdf', 'label': 'PDF', 'description': '保存为 PDF 文档'},
+            {'id': 'excel', 'label': 'Excel', 'description': '保存为 .xlsx 表格'},
+            {'id': 'json', 'label': 'JSON', 'description': '保存为 JSON 数据文件'},
+          ],
+        );
+        if (sel == null) {
+          return ToolExecResult(content: '{"ok":false,"reason":"format_cancelled"}', ok: false, actionLabel: '已取消导出');
+        }
+        format = sel.toLowerCase();
+      }
+      final ext = switch (format) {
+        'excel' => 'xlsx',
+        'json' => 'json',
+        _ => 'pdf',
+      };
+      // 2. 确定目标目录 / 文件路径
+      final rawPath = ((args['path'] as String?) ?? '').trim();
+      final stamp = DateTime.now().millisecondsSinceEpoch;
+      String fileName = 'afloat_maimemo_$stamp.$ext';
+      Directory? dir;
+      if (rawPath.isNotEmpty) {
+        final p = rawPath.replaceAll('/', r'\');
+        final lower = p.toLowerCase();
+        if (lower.endsWith('.$ext')) {
+          // 视为完整文件名
+          final f = File(p);
+          await f.parent.create(recursive: true);
+          return await _writeExport(f, format);
+        } else if (!p.endsWith(r'\') && !p.endsWith('/') && p.contains('.')) {
+          // 视为带后缀的完整文件名（用户给了其他后缀）
+          final f = File(p);
+          await f.parent.create(recursive: true);
+          return await _writeExport(f, format);
+        }
+        dir = Directory(p);
+        await dir.create(recursive: true);
+      } else {
+        if (Platform.isAndroid || Platform.isIOS) {
+          try {
+            dir = await getExternalStorageDirectory();
+          } catch (_) {}
+          dir ??= await getApplicationDocumentsDirectory();
+        } else {
+          dir = await getDownloadsDirectory();
+          dir ??= await getApplicationDocumentsDirectory();
+        }
+      }
+      final file = File('${dir.path}${Platform.pathSeparator}$fileName');
+      return await _writeExport(file, format);
+    } catch (e) {
+      return ToolExecResult(content: '{"ok":false,"reason":"export_failed: $e"}', ok: false, actionLabel: '导出失败');
+    }
+  }
+
+  /// 按格式写入导出文件，返回 ToolExecResult。
+  Future<ToolExecResult> _writeExport(File file, String format) async {
+    try {
+      List<int> bytes;
+      switch (format) {
+        case 'excel':
+          final excel = Excel.createExcel();
+          final sheet = excel['Sheet1'];
+          sheet.appendRow([TextCellValue('单词'), TextCellValue('释义')]);
+          for (final w in maimemoWordbook) {
+            sheet.appendRow([TextCellValue(w.word), TextCellValue(w.translation)]);
+          }
+          bytes = excel.encode() ?? <int>[];
+          if (bytes.isEmpty) return const ToolExecResult(content: '{"ok":false,"reason":"excel_encode_failed"}', ok: false, actionLabel: 'Excel 编码失败');
+        case 'json':
+          final data = maimemoWordbook
+              .map((w) => {'word': w.word, 'translation': w.translation})
+              .toList();
+          bytes = utf8.encode(const JsonEncoder.withIndent('  ').convert(data));
+        default:
+          final pwDoc = pw.Document();
+          final font = await _loadCjkFont();
+          if (font == null) {
+            return const ToolExecResult(
+              content: '{"ok":false,"reason":"pdf_font_missing","hint":"导出 PDF 需要本机中文字体（宋体/黑体/微软雅黑），未找到可用字体，请改用 Excel 或 JSON 格式。"}',
+              ok: false,
+              actionLabel: '未找到 PDF 中文字体',
+            );
+          }
+          pwDoc.addPage(
+            pw.MultiPage(
+              pageFormat: PdfPageFormat.a4,
+              theme: pw.ThemeData.withFont(base: font),
+              header: (_) => pw.Padding(
+                padding: const pw.EdgeInsets.only(bottom: 8),
+                child: pw.Text('AFloat 墨墨词库导出（共 ${maimemoWordbook.length} 词）',
+                    style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 14)),
+              ),
+              build: (context) => [
+                pw.Table(
+                  border: pw.TableBorder.all(color: PdfColor.fromInt(0xCCCCCC), width: 0.5),
+                  children: [
+                    for (final w in maimemoWordbook)
+                      pw.TableRow(children: [
+                        pw.Padding(padding: const pw.EdgeInsets.all(4), child: pw.Text(w.word)),
+                        pw.Padding(
+                            padding: const pw.EdgeInsets.all(4),
+                            child: pw.Text(w.translation, textAlign: pw.TextAlign.left)),
+                      ]),
+                  ],
+                ),
+              ],
+            ),
+          );
+          bytes = await pwDoc.save();
+      }
+      await file.writeAsBytes(bytes, flush: true);
+      return ToolExecResult(
+        content: '{"ok":true,"path":"${file.path}","count":${maimemoWordbook.length},"format":"$format"}',
+        ok: true,
+        actionLabel: '已导出 ${maimemoWordbook.length} 个单词（$format）',
+      );
+    } catch (e) {
+      return ToolExecResult(content: '{"ok":false,"reason":"export_failed: $e"}', ok: false, actionLabel: '导出失败');
+    }
+  }
+
+  /// 加载本机可用中文字体（用于 PDF 导出），按优先级尝试常见系统中文字体。
+  Future<pw.Font?> _loadCjkFont() async {
+    final candidates = <String>[
+      r'C:\Windows\Fonts\simhei.ttf',
+      r'C:\Windows\Fonts\simsun.ttc',
+      r'C:\Windows\Fonts\msyh.ttc',
+      r'C:\Windows\Fonts\msyh.ttf',
+    ];
+    for (final p in candidates) {
+      try {
+        final f = File(p);
+        if (!await f.exists()) continue;
+        final bytes = await f.readAsBytes();
+        return pw.Font.ttf(bytes.buffer.asByteData());
+      } catch (_) {}
+    }
+    return null;
+  }
+
   // ============== harness 工具实现 ==============
 
   /// 拒绝 harness 工具：路径不在当前工作区内或包含 .. 试图跳出根目录
@@ -3249,10 +3881,36 @@ class AppState extends ChangeNotifier {
     );
   }
 
+  /// 跨工作区访问门禁：路径落在当前工作区内直接放行；
+  /// 否则弹出三选项（本次会话始终允许 / 本次允许 / 拒绝）让用户决定。
+  /// 返回 true 表示本次操作被放行，false 表示被拒绝。
+  Future<bool> _ensureFsAllowed(String raw) async {
+    if (_isPathUnderFsRoot(raw)) return true;
+    // 本次会话已授权跨工作区 → 直接放行，不再打扰用户
+    if (allowCrossWorkspaceSession) return true;
+    final root = _fsRoot();
+    final sel = await _awaitUserChoice(
+      title: '跨越工作区操作',
+      message: 'AI 助手正要访问当前工作区之外的位置：\n$raw\n\n'
+          '工作区根目录：$root\n'
+          '是否允许本次访问？',
+      options: [
+        {'id': 'always', 'label': '本次会话始终允许', 'description': '本次会话内不再询问，直接允许跨工作区操作'},
+        {'id': 'once', 'label': '本次允许', 'description': '仅允许这一次，下次再访问时重新询问'},
+        {'id': 'deny', 'label': '拒绝', 'description': '禁止该访问，AI 将在当前工作区内完成'},
+      ],
+    );
+    if (sel == 'always') {
+      allowCrossWorkspaceSession = true;
+      return true;
+    }
+    return sel == 'once';
+  }
+
   Future<ToolExecResult> _toolReadFile(Map<String, dynamic> args) async {
     final raw = _resolveFsPath((args['path'] as String?)?.trim() ?? '');
     if (raw.isEmpty) return const ToolExecResult(content: '{"ok":false,"reason":"missing_path"}', ok: false, actionLabel: '缺少文件路径');
-    if (!_isPathUnderFsRoot(raw)) return _fsPermissionDenied('path outside fs root');
+    if (!await _ensureFsAllowed(raw)) return _fsPermissionDenied('跨工作区访问被拒绝');
     try {
       final f = File(raw);
       if (!await f.exists()) return ToolExecResult(content: '{"ok":false,"reason":"not_found"}', ok: false, actionLabel: '文件不存在：$raw');
@@ -3282,7 +3940,7 @@ class AppState extends ChangeNotifier {
     final raw = _resolveFsPath((args['path'] as String?)?.trim() ?? '');
     final content = (args['content'] as String?) ?? '';
     if (raw.isEmpty) return const ToolExecResult(content: '{"ok":false,"reason":"missing_path"}', ok: false, actionLabel: '缺少文件路径');
-    if (!_isPathUnderFsRoot(raw)) return _fsPermissionDenied('path outside fs root');
+    if (!await _ensureFsAllowed(raw)) return _fsPermissionDenied('跨工作区访问被拒绝');
     try {
       final f = File(raw);
       if (!await f.parent.exists()) {
@@ -3307,7 +3965,7 @@ class AppState extends ChangeNotifier {
     if (raw.isEmpty || oldText.isEmpty) {
       return const ToolExecResult(content: '{"ok":false,"reason":"missing_args"}', ok: false, actionLabel: '需要 path 和 old_text');
     }
-    if (!_isPathUnderFsRoot(raw)) return _fsPermissionDenied('path outside fs root');
+    if (!await _ensureFsAllowed(raw)) return _fsPermissionDenied('跨工作区访问被拒绝');
     try {
       final f = File(raw);
       if (!await f.exists()) return ToolExecResult(content: '{"ok":false,"reason":"not_found"}', ok: false, actionLabel: '文件不存在：$raw');
@@ -3429,7 +4087,7 @@ class AppState extends ChangeNotifier {
 
   /// 查看文件/目录（view 命令：文件带 cat -n 行号，目录列 2 层）
   Future<ToolExecResult> _editorView(String raw, List<int>? range) async {
-    if (!_isPathUnderFsRoot(raw)) return _fsPermissionDenied('path outside fs root');
+    if (!await _ensureFsAllowed(raw)) return _fsPermissionDenied('跨工作区访问被拒绝');
     final f = File(raw);
     final d = Directory(raw);
     try {
@@ -3503,7 +4161,7 @@ class AppState extends ChangeNotifier {
 
   /// create 命令：新建文件（已存在则拒绝）
   Future<ToolExecResult> _editorCreate(String raw, String fileText) async {
-    if (!_isPathUnderFsRoot(raw)) return _fsPermissionDenied('path outside fs root');
+    if (!await _ensureFsAllowed(raw)) return _fsPermissionDenied('跨工作区访问被拒绝');
     try {
       final f = File(raw);
       if (await f.exists()) {
@@ -3527,7 +4185,7 @@ class AppState extends ChangeNotifier {
 
   /// str_replace 命令：old_str 必须唯一匹配，否则拒绝
   Future<ToolExecResult> _editorStrReplace(String raw, String oldStr, String newStr) async {
-    if (!_isPathUnderFsRoot(raw)) return _fsPermissionDenied('path outside fs root');
+    if (!await _ensureFsAllowed(raw)) return _fsPermissionDenied('跨工作区访问被拒绝');
     try {
       final f = File(raw);
       if (!await f.exists()) return ToolExecResult(content: '{"ok":false,"reason":"not_found"}', ok: false, actionLabel: '文件不存在：$raw');
@@ -3580,7 +4238,7 @@ class AppState extends ChangeNotifier {
 
   /// insert 命令：在 insert_line 之后插入 new_str
   Future<ToolExecResult> _editorInsert(String raw, int insertLine, String newStr) async {
-    if (!_isPathUnderFsRoot(raw)) return _fsPermissionDenied('path outside fs root');
+    if (!await _ensureFsAllowed(raw)) return _fsPermissionDenied('跨工作区访问被拒绝');
     try {
       final f = File(raw);
       if (!await f.exists()) return ToolExecResult(content: '{"ok":false,"reason":"not_found"}', ok: false, actionLabel: '文件不存在：$raw');
@@ -3650,7 +4308,7 @@ class AppState extends ChangeNotifier {
   Future<ToolExecResult> _toolListDir(Map<String, dynamic> args) async {
     final raw = _resolveFsPath((args['path'] as String?)?.trim() ?? '');
     if (raw.isEmpty) return const ToolExecResult(content: '{"ok":false,"reason":"missing_path"}', ok: false, actionLabel: '缺少目录路径');
-    if (!_isPathUnderFsRoot(raw)) return _fsPermissionDenied('path outside fs root');
+    if (!await _ensureFsAllowed(raw)) return _fsPermissionDenied('跨工作区访问被拒绝');
     try {
       final dir = Directory(raw);
       if (!await dir.exists()) return ToolExecResult(content: '{"ok":false,"reason":"not_found"}', ok: false, actionLabel: '目录不存在：$raw');
@@ -3695,40 +4353,78 @@ class AppState extends ChangeNotifier {
     var timeoutMs = (args['timeout_ms'] as num?)?.toInt() ?? 30000;
     if (timeoutMs < 1000) timeoutMs = 1000;
     if (timeoutMs > 60000) timeoutMs = 60000;
+    bool userAborted = false;
+    bool timedOut = false;
     try {
       // 默认在工作区根目录执行，让 `dir src`、`tsc` 等相对命令直接可用；
       // 否则默认 cwd 是系统目录，模型用相对路径的命令会全部失败（退出码 1）。
       // 若工作区目录不存在（被删等），回退系统默认 cwd，不阻断命令执行。
       final wd = Directory(_fsRoot()).existsSync() ? _fsRoot() : null;
-      final result = await Process.run(
-        'cmd',
-        ['/c', cmd],
-        runInShell: false,
-        workingDirectory: wd,
-      ).timeout(Duration(milliseconds: timeoutMs));
+      final proc = await Process.start('cmd', ['/c', cmd], runInShell: false, workingDirectory: wd);
+      final outBuf = StringBuffer();
+      final errBuf = StringBuffer();
+      proc.stdout.transform(utf8.decoder).listen((s) => outBuf.write(s));
+      proc.stderr.transform(utf8.decoder).listen((s) => errBuf.write(s));
+      // 修复"暂停无用"：不再用阻塞式 Process.run，改为进程启动后轮询
+      // `_chatAbortRequested`（150ms 粒度）。用户中途点暂停立即 kill 进程并返回，
+      // 而不是眼睁睁看着长命令（如 build/run 服务）跑完才响应。
+      final abortSignal = Completer<int>();
+      final pollTimer = Timer.periodic(const Duration(milliseconds: 150), (t) {
+        if (_chatAbortRequested) {
+          userAborted = true;
+          t.cancel();
+          proc.kill(ProcessSignal.sigkill);
+          abortSignal.complete(-1);
+        }
+      });
+      int? exitCode;
+      try {
+        exitCode = await Future.any<int?>([
+          proc.exitCode,
+          abortSignal.future,
+          Future.delayed(Duration(milliseconds: timeoutMs), () => null),
+        ]);
+      } catch (_) {}
+      if (exitCode == null && !userAborted) {
+        // 超时：杀掉仍可能在跑的进程
+        timedOut = true;
+        proc.kill(ProcessSignal.sigkill);
+      }
+      pollTimer.cancel();
+      // 给流一小段冲洗时间，收集进程被 kill 前的已输出内容
+      await Future.delayed(const Duration(milliseconds: 120));
+      if (userAborted) {
+        return const ToolExecResult(
+          content: '{"ok":false,"reason":"user_aborted","hint":"用户点击暂停，命令已终止。"}',
+          ok: false,
+          actionLabel: '命令已随暂停终止',
+        );
+      }
+      final out = outBuf.toString();
+      final err = errBuf.toString();
+      final resultExit = exitCode ?? -1;
       // R13 修复：失败连击此前只读不写，熔断从未生效（模型可无限重试同一条
       // 失败命令烧光工具轮次）。现在成功清零、失败累加，连败 2 次后拦截。
-      if (result.exitCode == 0) {
+      if (resultExit == 0) {
         _cmdFailStreak.remove(cmd);
       } else {
         _cmdFailStreak[cmd] = streak + 1;
       }
-      final out = result.stdout.toString();
-      final err = result.stderr.toString();
       final body = out.length > 32 * 1024 ? out.substring(0, 32 * 1024) + '\n... [输出已截断]' : out;
       final errBody = err.length > 32 * 1024 ? err.substring(0, 32 * 1024) + '\n... [输出已截断]' : err;
       final payload = <String, dynamic>{
-        'ok': result.exitCode == 0,
-        'exit_code': result.exitCode,
+        'ok': timedOut ? false : resultExit == 0,
+        'exit_code': resultExit,
         'stdout': body,
         'stderr': errBody,
       };
-      final hint = _windowsCmdHint(result.exitCode, err);
+      if (timedOut) payload['hint'] = '命令执行超过 ${timeoutMs}ms 已强制终止，请缩短耗时或改用后台运行。';
+      final hint = _windowsCmdHint(resultExit, err);
       if (hint.isNotEmpty) payload['hint'] = hint;
       // R14: 命令不存在（9009）时主动解析首 token 的真实路径给模型。
       // GUI 启动的应用可能拿不到登录后才新增的 PATH 项（装了 node 仍 9009），
       // 光说"改用完整路径"模型并不知道路径是什么，只会反复换写法空转。
-      final notFound = result.exitCode == 9009 ||
+      final notFound = resultExit == 9009 ||
           err.contains('不是内部或外部命令') ||
           err.toLowerCase().contains('is not recognized');
       if (notFound) {
@@ -3737,9 +4433,9 @@ class AppState extends ChangeNotifier {
       }
       return ToolExecResult(
         content: jsonEncode(payload),
-        ok: result.exitCode == 0,
-        actionLabel: result.exitCode == 0 ? '已执行命令' : '命令退出码 ${result.exitCode}',
-        exitCode: result.exitCode,
+        ok: timedOut ? false : resultExit == 0,
+        actionLabel: timedOut ? '命令超时已终止' : (resultExit == 0 ? '已执行命令' : '命令退出码 $resultExit'),
+        exitCode: resultExit,
         terminalOutput: [if (out.isNotEmpty) out, if (err.isNotEmpty) 'STDERR: $err'].join('\n'),
       );
     } catch (e) {
@@ -4881,7 +5577,10 @@ class AppState extends ChangeNotifier {
     // 当前题目不再注入提示词（已技能化：load_skill('exam-context') 获取）
     // 技能商店目录（渐进式披露：仅名称+触发描述，正文由 skill 工具按需加载）
     final contextPrompt = buildChatContextPrompt();
+    // 个性化记忆：根据本轮用户消息检索相关历史长期信息，注入系统提示词
+    final memoryContext = _buildMemoryContext(text);
     final sysPrompt = (contextPrompt.isNotEmpty ? '$contextPrompt\n\n' : '') +
+        (memoryContext.isNotEmpty ? '$memoryContext\n\n' : '') +
         AgentService.buildSystemPrompt(skillCatalog: skillStore.loaded ? skillStore.catalogPrompt() : null);
   
     // 构建 messages：从 chatHistory 读历史，但排除最后一条（刚加的 user 消息，避免重复）
@@ -4949,6 +5648,8 @@ class AppState extends ChangeNotifier {
         }
         // R8: 每轮清零本轮工具名，本轮执行工具后填充，末尾赋给 lastRoundTools 供下轮判断
         final roundTools = <String>{};
+        // R9: 本轮思考段（首块 reasoning 到达时创建，流式返回时闭合）
+        ReasoningSegment? roundThink;
         // 正文累积保留：模型每轮流式吐出的文字都"不被撤回"。
         // 之前每轮开头会 placeholder.content='' 清空正文，导致用户只看到最后一轮的
         // 一句话总结（中间步骤/边想边说的内容全部消失）——这正是"agent 的话被撤掉
@@ -4968,16 +5669,21 @@ class AppState extends ChangeNotifier {
           sysPrompt,
           config: cfg,
           tools: tools,
-          // 思考模式开关：开启时显式请求思考过程，关闭时强制关闭以加速
-          extraParams: chatThinking
-              ? ApiService.thinkingParams(cfg.model)
-              : ApiService.noThinkingParams(cfg.model),
+          // 思考参数（R20 真实生效入口）：DeepSeek 按强度档位（关闭/高/超高），
+          // 其他模型按"是否思考"开关
+          extraParams: chatThinkExtraParams(model: cfg.model),
           // R7: 输出上限联动上下文窗口（Max 模式 1M → 128K；普通 200K → 16K），
           // 思考模式下 reasoning 会占用输出预算，已包含在联动上限中
           maxTokens: effectiveOutputLimit,
           // 暂停按钮：流式期间逐行探测，命中立即断开
           isAborted: () => _chatAbortRequested,
           onReasoning: (chunk) {
+            // R9: 思考分段：每轮 reasoning 独立成段（带起止时间），时间线按轮次穿插
+            if (roundThink == null) {
+              roundThink = ReasoningSegment(round);
+              placeholder.reasoningSegs.add(roundThink!);
+            }
+            roundThink!.text += chunk;
             rawReasoning += chunk;
             placeholder.reasoning = rawReasoning;
             _notifyChatUpdate();
@@ -4993,6 +5699,8 @@ class AppState extends ChangeNotifier {
           return finishAbort();
         }
         placeholder.statusLabel = null;
+        // R9: 本轮流式决策结束，闭合本轮思考段（补记时长）
+        roundThink?.endedAt = DateTime.now();
 
         if (resp.content == null && resp.toolCalls.isEmpty) {
           // API 失败，移除占位消息，回退
@@ -5215,7 +5923,31 @@ class AppState extends ChangeNotifier {
                 : null,
             subType: isSubagent ? ((args['type'] as String?) ?? 'general') : null,
             subTask: isSubagent ? ((args['task'] as String?) ?? '') : null,
+            round: round,
           );
+          // R9: 文件写入/编辑工具记录路径与增删行数（编辑行展示「+N -N」）
+          const editTools = {'write_file', 'edit_file', 'str_replace_editor'};
+          if (editTools.contains(tc.name)) {
+            final p = ((args['path'] ?? args['file_path']) as String?)?.trim();
+            if (p != null && p.isNotEmpty) step.filePath = p;
+            int lineCount(String? s) => (s == null || s.isEmpty) ? 0 : s.split('\n').length;
+            if (tc.name == 'write_file') {
+              step.addedLines = lineCount(args['content'] as String?);
+              step.removedLines = 0;
+            } else if (tc.name == 'edit_file') {
+              step.removedLines = lineCount(args['old_text'] as String?);
+              step.addedLines = lineCount(args['new_text'] as String?);
+            } else {
+              final cmd = (args['command'] as String?) ?? '';
+              if (cmd == 'create') {
+                step.addedLines = lineCount(args['file_text'] as String?);
+                step.removedLines = 0;
+              } else if (cmd == 'str_replace' || cmd == 'insert') {
+                step.removedLines = cmd == 'insert' ? 0 : lineCount(args['old_str'] as String?);
+                step.addedLines = lineCount(args['new_str'] as String?);
+              }
+            }
+          }
           placeholder.toolSteps.add(step);
           _notifyChatUpdate();
           // 子 Agent：把执行事件实时汇入步骤卡片（AgentSubagentCard 事件流）
@@ -5253,6 +5985,7 @@ class AppState extends ChangeNotifier {
           }
           // 工具执行后：更新该步骤状态与文案
           step.running = false;
+          step.endedAt = DateTime.now();
           if (result.ok && result.actionLabel.isNotEmpty) {
             step.label = result.actionLabel;
             step.done = true;
@@ -5428,6 +6161,11 @@ class AppState extends ChangeNotifier {
       case 'lookup_word':
         final w = (args['word'] as String?) ?? '';
         return '正在查询 "$w"';
+      case 'route_words':
+        final rp = ((args['pos'] as String?) ?? 'all').trim().toLowerCase();
+        final rs = ((args['source'] as String?) ?? '').trim().toLowerCase();
+        final srcName = rs == 'maimemo' ? '墨墨词库' : '专升本词库';
+        return rp == 'all' ? '正在路由$srcName词汇' : '正在路由$srcName${_posCn(rp)}词汇';
       case 'analyze_words':
         return '正在剖析词汇';
       case 'next_question':
@@ -5467,6 +6205,9 @@ class AppState extends ChangeNotifier {
         return host.isEmpty ? '正在抓取网页' : '正在读取 $host';
       case 'backup_data':
         return '正在备份数据';
+      case 'export_maimemo_words':
+        final f = ((args['format'] as String?) ?? '').trim().toLowerCase();
+        return f.isEmpty ? '正在导出墨墨词库…' : '正在导出墨墨词库为 $f';
       case 'operate_computer':
         final op = (args['operation'] as String?) ?? '';
         final target = (args['target'] as String?) ?? '';
@@ -5567,6 +6308,8 @@ class AppState extends ChangeNotifier {
         return '生成综合模拟全卷';
       case 'lookup_word':
         return '查询单词';
+      case 'route_words':
+        return '路由词库词汇';
       case 'analyze_words':
         return '剖析词汇';
       case 'next_question':
@@ -5595,6 +6338,8 @@ class AppState extends ChangeNotifier {
         return '联网搜索';
       case 'backup_data':
         return '备份数据';
+      case 'export_maimemo_words':
+        return '导出墨墨词库';
       case 'operate_computer':
         return '操控电脑';
       case 'spawn_subagent':
@@ -6181,6 +6926,34 @@ class AppState extends ChangeNotifier {
     chatThinking = v;
     Storage.saveChatThinking(v);
     notifyListeners();
+  }
+
+  /// DeepSeek 思考强度档位：off=关闭 / high=高 / ultra=超高。
+  /// 仅当生效模型为 DeepSeek 系时使用；其他模型只有"是否思考"（chatThinking）。
+  String chatThinkLevel = 'high';
+
+  /// 设置 DeepSeek 思考强度；同时同步 chatThinking，保证设置页等处口径一致
+  void setChatThinkLevel(String level) {
+    chatThinkLevel = level;
+    Storage.saveChatThinkLevel(level);
+    final thinking = level != 'off';
+    if (chatThinking != thinking) {
+      chatThinking = thinking;
+      Storage.saveChatThinking(thinking);
+    }
+    notifyListeners();
+  }
+
+  /// 对话助手请求的思考参数（真实生效入口）：
+  /// DeepSeek 系按强度档位（关闭/高/超高），其他模型按"是否思考"开关。
+  Map<String, dynamic> chatThinkExtraParams({String? model, bool forceOff = false}) {
+    final m = model ?? effectiveChatConfig.model;
+    if (ApiService.isDeepSeekModel(m)) {
+      return ApiService.deepseekThinkParams(m, forceOff ? 'off' : chatThinkLevel);
+    }
+    return (chatThinking && !forceOff)
+        ? ApiService.thinkingParams(m)
+        : ApiService.noThinkingParams(m);
   }
 
   /// 设置专家角色（空串 = 默认）

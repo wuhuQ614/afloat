@@ -2612,15 +2612,15 @@ class QuestionListPanel extends StatelessWidget {
 }
 
 class _DictationPageState extends State<DictationPage> {
-  // ===== 默写页简单中性配色（灰色，参考 preview(1)，非紫色） =====
-  Color get _accent => const Color(0xFF6B7280); // 主色（中性灰）
-  Color get _accentDark => const Color(0xFF4B5563); // 主色加深
-  Color get _accentText => const Color(0xFF4B5563); // 图标/文字色
-  Color get _accentSoft => const Color(0x146B7280); // 浅灰底
+  // ===== 默写页配色（R27: 白色玻璃系——选中态白底浮起+深色文字，主按钮白底深字） =====
+  Color get _accent => Colors.white; // 选中填充（白色玻璃）
+  Color get _accentDark => const Color(0xFFD9E0EA); // 白色加深（选中描边）
+  Color get _accentText => const Color(0xFF232A35); // 白底上的文字/图标（深色）
+  Color get _accentSoft => Colors.white.withValues(alpha: 0.72); // 选中卡片底
   LinearGradient get _accentGradient => LinearGradient(
         begin: Alignment.topLeft,
         end: Alignment.bottomRight,
-        colors: [_accent, _accentDark],
+        colors: [Colors.white, const Color(0xFFEFF3F8)],
       );
 
   String _mode = 'zh2en';
@@ -2766,9 +2766,10 @@ class _DictationPageState extends State<DictationPage> {
           decoration: BoxDecoration(
             gradient: _accentGradient,
             borderRadius: BorderRadius.circular(14),
-            boxShadow: [BoxShadow(color: _accent.withValues(alpha: 0.3), blurRadius: 14, offset: const Offset(0, 4))],
+            border: Border.all(color: _accentDark),
+            boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.10), blurRadius: 14, offset: const Offset(0, 4))],
           ),
-          child: const Icon(Icons.edit_note_rounded, color: Colors.white, size: 26),
+          child: Icon(Icons.edit_note_rounded, color: _accentText, size: 26),
         ),
         const SizedBox(width: 14),
         Expanded(
@@ -2818,17 +2819,17 @@ class _DictationPageState extends State<DictationPage> {
                   color: _mode == m.v ? null : Colors.transparent,
                   borderRadius: BorderRadius.circular(10),
                   boxShadow: _mode == m.v
-                      ? [BoxShadow(color: _accent.withValues(alpha: 0.3), blurRadius: 10, offset: const Offset(0, 3))]
+                      ? [BoxShadow(color: Colors.black.withValues(alpha: 0.10), blurRadius: 10, offset: const Offset(0, 3))]
                       : null,
                 ),
                 child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
                   Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-                    Icon(m.icon, size: 16, color: _mode == m.v ? Colors.white : c.textSecondary),
+                    Icon(m.icon, size: 16, color: _mode == m.v ? _accentText : c.textSecondary),
                     const SizedBox(width: 6),
-                    Text(m.label, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: _mode == m.v ? Colors.white : c.textSecondary)),
+                    Text(m.label, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: _mode == m.v ? _accentText : c.textSecondary)),
                   ]),
                   const SizedBox(height: 3),
-                  Text(m.sub, style: TextStyle(fontSize: 10, color: _mode == m.v ? Colors.white.withValues(alpha: 0.85) : c.textTertiary)),
+                  Text(m.sub, style: TextStyle(fontSize: 10, color: _mode == m.v ? _accentText.withValues(alpha: 0.7) : c.textTertiary)),
                 ]),
               ),
             ),
@@ -2850,10 +2851,10 @@ class _DictationPageState extends State<DictationPage> {
           gradient: sel ? _accentGradient : null,
           color: sel ? null : c.chipUnselected,
           borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: sel ? Colors.transparent : c.chipBorder),
-          boxShadow: sel ? [BoxShadow(color: _accent.withValues(alpha: 0.28), blurRadius: 10, offset: const Offset(0, 3))] : null,
+          border: Border.all(color: sel ? _accentDark : c.chipBorder),
+          boxShadow: sel ? [BoxShadow(color: Colors.black.withValues(alpha: 0.10), blurRadius: 10, offset: const Offset(0, 3))] : null,
         ),
-        child: Text('$n 题', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: sel ? Colors.white : c.textSecondary)),
+        child: Text('$n 题', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: sel ? _accentText : c.textSecondary)),
       ),
     );
   }
@@ -2879,6 +2880,7 @@ class _DictationPageState extends State<DictationPage> {
               gradient: _autoAdvance ? _accentGradient : null,
               color: _autoAdvance ? null : c.chipUnselected,
               borderRadius: BorderRadius.circular(13),
+              border: Border.all(color: _autoAdvance ? _accentDark : c.chipBorder),
             ),
             alignment: _autoAdvance ? Alignment.centerRight : Alignment.centerLeft,
             child: AnimatedContainer(
@@ -2903,13 +2905,14 @@ class _DictationPageState extends State<DictationPage> {
     );
   }
 
-  // ===== 开始按钮 =====
+  // ===== 开始按钮（R27: 白底深字 + 描边阴影） =====
   Widget _startButton(AppColors c, AppState s) {
     return DecoratedBox(
       decoration: BoxDecoration(
         gradient: _accentGradient,
         borderRadius: BorderRadius.circular(14),
-        boxShadow: [BoxShadow(color: _accent.withValues(alpha: 0.35), blurRadius: 18, offset: const Offset(0, 6))],
+        border: Border.all(color: _accentDark),
+        boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.12), blurRadius: 18, offset: const Offset(0, 6))],
       ),
       child: Material(
         color: Colors.transparent,
@@ -2925,9 +2928,9 @@ class _DictationPageState extends State<DictationPage> {
             height: 50,
             alignment: Alignment.center,
             child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-              const Icon(Icons.bolt_rounded, color: Colors.white, size: 20),
+              Icon(Icons.bolt_rounded, color: _accentText, size: 20),
               const SizedBox(width: 8),
-              const Text('开始默写', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: Colors.white)),
+              Text('开始默写', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: _accentText)),
             ]),
           ),
         ),
@@ -2961,16 +2964,16 @@ class _DictationPageState extends State<DictationPage> {
           borderRadius: BorderRadius.circular(15),
           border: Border.all(
             color: selected
-                ? _accent
+                ? _accentDark
                 : (isGlass ? (c.isLight ? Colors.white.withValues(alpha: 0.7) : c.border) : c.border),
             width: selected ? 1.4 : 1,
           ),
           boxShadow: selected
-              ? [BoxShadow(color: _accent.withValues(alpha: 0.16), blurRadius: 14, offset: const Offset(0, 4))]
+              ? [BoxShadow(color: Colors.black.withValues(alpha: 0.10), blurRadius: 14, offset: const Offset(0, 4))]
               : [BoxShadow(color: Colors.black.withValues(alpha: 0.04), blurRadius: 12, offset: const Offset(0, 4))],
         ),
         child: Row(children: [
-          // 场景色渐变图标底
+          // 场景图标底（选中=白底深图标）
           Container(
             width: 45, height: 45,
             decoration: BoxDecoration(
@@ -2981,7 +2984,7 @@ class _DictationPageState extends State<DictationPage> {
               ),
               borderRadius: BorderRadius.circular(12),
             ),
-            child: Icon(src.icon, size: 21, color: selected ? Colors.white : _accentText),
+            child: Icon(src.icon, size: 21, color: selected ? _accentText : _accentText),
           ),
           const SizedBox(width: 13),
           Expanded(
@@ -2996,7 +2999,7 @@ class _DictationPageState extends State<DictationPage> {
                     color: selected ? null : _accentSoft,
                     borderRadius: BorderRadius.circular(7),
                   ),
-                  child: Text('${src.count} 词', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: selected ? Colors.white : _accentText)),
+                  child: Text('${src.count} 词', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: selected ? _accentText : _accentText)),
                 ),
               ]),
               const SizedBox(height: 4),

@@ -3,7 +3,6 @@ library;
 
 import 'dart:async';
 import 'dart:math';
-import 'dart:ui' show ImageFilter;
 import 'package:flutter/material.dart';
 import '../models.dart';
 import '../services/dict_service.dart';
@@ -1516,7 +1515,8 @@ class _LearnPageState extends State<LearnPage> {
       ]),
     );
     return SingleChildScrollView(
-      padding: EdgeInsets.all(isMobile ? 14 : 24),
+      // R26: 顶部/底部留足呼吸空间——此前内容贴着玻璃面板上下边缘，观感像被裁切
+      padding: EdgeInsets.fromLTRB(isMobile ? 14 : 24, isMobile ? 18 : 30, isMobile ? 14 : 24, isMobile ? 40 : 56),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         // 01. 题型选择
         _buildSectionHeader('01. 题型选择'),
@@ -1721,11 +1721,12 @@ class _LearnPageState extends State<LearnPage> {
   Widget _buildCard({required Widget child}) {
     final c = AppColors.of(context);
     final isGlass = AppScope.of(context).isGlassUI;
-    final fillColor = (c.isLight ? Colors.white : const Color(0xFF2A2A32)).withValues(alpha: c.isLight ? 0.78 : 0.72);
     final card = Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
-        color: isGlass ? fillColor : (c.isLight ? Colors.white : const Color(0xFF2A2A32)),
+        // 玻璃模式用对角渐变染色（左上浓→右下淡）替代平面纯色，产生玻璃厚度感
+        color: isGlass ? null : (c.isLight ? Colors.white : const Color(0xFF2A2A32)),
+        gradient: isGlass ? glassTintGradient(Colors.white, 0.78) : null,
         borderRadius: BorderRadius.circular(20),
         border: Border.all(
           color: c.isLight ? Colors.white.withValues(alpha: 0.7) : Colors.white.withValues(alpha: 0.12),
@@ -1748,7 +1749,7 @@ class _LearnPageState extends State<LearnPage> {
       child: child,
     );
     return isGlass
-        ? ClipRRect(borderRadius: BorderRadius.circular(20), child: BackdropFilter(filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20), child: card))
+        ? ClipRRect(borderRadius: BorderRadius.circular(20), child: BackdropFilter(filter: glassBlurFilter(sigma: 20), child: card))
         : card;
   }
 
@@ -2057,7 +2058,7 @@ class _PureGlassGenerateButton extends StatelessWidget {
     return ClipRRect(
       borderRadius: radius,
       child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+        filter: glassBlurFilter(sigma: 18),
         child: Material(
           color: Colors.transparent, // 纯玻璃：无底色
           shape: RoundedRectangleBorder(
@@ -2196,7 +2197,7 @@ class _TypeCardV2State extends State<_TypeCardV2> {
         ? ClipRRect(
             borderRadius: cardRadius,
             child: BackdropFilter(
-              filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
+              filter: glassBlurFilter(sigma: 16),
               child: cardBody,
             ),
           )

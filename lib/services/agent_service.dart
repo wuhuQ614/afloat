@@ -185,6 +185,36 @@ class AgentService {
         {
           'type': 'function',
           'function': {
+            'name': 'route_words',
+            'description': '词库路由：从词库按词性随机路由一批词汇供教学使用。当用户要"给我一些动词/形容词来教学"、'
+                '"随机抽 1/3 的名词"、"按词性出词"、墨墨背单词联动学习或专升本专项学习时调用。'
+                '系统会先统计该词性的词汇总量，再按 fraction 比例随机抽取交付（含词性与释义）。',
+            'parameters': {
+              'type': 'object',
+              'properties': {
+                'source': {
+                  'type': 'string',
+                  'enum': ['maimemo', 'zsb'],
+                  'description': '词库来源：maimemo=墨墨词库（已同步的墨墨词表，未同步时回退通用词库）, zsb=专升本词库（约2900词）。默认 zsb',
+                },
+                'pos': {
+                  'type': 'string',
+                  'enum': ['n', 'v', 'adj', 'adv', 'pron', 'prep', 'conj', 'art', 'num', 'int', 'all'],
+                  'description': '词性：n=名词, v=动词, adj=形容词, adv=副词, pron=代词, prep=介词, conj=连词, art=冠词, num=数词, int=感叹词, all=不限词性。默认 all',
+                },
+                'fraction': {
+                  'type': 'string',
+                  'enum': ['all', '1/3', '1/4', '1/5', '1/7', '1/9'],
+                  'description': '稀疏路由比例：从该词性词汇总量中随机路由的比例。all=全部（大词库慎用），可选 1/3、1/4、1/5、1/7、1/9。默认 all',
+                },
+              },
+              'required': ['source'],
+            },
+          },
+        },
+        {
+          'type': 'function',
+          'function': {
             'name': 'analyze_words',
             'description': '对指定英文文本进行词汇剖析（标注每个单词的释义）。当用户要求剖析、分析单词、标注释义时调用。',
             'parameters': {
@@ -305,6 +335,28 @@ class AgentService {
             'name': 'sync_maimemo',
             'description': '同步墨墨背单词词库（拉取今日已学习单词）。当用户要求"同步墨墨"、"更新词库"时调用。',
             'parameters': {'type': 'object', 'properties': {}, 'required': []},
+          },
+        },
+        {
+          'type': 'function',
+          'function': {
+            'name': 'export_maimemo_words',
+            'description': '将墨墨词库的全部单词一键导出到本地下载目录或用户指定位置，支持 PDF、Excel、JSON 三种格式。当用户要求"导出墨墨词库"、"下载墨墨单词"、"导出单词表"时调用。',
+            'parameters': {
+              'type': 'object',
+              'properties': {
+                'format': {
+                  'type': 'string',
+                  'enum': ['pdf', 'excel', 'json'],
+                  'description': '导出格式：pdf=PDF 文档，excel=Excel 表格(.xlsx)，json=JSON 数据文件。若用户未说明格式，请留空，系统会弹出选择框让用户选择。',
+                },
+                'path': {
+                  'type': 'string',
+                  'description': '导出文件路径或目标目录（绝对路径）。未指定时默认保存到系统下载目录。',
+                },
+              },
+              'required': [],
+            },
           },
         },
         {

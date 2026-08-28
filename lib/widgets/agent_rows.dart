@@ -244,7 +244,9 @@ class AgentThinkRow extends StatefulWidget {
   final String text;
   final bool running;
   final bool light;
-  const AgentThinkRow({super.key, required this.text, required this.running, required this.light});
+  /// 已结束思考的持续秒数（null = 运行中或未知）；完成后摘要显示「持续了 N 秒」
+  final int? seconds;
+  const AgentThinkRow({super.key, required this.text, required this.running, required this.light, this.seconds});
   @override
   State<AgentThinkRow> createState() => _AgentThinkRowState();
 }
@@ -294,7 +296,11 @@ class _AgentThinkRowState extends State<AgentThinkRow> with SingleTickerProvider
   @override
   Widget build(BuildContext context) {
     final d = _Ds(widget.light);
-    final summary = widget.running ? _latestLine() : _firstLine();
+    // 运行中摘要跟随最新一行；完成后显示「持续了 N 秒」（仿工作流时间线），
+    // 无时长信息的旧数据回退显示第一行
+    final summary = widget.running
+        ? _latestLine()
+        : (widget.seconds != null ? '持续了 ${widget.seconds} 秒' : _firstLine());
     final header = Row(children: [
       Text('思考', style: TextStyle(fontSize: 14, height: 24 / 14, color: d.secondary)),
       _sepDot(d),
@@ -340,6 +346,7 @@ IconData _toolIcon(String name) => switch (name) {
       'submit_generated_questions' => Icons.playlist_add_check_rounded,
       'generate_full_exam' => Icons.description_rounded,
       'lookup_word' => Icons.search_rounded,
+      'route_words' => Icons.shuffle_rounded,
       'analyze_words' => Icons.spellcheck_rounded,
       'get_current_question' => Icons.visibility_rounded,
       'next_question' => Icons.skip_next_rounded,
@@ -411,6 +418,11 @@ class AgentToolRow extends StatefulWidget {
   final bool failed;
   final String? input;
   final String? output;
+  /// 文件写入/编辑工具的目标路径；非空时按「编辑 文件名 目录 +N -N」样式渲染
+  final String? filePath;
+  /// 新增/删除行数（配合 filePath 展示）
+  final int? addedLines;
+  final int? removedLines;
   final bool light;
   const AgentToolRow({
     super.key,
@@ -421,6 +433,9 @@ class AgentToolRow extends StatefulWidget {
     required this.failed,
     this.input,
     this.output,
+    this.filePath,
+    this.addedLines,
+    this.removedLines,
     required this.light,
   });
   @override
@@ -581,33 +596,15 @@ class _AgentToolRowState extends State<AgentToolRow> with SingleTickerProviderSt
   @override
   Widget build(BuildContext context) {
     final d = _Ds(widget.light);
-    final header = Row(children: [
-      SizedBox(
-        width: 16,
-        height: 16,
-        child: widget.failed
-            ? Center(child: AgentStateDot(state: 'error', light: widget.light))
-            : Icon(_toolIcon(widget.name), size: 14, color: d.secondary),
-      ),
-      const SizedBox(width: 6),
-      Text(
-        widget.name.isEmpty ? '工具' : widget.name.replaceAll('_', ' '),
-        style: TextStyle(fontSize: 14, height: 24 / 14, color: d.secondary),
-      ),
-      _sepDot(d),
-      Expanded(
-        child: Text(
-          widget.label,
-          style: TextStyle(fontSize: 14, height: 24 / 14, color: widget.failed ? d.error : d.tertiary),
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-        ),
-      ),
-      if (_expandable) ...[
-        const SizedBox(width: 4),
-        _chevron(_open, d),
-      ],
-    ]);
+    final isEdit = (widget.filePath ?? '').trim().isNotEmpty;
+    final leading = SizedBox(
+      width: 16,
+      height: 16,
+      child: widget.failed
+          ? Center(child: AgentStateDot(state: 'error', light: widget.light))
+          : Icon(isEdit ? Icons.edit_outlined : _toolIcon(widget.name), size: 14, color: d.secondary),
+    );
+    final header = isEdit ? _editHeader(d, leading) : _toolHeader(d, leading);
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: _expandable ? () => setState(() => _open = !_open) : null,
@@ -636,6 +633,76 @@ class _AgentToolRowState extends State<AgentToolRow> with SingleTickerProviderSt
         ],
       ),
     );
+  }
+
+  /// 通用工具行头：[工具图标] 工具名 · 摘要 [chevron]
+  Widget _toolHeader(_Ds d, Widget leading) {
+    return Row(children: [
+      leading,
+      const SizedBox(width: 6),
+      Text(
+        widget.name.isEmpty ? '工具' : widget.name.replaceAll('_', ' '),
+        style: TextStyle(fontSize: 14, height: 24 / 14, color: d.secondary),
+      ),
+      _sepDot(d),
+      Expanded(
+        child: Text(
+          widget.label,
+          style: TextStyle(fontSize: 14, height: 24 / 14, color: widget.failed ? d.error : d.tertiary),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+      ),
+      if (_expandable) ...[
+        const SizedBox(width: 4),
+        _chevron(_open, d),
+      ],
+    ]);
+  }
+
+  /// 编辑行头（仿工作流时间线）：✏️ 编辑 · 📄 main.dart smartenglish-desktop/lib/ +40 -1
+  Widget _editHeader(_Ds d, Widget leading) {
+    final p = widget.filePath!.replaceAll('\\', '/');
+    final segs = p.split('/').where((s) => s.isNotEmpty).toList();
+    final fileName = segs.isEmpty ? p : segs.last;
+    // 目录取文件名之前的部分；绝对路径太长时尽量从工作区段名开始显示
+    var dirSegs = segs.length > 1 ? segs.sublist(0, segs.length - 1) : <String>[];
+    final wsIdx = dirSegs.indexOf('smartenglish-desktop');
+    if (wsIdx > 0) dirSegs = dirSegs.sublist(wsIdx);
+    final dir = dirSegs.isEmpty ? '' : '${dirSegs.join('/')}/';
+    return Row(children: [
+      leading,
+      const SizedBox(width: 6),
+      Text('编辑', style: TextStyle(fontSize: 14, height: 24 / 14, color: d.secondary)),
+      _sepDot(d),
+      Icon(Icons.insert_drive_file_outlined, size: 14, color: d.secondary),
+      const SizedBox(width: 5),
+      Text(
+        fileName,
+        style: TextStyle(fontSize: 14, height: 24 / 14, color: d.primary, fontWeight: FontWeight.w600),
+      ),
+      if (dir.isNotEmpty) ...[
+        const SizedBox(width: 5),
+        Flexible(
+          child: Text(
+            dir,
+            style: TextStyle(fontSize: 13, height: 24 / 13, color: d.tertiary),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+      ],
+      if ((widget.addedLines ?? 0) > 0) ...[
+        const SizedBox(width: 7),
+        Text('+${widget.addedLines}', style: _mono(d, color: d.success)),
+      ],
+      if ((widget.removedLines ?? 0) > 0) ...[
+        const SizedBox(width: 5),
+        Text('-${widget.removedLines}', style: _mono(d, color: d.error)),
+      ],
+      const SizedBox(width: 6),
+      if (_expandable) _chevron(_open, d),
+    ]);
   }
 }
 
@@ -1136,9 +1203,10 @@ class AgentTodoList extends StatelessWidget {
   }
 }
 
-/// 终端命令执行块：[状态点] "~ ❯ 命令" 提示符行 + 输出区。
+/// 终端命令执行块：默认折叠为「[状态点] 终端 · 命令…」单行（工作流时间线样式），
+/// 点击展开为完整终端卡（"~ ❯ 命令" 提示符行 + 输出区），再次点击收起。
 /// 运行中：蓝色像素追逐点 + "运行中"；失败：红点 + "退出码 N"；成功：绿点。
-class AgentTerminalBlock extends StatelessWidget {
+class AgentTerminalBlock extends StatefulWidget {
   final String command;
   final bool running;
   final bool failed;
@@ -1154,12 +1222,91 @@ class AgentTerminalBlock extends StatelessWidget {
     this.output,
     required this.light,
   });
+  @override
+  State<AgentTerminalBlock> createState() => _AgentTerminalBlockState();
+}
+
+class _AgentTerminalBlockState extends State<AgentTerminalBlock>
+    with SingleTickerProviderStateMixin {
+  bool _open = false;
+  late final AnimationController _c;
+  @override
+  void initState() {
+    super.initState();
+    _c = AnimationController(vsync: this, duration: const Duration(milliseconds: 2600));
+    _sync();
+  }
+
+  @override
+  void didUpdateWidget(covariant AgentTerminalBlock old) {
+    super.didUpdateWidget(old);
+    _sync();
+  }
+
+  void _sync() {
+    if (widget.running) {
+      if (!_c.isAnimating) _c.repeat();
+    } else {
+      _c.stop();
+      _c.value = 1.0;
+    }
+  }
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
-    final d = _Ds(light);
-    final dotState = running ? 'ongoing' : (failed ? 'error' : 'done');
-    final hasOut = output != null && output!.trim().isNotEmpty;
+    final d = _Ds(widget.light);
+    final dotState = widget.running ? 'ongoing' : (widget.failed ? 'error' : 'done');
+    final hasOut = widget.output != null && widget.output!.trim().isNotEmpty;
+
+    // 折叠态：单行「终端 · 命令」+ 状态文案（与思考行/工具行同构）
+    if (!_open) {
+      final header = Row(children: [
+        SizedBox(
+          width: 16,
+          height: 16,
+          child: Center(child: AgentStateDot(state: dotState, light: widget.light)),
+        ),
+        const SizedBox(width: 6),
+        Text('终端', style: TextStyle(fontSize: 14, height: 24 / 14, color: d.secondary)),
+        _sepDot(d),
+        Expanded(
+          child: Text(
+            widget.command,
+            style: _mono(d, color: d.tertiary),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+        if (widget.running) ...[
+          const SizedBox(width: 8),
+          Text('运行中', style: TextStyle(fontSize: 11, color: d.caption)),
+        ] else if (widget.failed) ...[
+          const SizedBox(width: 8),
+          Text(
+            widget.exitCode != null ? '退出码 ${widget.exitCode}' : '执行失败',
+            style: TextStyle(fontSize: 11, color: d.error),
+          ),
+        ],
+        const SizedBox(width: 4),
+        _chevron(_open, d),
+      ]);
+      return GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () => setState(() => _open = true),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 2),
+          child: _rowShell(child: header, running: widget.running, ctrl: _c, d: d),
+        ),
+      );
+    }
+
+    // 展开态：完整终端卡（点击提示符行收起）
     return Container(
       margin: const EdgeInsets.only(top: 2, bottom: 4),
       decoration: BoxDecoration(
@@ -1170,33 +1317,40 @@ class AgentTerminalBlock extends StatelessWidget {
       clipBehavior: Clip.antiAlias,
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         // 提示符行：状态点 + "~ ❯ 命令"（等宽、不换行可横向滚动）+ 状态文案
-        Padding(
-          padding: const EdgeInsets.fromLTRB(12, 9, 14, 9),
-          child: Row(children: [
-            AgentStateDot(state: dotState, light: light),
-            const SizedBox(width: 8),
-            Expanded(
-              child: SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: Text.rich(TextSpan(children: [
-                  TextSpan(text: '~ ❯ ', style: _mono(d, color: d.tertiary)),
-                  TextSpan(text: command, style: _mono(d, color: d.primary)),
-                ])),
-              ),
-            ),
-            if (running) ...[
+        GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: () => setState(() => _open = false),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 9, 14, 9),
+            child: Row(children: [
+              AgentStateDot(state: dotState, light: widget.light),
               const SizedBox(width: 8),
-              Text('运行中', style: TextStyle(fontSize: 11, color: d.caption)),
-            ] else if (failed) ...[
-              const SizedBox(width: 8),
-              Text(
-                exitCode != null ? '退出码 $exitCode' : '执行失败',
-                style: TextStyle(fontSize: 11, color: d.error),
+              Expanded(
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Text.rich(TextSpan(children: [
+                    TextSpan(text: '~ ❯ ', style: _mono(d, color: d.tertiary)),
+                    TextSpan(text: widget.command, style: _mono(d, color: d.primary)),
+                  ])),
+                ),
               ),
-            ],
-          ]),
+              if (widget.running) ...[
+                const SizedBox(width: 8),
+                Text('运行中', style: TextStyle(fontSize: 11, color: d.caption)),
+              ] else if (widget.failed) ...[
+                const SizedBox(width: 8),
+                Text(
+                  widget.exitCode != null ? '退出码 ${widget.exitCode}' : '执行失败',
+                  style: TextStyle(fontSize: 11, color: d.error),
+                ),
+              ] else ...[
+                const SizedBox(width: 8),
+                _chevron(_open, d),
+              ],
+            ]),
+          ),
         ),
-        if (hasOut && !running) Divider(height: 1, thickness: 1, color: d.borderL2),
+        if (hasOut && !widget.running) Divider(height: 1, thickness: 1, color: d.borderL2),
         if (hasOut)
           ConstrainedBox(
             constraints: const BoxConstraints(maxHeight: 224),
@@ -1205,7 +1359,7 @@ class AgentTerminalBlock extends StatelessWidget {
                 scrollDirection: Axis.horizontal,
                 child: Padding(
                   padding: const EdgeInsets.fromLTRB(30, 12, 14, 12),
-                  child: Text(output!, style: _mono(d, color: d.secondary)),
+                  child: Text(widget.output!, style: _mono(d, color: d.secondary)),
                 ),
               ),
             ),

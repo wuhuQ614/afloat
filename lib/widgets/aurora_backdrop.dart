@@ -260,22 +260,22 @@ class _AuroraPainter extends CustomPainter {
     canvas.drawPicture(pic);
 
     for (final b in _gblobs) {
-      // 中心缓慢游走（双轴错频利萨茹轨迹）+ 整体胀缩
+      // 中心缓慢游走（双轴错频利萨茹轨迹）+ 整体轻微胀缩（R25: 收敛幅度，更克制）
       final cx = (b.c.dx + b.dx * math.sin(t * b.speed + b.phase)) * w;
       final cy = (b.c.dy + b.dy * math.cos(t * b.speed * 0.83 + b.phase * 1.4)) * h;
-      final radius = b.r * h * (1 + 0.06 * math.sin(t * 0.22 + b.phase * 2));
+      final radius = b.r * h * (1 + 0.035 * math.sin(t * 0.22 + b.phase * 2));
       final center = Offset(cx, cy);
       final path = _blobPath(cx, cy, radius, t, b.phase);
       final gradRect = Rect.fromCircle(center: center, radius: radius * 1.35);
 
-      // 2) 折射层：clip 进液滴后重放底层图案（放大 1.08 + 向右下偏移），
-      //    液滴内部的图案与外部错位 → 一眼可辨的玻璃折射；再叠白色柔光模拟玻璃厚度
+      // 2) 折射层：clip 进液滴后重放底层图案（轻微放大 + 错位），
+      //    液滴内部的图案与外部错位 → 可辨但不夸张的玻璃折射；再叠白色柔光模拟玻璃厚度
       canvas.save();
       canvas.clipPath(path);
       canvas.transform(
         (Matrix4.identity()
-              ..translate(radius * 0.22, radius * 0.18)
-              ..scale(1.08))
+              ..translate(radius * 0.14, radius * 0.10)
+              ..scale(1.05))
             .storage,
       );
       canvas.drawPicture(pic);
@@ -284,7 +284,7 @@ class _AuroraPainter extends CustomPainter {
         Paint()
           ..shader = RadialGradient(
             colors: [
-              const Color(0xFFDFF2FF).withValues(alpha: 0.50),
+              const Color(0xFFDFF2FF).withValues(alpha: 0.34),
               const Color(0x00FFFFFF),
             ],
             stops: const [0, 1],
@@ -292,35 +292,35 @@ class _AuroraPainter extends CustomPainter {
       );
       canvas.restore();
 
-      // 3) 玻璃轮廓：外缘白色亮描边（微模糊）+ 内侧淡蓝细边，勾勒出厚玻璃的折线
+      // 3) 玻璃轮廓：外缘白色细描边（微模糊）+ 内侧淡蓝细边，勾勒厚玻璃的折线
       canvas.drawPath(
         path,
         Paint()
           ..style = PaintingStyle.stroke
-          ..strokeWidth = 2.0
-          ..color = Colors.white.withValues(alpha: 0.85)
-          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2.5),
+          ..strokeWidth = 1.5
+          ..color = Colors.white.withValues(alpha: 0.55)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2.0),
       );
       canvas.drawPath(
         path,
         Paint()
           ..style = PaintingStyle.stroke
-          ..strokeWidth = 1.0
-          ..color = const Color(0xFF9CCBF2).withValues(alpha: 0.35),
+          ..strokeWidth = 0.8
+          ..color = const Color(0xFF9CCBF2).withValues(alpha: 0.20),
       );
-      // 高光点：左上方强白柔光（玻璃反光的点睛笔）
-      final hl = center + Offset(-radius * 0.34, -radius * 0.40);
+      // 高光点：左上方柔光（玻璃反光的点睛笔，收敛到细腻小光斑）
+      final hl = center + Offset(-radius * 0.30, -radius * 0.36);
       canvas.drawCircle(
         hl,
-        radius * 0.32,
+        radius * 0.20,
         Paint()
           ..shader = RadialGradient(
             colors: [
-              Colors.white.withValues(alpha: 0.85),
+              Colors.white.withValues(alpha: 0.55),
               Colors.white.withValues(alpha: 0),
             ],
-          ).createShader(Rect.fromCircle(center: hl, radius: radius * 0.32))
-          ..maskFilter = MaskFilter.blur(BlurStyle.normal, radius * 0.06),
+          ).createShader(Rect.fromCircle(center: hl, radius: radius * 0.20))
+          ..maskFilter = MaskFilter.blur(BlurStyle.normal, radius * 0.05),
       );
     }
   }
@@ -356,7 +356,7 @@ class _AuroraPainter extends CustomPainter {
     }
   }
 
-  /// 液态形变轮廓：半径受 2 组正弦谐波调制的闭合曲线
+  /// 液态形变轮廓：半径受 2 组正弦谐波调制的闭合曲线（R25: 幅度收敛，轮廓更稳定圆润）
   Path _blobPath(double cx, double cy, double radius, double t, double phase) {
     final path = Path();
     const n = 48;
@@ -364,8 +364,8 @@ class _AuroraPainter extends CustomPainter {
       final th = 2 * math.pi * k / n;
       final rr = radius *
           (1 +
-              0.09 * math.sin(3 * th + t * 0.45 + phase) +
-              0.05 * math.sin(5 * th - t * 0.30 + phase * 2));
+              0.055 * math.sin(3 * th + t * 0.45 + phase) +
+              0.030 * math.sin(5 * th - t * 0.30 + phase * 2));
       final p = Offset(cx + rr * math.cos(th), cy + rr * math.sin(th));
       if (k == 0) {
         path.moveTo(p.dx, p.dy);

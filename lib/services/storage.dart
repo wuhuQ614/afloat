@@ -97,6 +97,10 @@ class Storage {
   static String loadChatSessionMessages() => _get('chatSessionMessages', '');
   static void saveChatSessionMessages(String json) => _set('chatSessionMessages', json);
 
+  /// 个性化记忆库（JSON 数组，每项 {id,type,content,source,createdAt}）
+  static String loadAgentMemory() => _get('agentMemory', '[]');
+  static void saveAgentMemory(String v) => _set('agentMemory', v);
+
   /// MCP server 配置 JSON（数组，每项 {name, command, args, env}）
   static String loadMcpConfigJson() => _get('mcpConfigJson', '[]');
   static void saveMcpConfigJson(String v) => _set('mcpConfigJson', v);
@@ -156,6 +160,14 @@ class Storage {
 
   static bool loadChatThinking() => _getBool('chatThinking', true);
   static void saveChatThinking(bool v) => _setBool('chatThinking', v);
+
+  /// DeepSeek 思考强度档位：off=关闭 / high=高 / ultra=超高（仅 DeepSeek 模型使用）
+  static String loadChatThinkLevel() => _get('chatThinkLevel', '');
+  static void saveChatThinkLevel(String v) => _set('chatThinkLevel', v);
+
+  /// R27: 纯净对话（专注全屏）模式持久化——退出应用时若停留在该模式，重启后仍进入
+  static bool loadAgentFullscreen() => _getBool('agentFullscreen', false);
+  static void saveAgentFullscreen(bool v) => _setBool('agentFullscreen', v);
 
   /// 对话助手权限范围：false=默认权限（沙箱内），true=允许完全访问
   static bool loadChatFullAccess() => _getBool('chatFullAccess', false);

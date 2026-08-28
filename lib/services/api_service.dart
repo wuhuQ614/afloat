@@ -897,6 +897,28 @@ class ApiService {
     return p;
   }
 
+  /// 是否为 DeepSeek 系模型（唯一支持"思考强度"档位的模型家族）
+  static bool isDeepSeekModel(String modelName) =>
+      _realModel(modelName).toLowerCase().contains('deepseek');
+
+  /// DeepSeek 思考强度请求参数：off=关闭 / high=高 / ultra=超高。
+  /// 关闭 = thinking disabled；高 = thinking enabled（默认思考预算）；
+  /// 超高 = thinking enabled + 更高思考预算（budget_tokens 32768）。
+  /// 仅 DeepSeek 系模型使用；其他模型走 thinkingParams / noThinkingParams。
+  static Map<String, dynamic> deepseekThinkParams(String modelName, String level) {
+    final p = <String, dynamic>{};
+    if (level == 'off') {
+      p['thinking'] = {'type': 'disabled'};
+      return p;
+    }
+    final thinking = <String, dynamic>{'type': 'enabled'};
+    if (level == 'ultra') {
+      thinking['budget_tokens'] = 32768;
+    }
+    p['thinking'] = thinking;
+    return p;
+  }
+
   /// 调用百度千帆 AI 搜索组件（联网搜索），返回 {answer, references}。
   /// 失败时抛异常。url 默认即千帆搜索端点；key 为 AppBuilder API Key。
   static Future<Map<String, dynamic>> searchWeb({

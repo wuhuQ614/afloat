@@ -53,3 +53,4 @@ data/
 # Build artifacts (Android / 安装包)
 *.apk
 *.aab
+.workbuddy/

@@ -24,6 +24,15 @@ class DictService {
 
   static bool get zsbReady => _zsb.isLoaded;
 
+  /// 通用词库是否已加载
+  static bool get dictReady => _dict.isLoaded;
+
+  /// 通用词库全部词条（词 → 释义，含词性）——按词性路由用
+  static List<MapEntry<String, DictEntry>> dictEntries() => _dict.entries();
+
+  /// 专升本词库全部词条（词 → 释义，含词性）——按词性路由用
+  static List<MapEntry<String, DictEntry>> zsbEntries() => _zsb.entries();
+
   /// 查询英文单词（通用词库优先，回退专升本词库，再回退内建高频词库）
   static DictEntry? lookup(String word) {
     final w = word.toLowerCase();

@@ -17,6 +17,7 @@ class BinaryDict {
   List<_Idx>? _idx;
   int _dataBase = 0;
   List<String>? _wordsCache;
+  List<MapEntry<String, DictEntry>>? _entriesCache;
   bool _loaded = false;
 
   /// 从 Flutter asset 加载二进制词典
@@ -81,6 +82,19 @@ class BinaryDict {
     if (_wordsCache != null) return _wordsCache!;
     _wordsCache = _idx?.map((e) => e.word).toList() ?? [];
     return _wordsCache!;
+  }
+
+  /// 所有词条（首次调用时缓存）：词 → 释义条目（含词性），供按词性路由等全量扫描场景
+  List<MapEntry<String, DictEntry>> entries() {
+    final c = _entriesCache;
+    if (c != null) return c;
+    final idx = _idx;
+    if (idx == null || idx.isEmpty) {
+      _entriesCache = const [];
+      return _entriesCache!;
+    }
+    _entriesCache = [for (final e in idx) MapEntry(e.word, _decode(e))];
+    return _entriesCache!;
   }
 
   /// 前缀搜索：返回所有以 [prefix] 开头的单词及其释义，最多 [limit] 条
