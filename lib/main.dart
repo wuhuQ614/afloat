@@ -1968,7 +1968,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
         ),
       );
     }
-    // AI 气泡上方的模型头像 + 名称（参考图风格）。Auto 模式下每条 AI 消息会用其所选 profile 的模型名。
+    // AI 消息头（参考 WorkBuddy/ChatGPT）：头像(28px) + 模型名一行，位于内容上方
     String? aiModelName;
     if (!isUser) {
       aiModelName = (msg.modelLabel != null && msg.modelLabel!.isNotEmpty)
@@ -1976,15 +1976,19 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
           : _state.effectiveChatConfig.model;
     }
     final aiIconAsset = aiModelName == null ? null : _getAiIconAsset(aiModelName);
+    // R34: 主流 AI 对话样式——AI 回复不再用气泡包裹（去白底/边框/内边距），
+    // 文字与上方头像左缘齐平；用户消息保留气泡
     final bubble = Container(
       margin: const EdgeInsets.only(bottom: 10),
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-      constraints: const BoxConstraints(maxWidth: 280),
-      decoration: BoxDecoration(
-        color: c.chatBubbleAi,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: c.divider),
-      ),
+      padding: isUser ? const EdgeInsets.symmetric(horizontal: 14, vertical: 10) : EdgeInsets.zero,
+      constraints: isUser ? const BoxConstraints(maxWidth: 280) : null,
+      decoration: isUser
+          ? BoxDecoration(
+              color: c.chatBubbleAi,
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: c.divider),
+            )
+          : null,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -2044,33 +2048,20 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
     final hasSteps = msg.toolSteps.isNotEmpty;
     // 未配置 AI（无 URL/Key）时不显示模型头像与模型名，避免出现无意义的占位标识
     final aiConfigured = _state.effectiveChatConfig.ready;
-    final avatarRow = Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      if (aiConfigured) ...[
-        Padding(
-          padding: const EdgeInsets.only(top: 4),
-          child: _aiLogo(aiModelName ?? '', size: 28),
-        ),
-        const SizedBox(width: 8),
-      ],
-      Expanded(child: bubble),
-    ]);
-    // AI 消息气泡上方的模型名行（与 Reasoning / ToolSteps 独立成行，避免压住头像）
+    // R34: 模型头行：头像(28px) + 模型名，位于内容上方；AI 回复不再套气泡，
+    // 内容与头像左缘齐平（参考 WorkBuddy/ChatGPT 对话流）
     Widget? modelHeader;
     if (!isUser && aiModelName != null && aiConfigured) {
-      // R31: 头像常驻模型名行——此前头像只在 avatarRow（气泡同行），
-      // 流式决策/思考的空窗阶段整行不渲染，表现为"转圈后头像消失、输出时才出现"
       modelHeader = Padding(
-        padding: const EdgeInsets.only(left: 2, bottom: 4),
+        padding: const EdgeInsets.only(bottom: 6),
         child: Row(children: [
-          _aiLogo(aiModelName, size: 16),
-          const SizedBox(width: 6),
-          Text(
-            aiModelName,
-            style: const TextStyle(
-              fontSize: 10.5,
-              fontWeight: FontWeight.w600,
-              color: Color(0xFFADADB8),
-              fontFeatures: [FontFeature.tabularFigures()],
+          _aiLogo(aiModelName, size: 28),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              aiModelName,
+              style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: c.text),
+              overflow: TextOverflow.ellipsis,
             ),
           ),
         ]),
@@ -2079,14 +2070,14 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
     final hasStatus = running && !isUser && (msg.statusLabel ?? '').isNotEmpty;
     if (!hasReasoning && !hasSteps) {
       if (!hasStatus) {
-        if (modelHeader == null) return avatarRow;
-        return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [modelHeader, avatarRow]);
+        if (modelHeader == null) return bubble;
+        return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [modelHeader, bubble]);
       }
       // 仅有状态行（流式决策期间）：状态 + 模型名，不渲染空气泡
       return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         if (modelHeader != null) modelHeader,
         _statusRow(msg, isLight),
-        avatarRow,
+        bubble,
       ]);
     }
     // 内容尚未到达时（纯思考/工具阶段）不渲染空气泡
@@ -2112,7 +2103,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
         AgentPlanPanel(plan: msg.plan!, light: isLight),
         const SizedBox(height: 4),
       ],
-      if (showBubble) avatarRow,
+      if (showBubble) bubble,
     ]);
   }
 
@@ -2333,7 +2324,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
       }
       // 无序列表
       if (line.startsWith('- ') || line.startsWith('* ')) {
-        spans.add(const TextSpan(text: '• ', style: TextStyle(fontSize: 13, color: Color(0xFF7C3AED))));
+        spans.add(const TextSpan(text: '• ', style: TextStyle(fontSize: 13, color: Color(0xFF9CA3AF))));
         _parseInlineSpans(line.substring(2), textColor, spans);
         continue;
       }
@@ -2356,7 +2347,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
         child: CodeCard(code: codeBuffer.join('\n'), lang: codeLang),
       ));
     }
-    return TextSpan(children: spans, style: TextStyle(fontSize: 13, height: 1.5));
+    return TextSpan(children: spans, style: TextStyle(fontSize: 14.5, height: 1.5));
   }
 
   void _parseInlineSpans(String text, Color textColor, List<InlineSpan> spans) {

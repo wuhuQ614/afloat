@@ -17,6 +17,7 @@ import 'theme_colors.dart' show AppColors;
 import 'services/api_service.dart';
 import 'services/maimemo_service.dart';
 import 'services/storage.dart';
+import 'services/wechat_service.dart';
 import 'services/dict_service.dart';
 import 'services/agent_service.dart';
 import 'services/chat_capabilities.dart';
@@ -532,6 +533,25 @@ class AppState extends ChangeNotifier {
     }
     // R27: 恢复纯净对话模式
     agentFullscreen = Storage.loadAgentFullscreen();
+    // R35: 微信 ClawBot——恢复绑定状态并接收入站消息（自动回复由设置开关控制）
+    WeChatService.autoReply = Storage.loadWeChatAutoReply();
+    if (Storage.loadWeChatBound()) {
+      WeChatService.bind().then((ok) {
+        if (!ok) {
+          Storage.saveWeChatBound(false);
+          WeChatService.autoReply = false;
+          notifyListeners();
+        }
+      });
+    }
+    WeChatService.onIncoming = (text) async {
+      if (chatSending) return null;
+      try {
+        return await sendChat(text);
+      } catch (_) {
+        return null;
+      }
+    };
     chatFullAccess = Storage.loadChatFullAccess();
     workspacePath = Storage.loadWorkspacePath();
     activeSkill = Storage.loadActiveSkill();
@@ -5611,7 +5631,15 @@ class AppState extends ChangeNotifier {
       } else if (m.role == 'user' && isRecent && m.imageData != null && m.imageData!.isNotEmpty) {
         baseHistory.add({'role': 'user', 'content': ApiService.buildContent(m.content, m.imageData)});
       } else {
-        baseHistory.add({'role': m.role == 'ai' ? 'assistant' : 'user', 'content': m.content});
+        final hm = <String, dynamic>{
+          'role': m.role == 'ai' ? 'assistant' : 'user',
+          'content': m.content,
+        };
+        // R35: DeepSeek 思考模式 + tools：历史轮次的 reasoning_content 需完整回传
+        if (m.role == 'ai' && _needReasoningEcho(cfg.model) && (m.reasoning?.isNotEmpty ?? false)) {
+          hm['reasoning_content'] = m.reasoning;
+        }
+        baseHistory.add(hm);
       }
     }
     // 追加当前用户消息
@@ -5848,17 +5876,22 @@ class AppState extends ChangeNotifier {
         final brokenCalls = resp.toolCalls.length - validCalls.length;
 
         if (validCalls.isNotEmpty) {
-          messages.add({
+          // R35: DeepSeek 思考模式 + tools 时，本轮 reasoning_content 必须随历史回传
+          final assistantMsg = <String, dynamic>{
             'role': 'assistant',
             'content': resp.content,
-            'tool_calls': validCalls
-                .map((tc) => {
-                      'id': tc.id,
-                      'type': 'function',
-                      'function': {'name': tc.name, 'arguments': tc.arguments},
-                    })
-                .toList(),
-          });
+          };
+          if (_needReasoningEcho(cfg.model) && resp.reasoning.isNotEmpty) {
+            assistantMsg['reasoning_content'] = resp.reasoning;
+          }
+          assistantMsg['tool_calls'] = validCalls
+              .map((tc) => {
+                    'id': tc.id,
+                    'type': 'function',
+                    'function': {'name': tc.name, 'arguments': tc.arguments},
+                  })
+              .toList();
+          messages.add(assistantMsg);
         } else if (brokenCalls > 0) {
           // 没有任何可执行的工具调用：若模型同时输出了文字，先把文字记入历史，
           // 否则下一轮模型看到的上下文与本轮完全相同，会重复同样的输出（上下文污染）。
@@ -6952,17 +6985,16 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 对话助手请求的思考参数（真实生效入口）：
-  /// DeepSeek 系按强度档位（关闭/高/超高），其他模型按"是否思考"开关。
+  /// 对话助手请求的思考参数（R35 按官方文档矩阵）：DeepSeek 按 reasoning_effort，
+  /// GLM 按模型支持矩阵，其他模型按"是否思考"开关。
   Map<String, dynamic> chatThinkExtraParams({String? model, bool forceOff = false}) {
     final m = model ?? effectiveChatConfig.model;
-    if (ApiService.isDeepSeekModel(m)) {
-      return ApiService.deepseekThinkParams(m, forceOff ? 'off' : chatThinkLevel);
-    }
-    return (chatThinking && !forceOff)
-        ? ApiService.thinkingParams(m)
-        : ApiService.noThinkingParams(m);
+    return ApiService.thinkingParamsFor(m, forceOff ? 'off' : chatThinkLevel);
   }
+
+  /// R35: DeepSeek 思考模式 + tools 时，历史必须完整回传 reasoning_content（否则 400）
+  bool _needReasoningEcho(String model) =>
+      ApiService.isDeepSeekModel(model) && chatThinkLevel != 'off';
 
   /// 设置专家角色（空串 = 默认）
   void setActiveExpert(String id) {

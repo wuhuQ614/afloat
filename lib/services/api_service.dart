@@ -909,26 +909,57 @@ class ApiService {
     return p;
   }
 
-  /// 是否为 DeepSeek 系模型（唯一支持"思考强度"档位的模型家族）
+
+  /// 是否为 DeepSeek 系模型（支持思考强度档位的模型家族之一）
   static bool isDeepSeekModel(String modelName) =>
       _realModel(modelName).toLowerCase().contains('deepseek');
 
-  /// DeepSeek 思考强度请求参数：off=关闭 / high=高 / ultra=超高。
-  /// 关闭 = thinking disabled；高 = thinking enabled（默认思考预算）；
-  /// 超高 = thinking enabled + 更高思考预算（budget_tokens 32768）。
-  /// 仅 DeepSeek 系模型使用；其他模型走 thinkingParams / noThinkingParams。
-  static Map<String, dynamic> deepseekThinkParams(String modelName, String level) {
-    final p = <String, dynamic>{};
-    if (level == 'off') {
-      p['thinking'] = {'type': 'disabled'};
+  /// R35: 统一思考参数（按官方文档的模型支持矩阵）。
+  /// level: off=关闭 / high=高 / ultra=超高（最高档）。
+  ///
+  /// —— DeepSeek（api-docs.deepseek.com/guides/thinking_mode）：
+  ///    thinking {type} 开关 + reasoning_effort 强度（映射后仅 low/high/max 生效，
+  ///    默认 high）；思考模式下 temperature 等采样参数不生效；
+  ///    带 tools 时历史必须完整回传 reasoning_content，否则 400。
+  /// —— 智谱 GLM（docs.bigmodel.cn/guide/capabilities/thinking）：
+  ///    thinking {type} 开关（GLM-4.5+ 支持；4.7 / 4.5V 强制思考不可关闭；
+  ///    GLM-5.3 强制思考且 reasoning_effort 仅 max/high/low，非法值报错）；
+  ///    reasoning_effort 仅 GLM-5.2 及以上支持（none/minimal/low/medium/high/xhigh/max）。
+  /// —— 其他模型家族：仅"是否思考"（enable_thinking / 旧协议）。
+  static Map<String, dynamic> thinkingParamsFor(String modelName, String level) {
+    final m = _realModel(modelName).toLowerCase();
+    final on = level != 'off';
+    // —— DeepSeek ——
+    if (m.contains('deepseek')) {
+      if (!on) {
+        return {'thinking': {'type': 'disabled'}};
+      }
+      return {
+        'thinking': {'type': 'enabled'},
+        'reasoning_effort': level == 'ultra' ? 'max' : 'high',
+      };
+    }
+    // —— 智谱 GLM ——
+    if (m.contains('glm')) {
+      final forced = m.contains('4.5v') || m.contains('4.7') || m.contains('5.3');
+      final p = <String, dynamic>{};
+      if (on) {
+        p['thinking'] = {'type': 'enabled'};
+        // reasoning_effort 仅 GLM-5.2+ 支持；5.3 档位仅 max/high/low
+        if (m.contains('5.2') || m.contains('5.3')) {
+          p['reasoning_effort'] = level == 'ultra' ? 'max' : 'high';
+        }
+      } else if (forced) {
+        // 强制思考模型无法关闭：GLM-5.3 给最低档 low，其余保持默认强度
+        p['thinking'] = {'type': 'enabled'};
+        if (m.contains('5.3')) p['reasoning_effort'] = 'low';
+      } else {
+        p['thinking'] = {'type': 'disabled'};
+      }
       return p;
     }
-    final thinking = <String, dynamic>{'type': 'enabled'};
-    if (level == 'ultra') {
-      thinking['budget_tokens'] = 32768;
-    }
-    p['thinking'] = thinking;
-    return p;
+    // —— 其他模型家族：仅"是否思考" ——
+    return on ? thinkingParams(modelName) : noThinkingParams(modelName);
   }
 
   /// 调用百度千帆 AI 搜索组件（联网搜索），返回 {answer, references}。

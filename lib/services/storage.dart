@@ -169,6 +169,12 @@ class Storage {
   static bool loadAgentFullscreen() => _getBool('agentFullscreen', false);
   static void saveAgentFullscreen(bool v) => _setBool('agentFullscreen', v);
 
+  /// R35: 微信 ClawBot 绑定与自动回复状态
+  static bool loadWeChatBound() => _getBool('wechatBound', false);
+  static void saveWeChatBound(bool v) => _setBool('wechatBound', v);
+  static bool loadWeChatAutoReply() => _getBool('wechatAutoReply', false);
+  static void saveWeChatAutoReply(bool v) => _setBool('wechatAutoReply', v);
+
   /// 对话助手权限范围：false=默认权限（沙箱内），true=允许完全访问
   static bool loadChatFullAccess() => _getBool('chatFullAccess', false);
   static void saveChatFullAccess(bool v) => _setBool('chatFullAccess', v);

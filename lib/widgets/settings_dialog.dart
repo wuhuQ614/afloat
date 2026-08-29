@@ -9,6 +9,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:path_provider/path_provider.dart';
 import '../models.dart';
+import '../services/wechat_service.dart';
 import '../state.dart';
 import '../theme_colors.dart' show kPrimary, AppColors;
 import 'learn_page.dart' show AppScope;
@@ -944,6 +945,9 @@ class _SettingsDialogState extends State<SettingsDialog> {
 
   // ============== Section 4: 高级功能 ==============
   Widget _sectionAdvanced(AppState s, AppColors c) {
+    final wechatState = WeChatService.bound
+        ? (WeChatService.autoReply ? '已连接 · 自动回复中' : '已连接 · 自动回复关闭')
+        : (WeChatService.lastError ?? '未绑定');
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       _sectionTitle('高级功能', c),
       const SizedBox(height: 14),
@@ -953,6 +957,85 @@ class _SettingsDialogState extends State<SettingsDialog> {
         value: s.devMode,
         onChanged: (v) => s.setDevMode(v),
         c: c,
+      ),
+      const SizedBox(height: 10),
+      // R35: 微信 ClawBot 接入（weixin_clawbot）：扫码绑定 → 收消息 → agent 应答回传微信
+      Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: c.isLight ? const Color(0xFFF7F8FA) : const Color(0xFF26262C),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: c.border),
+        ),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [
+            Icon(Icons.chat_bubble_outline_rounded, size: 18, color: c.isLight ? const Color(0xFF10B981) : const Color(0xFF34D399)),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text('微信接入（ClawBot）', style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w700, color: c.text)),
+                const SizedBox(height: 2),
+                Text(wechatState, style: TextStyle(fontSize: 11.5, color: WeChatService.bound ? const Color(0xFF10B981) : c.textTertiary)),
+              ]),
+            ),
+            _SwitchRow(
+              icon: Icons.reply_rounded,
+              title: '',
+              value: WeChatService.autoReply,
+              onChanged: (v) {
+                if (!WeChatService.bound) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('请先扫码绑定微信', style: TextStyle(fontSize: 12.5)), behavior: SnackBarBehavior.floating),
+                  );
+                  return;
+                }
+                WeChatService.autoReply = v;
+                setState(() {});
+              },
+              c: c,
+            ),
+          ]),
+          const SizedBox(height: 10),
+          Row(children: [
+            Expanded(
+              child: OutlinedButton.icon(
+                icon: Icon(WeChatService.bound ? Icons.refresh_rounded : Icons.qr_code_scanner_rounded, size: 16),
+                label: Text(WeChatService.bound ? '重新扫码绑定' : '扫码绑定微信',
+                    style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600)),
+                onPressed: () async {
+                  final ok = await WeChatService.bind(context: context);
+                  if (mounted) setState(() {});
+                  if (ok && mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('微信绑定成功', style: TextStyle(fontSize: 12.5)), behavior: SnackBarBehavior.floating),
+                    );
+                  } else if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('绑定失败：${WeChatService.lastError ?? '未知原因'}', style: const TextStyle(fontSize: 12.5)), behavior: SnackBarBehavior.floating),
+                    );
+                  }
+                },
+              ),
+            ),
+            if (WeChatService.bound) ...[
+              const SizedBox(width: 10),
+              OutlinedButton.icon(
+                icon: const Icon(Icons.link_off_rounded, size: 16),
+                label: const Text('解绑', style: TextStyle(fontSize: 12.5)),
+                onPressed: () {
+                  WeChatService.unbind();
+                  setState(() {});
+                },
+              ),
+            ],
+          ]),
+          const SizedBox(height: 8),
+          Text(
+            '绑定后微信收到的消息会转给 AI 助手自动应答回传（速率约 7 条 / 5 分钟，由微信 ClawBot 限制）。\n'
+            '前置：需在 OpenClaw 微信插件完成一次命令行登录。',
+            style: TextStyle(fontSize: 10.5, height: 1.5, color: c.textTertiary),
+          ),
+        ]),
       ),
     ]);
   }
