@@ -195,7 +195,7 @@ class AgentService {
                 'source': {
                   'type': 'string',
                   'enum': ['maimemo', 'zsb'],
-                  'description': '词库来源：maimemo=墨墨词库（已同步的墨墨词表，未同步时回退通用词库）, zsb=专升本词库（约2900词）。默认 zsb',
+                  'description': '词库来源：maimemo=墨墨词库（用户 Token 同步的个人词表，未同步时返回错误——应先调用 sync_maimemo）, zsb=专升本词库（约2900词）。默认 zsb',
                 },
                 'pos': {
                   'type': 'string',

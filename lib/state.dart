@@ -3303,26 +3303,35 @@ class AppState extends ChangeNotifier {
     final posRaw = ((args['pos'] as String?) ?? 'all').trim().toLowerCase();
     final fraction = ((args['fraction'] as String?) ?? 'all').trim();
 
-    // —— 词库池（仅限墨墨词库与专升本词库两个来源）——
+    // —— 词库池（R38: maimemo=用户 Token 同步的个人词表，不再回退通用词库）——
     await DictService.loadExternalDict();
     final String sourceName;
-    String usingFallback = 'false';
     List<MapEntry<String, DictEntry>> pool;
     if (source == 'maimemo') {
       sourceName = '墨墨词库';
-      final synced = lastMaimemoWords;
-      if (synced != null && synced.isNotEmpty) {
-        // 已同步墨墨词表：逐词回查通用词库补全词性
-        final dictMap = {for (final e in DictService.dictEntries()) e.key: e.value};
-        pool = [
-          for (final w in synced)
-            if (dictMap[w.toLowerCase()] != null)
-              MapEntry(w.toLowerCase(), dictMap[w.toLowerCase()]!),
-        ];
-      } else {
-        pool = DictService.dictEntries();
-        usingFallback = 'true';
+      if (maimemoWordbook.isEmpty) {
+        return ToolExecResult(
+          content: '{"ok":false,"reason":"maimemo_not_synced",'
+              '"hint":"墨墨词库为空：请先在设置中同步（需要有效的墨墨 API Token），或调用 sync_maimemo 工具"}',
+          ok: false,
+          actionLabel: '墨墨词库尚未同步，无法路由',
+        );
       }
+      // 词性回查通用词典：查不到词性的词不交付（保证词性标注可靠）
+      final dictMap = {for (final e in DictService.dictEntries()) e.key: e.value};
+      pool = [
+        for (final w in maimemoWordbook)
+          if (dictMap[w.word.toLowerCase()] != null)
+            MapEntry(
+              w.word.toLowerCase(),
+              DictEntry(
+                pos: dictMap[w.word.toLowerCase()]!.pos,
+                translation: w.translation.isNotEmpty ? w.translation : dictMap[w.word.toLowerCase()]!.translation,
+                other: dictMap[w.word.toLowerCase()]!.other,
+                phonetic: dictMap[w.word.toLowerCase()]!.phonetic,
+              ),
+            ),
+      ];
     } else if (source == 'zsb') {
       sourceName = '专升本词库';
       await DictService.loadZsbDict();
@@ -3388,7 +3397,7 @@ class AppState extends ChangeNotifier {
     return ToolExecResult(
       content: '{"ok":true,"source":"$source","pos":"$posRaw","poolSize":${filtered.length},'
           '"fraction":"$fracNote","routed":${picked.length},"truncated":$truncated,'
-          '"usingFallback":$usingFallback,"words":[$wordsJson]}',
+          '"words":[$wordsJson]}',
       ok: true,
       actionLabel: '路由 ${picked.length} 个${_posCn(posRaw)}词（$sourceName 共 ${filtered.length} 词）',
     );
@@ -3563,7 +3572,13 @@ class AppState extends ChangeNotifier {
         actionLabel: '已同步墨墨词库（共 ${maimemoWordbook.length} 个单词）',
       );
     } catch (e) {
-      return ToolExecResult(content: '{"ok":false,"reason":"sync_failed"}', ok: false);
+      // R38: 不再吞掉真实异常——把具体原因（Token 过期/限频/超时…）回传给模型转述
+      final msg = e.toString().replaceAll('"', "'");
+      return ToolExecResult(
+        content: '{"ok":false,"reason":"sync_failed","error":"$msg"}',
+        ok: false,
+        actionLabel: '墨墨同步失败：$msg',
+      );
     }
   }
 
