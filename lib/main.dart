@@ -1699,7 +1699,15 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
     final brand = _state.darkMode ? Color.lerp(c1, Colors.white, 0.35)! : c1;
     if (asset == null) return Icon(Icons.smart_toy_outlined, size: size * 0.8, color: brand);
     return asset.toLowerCase().endsWith('.png')
-        ? Image.asset(asset, width: size, height: size, fit: BoxFit.contain)
+        ? Image.asset(
+            asset,
+            width: size,
+            height: size,
+            fit: BoxFit.contain,
+            // R31: 流式高频重建时不闪烁；资产异常时回退通用图标（不渲染空白）
+            gaplessPlayback: true,
+            errorBuilder: (_, __, ___) => Icon(Icons.smart_toy_outlined, size: size * 0.8, color: brand),
+          )
         : SvgPicture.asset(
             asset,
             width: size,

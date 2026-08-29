@@ -821,6 +821,13 @@ class ApiService {
       p['thinking'] = {'type': 'disabled'};
       return p;
     }
+    // R31: GLM-4.5 / 4.6 / 4.6V / 5 系列：新思考对象参数。
+    // 旧参数 enable_thinking 在这些模型上不被识别——思考不激活或请求异常，
+    // 正确方式同为 "thinking": {"type": "enabled"/"disabled"}。
+    if (m.contains('glm-4') || m.contains('glm-5')) {
+      p['thinking'] = {'type': 'disabled'};
+      return p;
+    }
     // enable_thinking: false 适用于多数国产模型
     if (m.contains('deepseek') ||
         m.contains('qwen') ||
@@ -861,6 +868,11 @@ class ApiService {
     final p = <String, dynamic>{};
     // DeepSeek V4 系列：官方开启思考方式为 "thinking": {"type": "enabled"}
     if (m.contains('deepseek') && m.contains('v4')) {
+      p['thinking'] = {'type': 'enabled'};
+      return p;
+    }
+    // R31: GLM-4.5 / 4.6 / 4.6V / 5 系列：新思考对象参数（见 noThinkingParams 注释）
+    if (m.contains('glm-4') || m.contains('glm-5')) {
       p['thinking'] = {'type': 'enabled'};
       return p;
     }
