@@ -510,6 +510,11 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
 
   @override
   Widget build(BuildContext context) {
+    // R31: 预解码常用模型图标——避免首条消息流式重建时图标解码空窗
+    for (final m in const ['glm-4.6v', 'deepseek-v4-flash', 'kimi-k2', 'qwen3-max', 'gpt-4o']) {
+      final a = _getAiIconAsset(m);
+      if (a != null) precacheImage(AssetImage(a), context);
+    }
     return AppScope(
       state: _state,
       child: ListenableBuilder(
@@ -2060,17 +2065,23 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
     // AI 消息气泡上方的模型名行（与 Reasoning / ToolSteps 独立成行，避免压住头像）
     Widget? modelHeader;
     if (!isUser && aiModelName != null && aiConfigured) {
-      // 模型名小行：不再额外显示小头像（与下方 28 气泡头像重复），仅显示模型名
+      // R31: 头像常驻模型名行——此前头像只在 avatarRow（气泡同行），
+      // 流式决策/思考的空窗阶段整行不渲染，表现为"转圈后头像消失、输出时才出现"
       modelHeader = Padding(
-        padding: const EdgeInsets.only(left: 4, bottom: 4),
-        child: Text(
-          aiModelName!,
-          style: const TextStyle(
-            fontSize: 9.9,
-            color: Color(0xFFADADB8),
-            fontFeatures: [FontFeature.tabularFigures()],
+        padding: const EdgeInsets.only(left: 2, bottom: 4),
+        child: Row(children: [
+          _aiLogo(aiModelName, size: 16),
+          const SizedBox(width: 6),
+          Text(
+            aiModelName,
+            style: const TextStyle(
+              fontSize: 10.5,
+              fontWeight: FontWeight.w600,
+              color: Color(0xFFADADB8),
+              fontFeatures: [FontFeature.tabularFigures()],
+            ),
           ),
-        ),
+        ]),
       );
     }
     final hasStatus = running && !isUser && (msg.statusLabel ?? '').isNotEmpty;
