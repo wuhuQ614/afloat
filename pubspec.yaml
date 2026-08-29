@@ -24,7 +24,8 @@ dependencies:
   pdf: ^3.12.0
   excel: ^4.0.6
   flutter_math_fork: ^0.7.4
-  weixin_clawbot: ^0.1.0
+  weixin_clawbot:
+    path: third_party/weixin_clawbot
 
 dev_dependencies:
   flutter_test:

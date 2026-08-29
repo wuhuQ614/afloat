@@ -872,10 +872,9 @@ packages:
   weixin_clawbot:
     dependency: "direct main"
     description:
-      name: weixin_clawbot
-      sha256: "34a7b974fd198939201c04e7544b4890bbd5fd4cadfc0ecc4d8603efc1afedd8"
-      url: "https://pub.dev"
-    source: hosted
+      path: "third_party/weixin_clawbot"
+      relative: true
+    source: path
     version: "0.1.0"
   win32:
     dependency: transitive
