@@ -2140,11 +2140,74 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
     final cacheKey = '$text\u0000${textColor.value}';
     final cached = _markdownCache[cacheKey];
     if (cached != null) return cached;
-    final result = _parseMarkdownImpl(text, textColor);
+    final result = _parseMarkdownImpl(_normalizeDashTables(text), textColor);
     // 限制缓存大小，防止无限增长
     if (_markdownCache.length > 200) _markdownCache.clear();
     _markdownCache[cacheKey] = result;
     return result;
+  }
+
+  // R37: 无管道对齐表的识别（表头 + 「空格分隔的多段短横线」分隔行 + 空格对齐内容行）
+  static final _reDashRowSep = RegExp(r'^\s*-{2,}(?:\s+-{2,})+\s*$');
+  static final _reAlignSplit = RegExp(r'\s{2,}');
+
+  /// R37: 把模型常输出的"无管道空格对齐表"预处理成标准管道表，
+  /// 复用既有表格渲染（此前这类表只被渲染成分割线 + 散落文本）。
+  /// 围栏代码块内不做转换。
+  String _normalizeDashTables(String text) {
+    final lines = text.split('\n');
+    final out = <String>[];
+    var inCode = false;
+    var inDashTable = false;
+    var tableCols = 0;
+    for (var i = 0; i < lines.length; i++) {
+      final line = lines[i];
+      if (line.startsWith('```')) {
+        inCode = !inCode;
+        out.add(line);
+        continue;
+      }
+      if (inCode) {
+        out.add(line);
+        continue;
+      }
+      final t = line.trim();
+      if (t.isEmpty) {
+        inDashTable = false;
+        out.add(line);
+        continue;
+      }
+      if (!inDashTable && out.isNotEmpty && out.last.trim().isNotEmpty && !out.last.contains('|') && _reDashRowSep.hasMatch(line)) {
+        // 上一行是表头（非空、非管道、非其他块级语法）→ 转成管道表头 + 分隔行
+        final headerCells = out.last.trim().split(_reAlignSplit);
+        if (headerCells.length >= 2) {
+          inDashTable = true;
+          tableCols = headerCells.length;
+          out[out.length - 1] = '| ${headerCells.join(' | ')} |';
+          out.add('|${List.filled(tableCols, ' --- ').join('|')}|');
+          continue;
+        }
+      }
+      if (inDashTable) {
+        if (t.startsWith('#') || t.startsWith('>') || t.startsWith('```')) {
+          inDashTable = false; // 表结束，当前行走正常解析
+          out.add(line);
+          continue;
+        }
+        final cells = t.split(_reAlignSplit).where((c) => c.isNotEmpty).toList();
+        if (cells.isEmpty) {
+          out.add('');
+          continue;
+        }
+        while (cells.length < tableCols) {
+          cells.add('');
+        }
+        out.add('| ${cells.take(tableCols).join(' | ')} |');
+        continue;
+      }
+      out.add(line);
+    }
+    return out.join('\n');
   }
 
   TextSpan _parseMarkdownImpl(String text, Color textColor) {
@@ -2256,7 +2319,10 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
       // R7: 表格块检测 —— 当前行是表格行 + 下一行是分隔行
       if (_reTableRow.hasMatch(line) &&
           i + 1 < lines.length &&
-          _reTableSeparator.hasMatch(lines[i + 1])) {
+          _reTableSeparator.hasMatch(lines[i + 1]) &&
+          // R37: 表头必须有至少一个非空单元格——否则退化为普通行渲染，
+          // 避免模型异常输出渲染成"只有几条线的空表格"
+          _parseTableRow(line).any((c) => c.trim().isNotEmpty)) {
         final headerCells = _parseTableRow(line);
         final alignments = _parseTableAlignments(lines[i + 1]);
         final rows = <List<String>>[];
@@ -2609,10 +2675,13 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
       ),
       child: ClipRRect(
         borderRadius: BorderRadius.circular(8),
-        child: Table(
-          columnWidths: {
-            for (var c = 0; c < colCount; c++) c: const FlexColumnWidth(1.0),
-          },
+        // R37: 显式撑满可用宽度——无气泡布局下 Table 处于宽松约束时会收缩
+        child: SizedBox(
+          width: double.infinity,
+          child: Table(
+            columnWidths: {
+              for (var c = 0; c < colCount; c++) c: const FlexColumnWidth(1.0),
+            },
           // 网格线交给 Table.border 统一绘制：此前由每个单元格自绘 Border，
           // 配合 middle 垂直对齐时不同行高的单元格各自居中，边框错位、竖线断开。
           // fill 让单元格撑满整行高度，Table 画的横竖线天然对齐；左右外框由
@@ -2626,6 +2695,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
           defaultVerticalAlignment: TableCellVerticalAlignment.fill,
           children: tableRows,
         ),
+      ),
       ),
     );
   }
