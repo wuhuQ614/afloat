@@ -1590,7 +1590,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
     // 按优先级匹配，越具体的越靠前
     if (lower.contains('gpt-4') || lower.contains('gpt-3.5') || lower.contains('openai')) return 'assets/ai-icons/openai.svg';
     if (lower.contains('claude') || lower.contains('anthropic')) return 'assets/ai-icons/claude.svg';
-    if (lower.contains('glm') || lower.contains('chatglm') || lower.contains('zhipu') || lower.contains('智谱')) return 'assets/ai-icons/zhipu.svg';
+    if (lower.contains('glm') || lower.contains('chatglm') || lower.contains('zhipu') || lower.contains('智谱')) return 'assets/ai-icons/glm.png';
     if (lower.contains('qwen') || lower.contains('千问') || lower.contains('通义') || lower.contains('qwq') || lower.contains('qvq')) return 'assets/ai-icons/qwen.svg';
     if (lower.contains('deepseek') || lower.contains('deep-seek')) return 'assets/ai-icons/deepseek.svg';
     if (lower.contains('gemini') || lower.contains('google')) return 'assets/ai-icons/gemini.svg';
@@ -2335,6 +2335,15 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
       }
       // 普通行
       _parseInlineSpans(line, textColor, spans);
+    }
+
+    // R30: 流式代码块——AI 正在输出长代码时围栏尚未闭合，此前这些行被直接丢弃，
+    // 用户看到的是"卡住了"；现在把未闭合部分渲染为实时更新的代码卡片
+    if (inCodeBlock && codeBuffer.isNotEmpty) {
+      spans.add(WidgetSpan(
+        alignment: PlaceholderAlignment.middle,
+        child: CodeCard(code: codeBuffer.join('\n'), lang: codeLang),
+      ));
     }
     return TextSpan(children: spans, style: TextStyle(fontSize: 13, height: 1.5));
   }
@@ -4066,11 +4075,11 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
               Text('Max 模式（1M 上下文）',
                   style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w700, color: textPrimary, decoration: TextDecoration.none)),
               const Spacer(),
-              // R27: 真·开关控件（此前纯文字不可控）
-              maxSwitch(maxMode, (v) {
-                s.setChatThinking(v);
-                onChanged(selectedIdx, v);
-              }),
+              // R30: 开关为纯视觉指示（IgnorePointer 防止与外层 InkWell 双触发——
+              // 此前两层手势叠加互相抵消，表现为"开关无法切换"）
+              IgnorePointer(
+                child: maxSwitch(maxMode, (_) {}),
+              ),
             ]),
           ),
         ),
