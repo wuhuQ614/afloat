@@ -18,7 +18,7 @@ export function activeProfile(): Profile | null {
 function brandIcon(model: string): string {
   const l = model.toLowerCase();
   const icon = (f: string) => `<img src="/icons/${f}.svg" width="22" height="22" alt="">`;
-  if (l.includes('glm') || l.includes('zhipu') || l.includes('chatglm')) return icon('zhipu');
+  if (l.includes('glm') || l.includes('zhipu') || l.includes('chatglm')) return `<img src="/icons/zhipu.png" width="22" height="22" alt="">`;
   if (l.includes('deepseek')) return icon('deepseek');
   if (l.includes('kimi') || l.includes('moonshot')) return icon('kimi');
   if (l.includes('qwen') || l.includes('通义')) return icon('qwen');
