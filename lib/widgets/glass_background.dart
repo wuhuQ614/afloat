@@ -219,13 +219,15 @@ class _GlassBasePainter extends CustomPainter {
     // 3) 呼吸光带：整带慢漂移 + 锚点摆动 + 宽度呼吸（参数与引导页深色极光同源）
     for (final r in _gRibbons) {
       final driftX = math.sin(m.elapsed * 0.30 + r.phase * 1.7) * 0.020 * w;
-      final driftY = math.cos(m.elapsed * 0.23 + r.phase) * 0.025 * h;
+      final driftY = math.cos(m.elapsed * 0.23 + r.phase) * 0.012 * h;
       final pts = <Offset>[];
       for (var i = 0; i < r.anchors.length; i++) {
         final a = r.anchors[i];
+        // R32: 光带中心移向屏幕上下外缘——不再透过玻璃面板在边缘形成色带
+        final dy0 = a.dy < 0.5 ? a.dy - 0.10 : a.dy + 0.10;
         final dx = math.sin(m.elapsed * r.speed + r.phase + i * 1.3) * r.sway * h;
         final dy = math.cos(m.elapsed * r.speed * 0.8 + r.phase + i * 0.9) * r.sway * 0.6 * h;
-        pts.add(Offset(a.dx * w + driftX + dx, a.dy * h + driftY + dy));
+        pts.add(Offset(a.dx * w + driftX + dx, dy0 * h + driftY + dy));
       }
       final samples = _spline(pts, 24);
       // 宽度呼吸：约 24s 周期 ±8% 胀缩
@@ -233,11 +235,11 @@ class _GlassBasePainter extends CustomPainter {
       final baseW = r.width * h * breathe;
       final halo = _gRibbonHalo[r.colorIndex % _gRibbonHalo.length];
       final core = _gRibbonCore[r.colorIndex % _gRibbonCore.length];
-      // 外层：宽而淡的光晕；内层：窄而亮的柔光核心（R27: 整体减淡配合背景）
+      // 外层：宽而淡的光晕；内层：窄而亮的柔光核心（R32: 再减淡，避免边缘色带）
       _paintRibbon(canvas, samples, baseW,
-          widthScale: 1.0, color: halo, alpha: 0.22 * r.alpha * darkScale, sigma: baseW * 0.45);
+          widthScale: 1.0, color: halo, alpha: 0.15 * r.alpha * darkScale, sigma: baseW * 0.45);
       _paintRibbon(canvas, samples, baseW,
-          widthScale: 0.42, color: core, alpha: 0.32 * r.alpha * darkScale, sigma: baseW * 0.22);
+          widthScale: 0.42, color: core, alpha: 0.22 * r.alpha * darkScale, sigma: baseW * 0.22);
     }
 
     // 4) 网格线 + 交点小点（移植引导页 ParticleBackdrop 的网格设计）：

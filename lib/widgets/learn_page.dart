@@ -1171,7 +1171,8 @@ class _AnswerPageState extends State<AnswerPage> {
             hintText: s.answerPlaceholder,
             hintStyle: TextStyle(fontSize: 13, color: c.textTertiary),
             filled: true,
-            fillColor: c.inputFill,
+            // R32: 中性白底（原 inputFill 带紫调，观感发粉）
+            fillColor: c.isLight ? Colors.white : const Color(0xFF2A2A32),
             border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
             enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
             focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: _primary, width: 1.5)),
@@ -1540,49 +1541,13 @@ class _LearnPageState extends State<LearnPage> {
               _buildScaleSliders(),
             ]),
           ),
-        if (isMixed)
-          _buildCard(
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Row(children: [
-                _buildSectionHeader('04. 全卷信息'),
-                const Spacer(),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: c.primaryBg,
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Text('考试时间 120 分钟', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: c.primaryText)),
-                ),
-              ]),
-              const SizedBox(height: 14),
-              Container(
-                padding: const EdgeInsets.all(14),
-                decoration: BoxDecoration(
-                  color: c.primaryLight,
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: c.primary.withValues(alpha: 0.12)),
-                ),
-                child: Row(children: [
-                  _buildMetricChip('76', '题量', c),
-                  const SizedBox(width: 12),
-                  _buildMetricChip('150', '总分', c),
-                  const SizedBox(width: 12),
-                  _buildMetricChip('7', '题型', c),
-                  const SizedBox(width: 12),
-                  _buildMetricChip('120', '分钟', c),
-                ]),
-              ),
-              const SizedBox(height: 10),
-              Text('题型包含：词汇语法20 + 阅读20 + 完形15 + 补全对话5 + 选词填空10 + 英译汉5 + 写作1',
-                  style: TextStyle(fontSize: 11.5, color: c.textTertiary, height: 1.5)),
-            ]),
-          ),
+        // R32: 04. 全卷信息区块已按需求移除（76题/150分等固定信息不再展示）
+        if (isMixed) const SizedBox(height: 8),
         const SizedBox(height: 24),
         // 自定义提示
         _buildCard(
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            _buildSectionHeader('05. 自定义要求（可选）'),
+            _buildSectionHeader('04. 自定义要求（可选）'),
             const SizedBox(height: 12),
             TextField(
               controller: _customReqCtrl,
@@ -1675,22 +1640,7 @@ class _LearnPageState extends State<LearnPage> {
     );
   }
 
-  Widget _buildMetricChip(String value, String label, AppColors c) {
-    return Expanded(
-      child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 10),
-        decoration: BoxDecoration(
-          color: c.card,
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: Column(children: [
-          Text(value, style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800, color: c.primaryText)),
-          const SizedBox(height: 2),
-          Text(label, style: TextStyle(fontSize: 11, color: c.textTertiary)),
-        ]),
-      ),
-    );
-  }
+  // R32: _buildMetricChip 已随「04. 全卷信息」区块一并移除
 
   String _estimateTime() {
     final count = _countSlider.round();

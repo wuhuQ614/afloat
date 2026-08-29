@@ -36,6 +36,9 @@ class _SettingsDialogState extends State<SettingsDialog> {
   late String _questionMode;
   late String _questionSpeed;
   late int _editIdx;
+  // R33: 配置库选择器锚点 + 浮层
+  final GlobalKey _cfgFieldKey = GlobalKey();
+  OverlayEntry? _cfgMenuEntry;
   bool _obscureKey = true;
   // 墨墨同步
   late final TextEditingController _maimemoTokenCtrl;
@@ -94,6 +97,8 @@ class _SettingsDialogState extends State<SettingsDialog> {
 
   @override
   void dispose() {
+    // R33: 弹窗关闭时收起配置选择浮层
+    _hideConfigMenu();
     // didChangeDependencies 未跑过（极端时序）时 late 字段未初始化，跳过清理
     if (_depsInited) {
       _state?.removeListener(_onStateChanged);
@@ -375,32 +380,139 @@ class _SettingsDialogState extends State<SettingsDialog> {
   }
 
   // ============== Section: 模型设置 ==============
+  /// R33: 关闭配置选择浮层
+  void _hideConfigMenu() {
+    _cfgMenuEntry?.remove();
+    _cfgMenuEntry = null;
+  }
+
+  /// R33: 自绘配置选择浮层（白色圆角面板，锚定在字段正下方；中性高亮，无系统粉色）
+  void _showConfigMenu(BuildContext anchorCtx, AppColors c, AppState s) {
+    if (_cfgMenuEntry != null) {
+      _hideConfigMenu();
+      return;
+    }
+    final box = _cfgFieldKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box == null || !box.hasSize) return;
+    final overlay = Overlay.of(anchorCtx, rootOverlay: true);
+    final pos = box.localToGlobal(Offset.zero);
+    final screen = MediaQuery.of(anchorCtx).size;
+    const menuW = 320.0;
+    double mx = pos.dx.clamp(12.0, screen.width - menuW - 12);
+    double my = pos.dy + box.size.height + 8;
+    if (my + 200 > screen.height - 12) my = pos.dy - 200;
+
+    _cfgMenuEntry = OverlayEntry(builder: (menuCtx) {
+      return StatefulBuilder(builder: (menuCtx, setMenu) {
+        Widget item({required IconData icon, required String title, String? sub, required VoidCallback onTap}) {
+          return InkWell(
+            onTap: onTap,
+            hoverColor: const Color(0x0F000000),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+              child: Row(children: [
+                Icon(icon, size: 16, color: c.textSecondary),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Text(title, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: c.text), overflow: TextOverflow.ellipsis),
+                    if (sub != null && sub.isNotEmpty)
+                      Text(sub, style: TextStyle(fontSize: 11, color: c.textTertiary), overflow: TextOverflow.ellipsis),
+                  ]),
+                ),
+              ]),
+            ),
+          );
+        }
+
+        return Stack(children: [
+          Positioned.fill(
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: _hideConfigMenu,
+              child: const SizedBox.expand(),
+            ),
+          ),
+          Positioned(
+            left: mx,
+            top: my,
+            width: menuW,
+            child: Material(
+              color: c.isLight ? Colors.white : const Color(0xFF26262C),
+              borderRadius: BorderRadius.circular(14),
+              elevation: 12,
+              shadowColor: Colors.black45,
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(14),
+                child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  item(
+                    icon: Icons.add_rounded,
+                    title: '新建配置',
+                    sub: '填入全新的 API 地址与模型',
+                    onTap: () {
+                      _hideConfigMenu();
+                      setState(() {
+                        _editIdx = -1;
+                        _loadFrom(ApiConfig());
+                      });
+                    },
+                  ),
+                  Divider(height: 1, thickness: 1, color: c.divider),
+                  for (var i = 0; i < s.apiProfiles.length; i++)
+                    item(
+                      icon: Icons.tune_rounded,
+                      title: '${s.apiProfiles[i].label} · ${s.apiProfiles[i].config.model}',
+                      sub: s.apiProfiles[i].config.url,
+                      onTap: () {
+                        _hideConfigMenu();
+                        setState(() {
+                          _editIdx = i;
+                          _loadFrom(s.apiProfiles[i].config);
+                        });
+                      },
+                    ),
+                ]),
+              ),
+            ),
+          ),
+        ]);
+      });
+    });
+    overlay.insert(_cfgMenuEntry!);
+  }
+
   Widget _sectionModelContent(AppState s, AppColors c) {
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       _sectionTitle('模型设置', c),
       const SizedBox(height: 14),
-      // 配置库下拉 + 删除
+      // R33: 配置库选择——自绘简约选择器（替代系统 DropdownButton：无粉色高亮、白色浮层）
       Row(children: [
         Expanded(
-          child: DropdownButtonFormField<int>(
-            key: ValueKey(_editIdx),
-            initialValue: _editIdx,
-            decoration: InputDecoration(
-              isDense: true, labelText: '已保存的配置', labelStyle: TextStyle(color: c.textSecondary),
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: c.border)),
-              enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: c.border)),
-            ),
-            items: [
-              const DropdownMenuItem(value: -1, child: Text('＋ 新建配置')),
-              for (var i = 0; i < s.apiProfiles.length; i++)
-                DropdownMenuItem(value: i, child: Text('${s.apiProfiles[i].label} · ${s.apiProfiles[i].config.model}', overflow: TextOverflow.ellipsis)),
-            ],
-            onChanged: (v) {
-              final idx = v ?? -1;
-              setState(() => _editIdx = idx);
-              _loadFrom(idx >= 0 && idx < s.apiProfiles.length ? s.apiProfiles[idx].config : ApiConfig());
-            },
-          ),
+          child: Builder(builder: (fieldCtx) {
+            final current = (_editIdx >= 0 && _editIdx < s.apiProfiles.length)
+                ? '${s.apiProfiles[_editIdx].label} · ${s.apiProfiles[_editIdx].config.model}'
+                : '新建配置';
+            return InkWell(
+              key: _cfgFieldKey,
+              borderRadius: BorderRadius.circular(12),
+              onTap: () => _showConfigMenu(fieldCtx, c, s),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
+                decoration: BoxDecoration(
+                  color: c.isLight ? Colors.white : const Color(0xFF26262C),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: c.border),
+                ),
+                child: Row(children: [
+                  Expanded(
+                    child: Text(current,
+                        style: TextStyle(fontSize: 13.5, color: c.text, overflow: TextOverflow.ellipsis)),
+                  ),
+                  Icon(Icons.expand_more_rounded, size: 18, color: c.textTertiary),
+                ]),
+              ),
+            );
+          }),
         ),
         const SizedBox(width: 8),
         IconButton(

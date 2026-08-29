@@ -377,7 +377,6 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
   /// 各聊天按钮的 GlobalKey，用于从按钮位置浮出对应面板
   final GlobalKey _modelSelectorBtnKey = GlobalKey();
   final GlobalKey _plusBtnKey = GlobalKey();
-  final GlobalKey _contextPillKey = GlobalKey();
   final GlobalKey _contextRingKey = GlobalKey();
   final GlobalKey _permissionBtnKey = GlobalKey();
   /// Root Navigator 句柄，用于切换 uiMode 前清空浮层/modal
@@ -1820,14 +1819,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
               )),
             ]),
           ),
-        // 上下文用量（R27: 专注全屏隐藏长条——占用情况由输入栏圆环承担）
-        if (!fullscreen)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-            child: Row(children: [
-              _buildContextUsagePill(ctx, c, s, anchorKey: _contextPillKey),
-            ]),
-          ),
+        // R32: 旧式「上下文分布」长条已删除——占用情况统一由输入栏圆环承担（含全屏）
         const SizedBox(height: 8),
         // 消息列表（专注全屏下限宽 920 居中，避免大屏文字拉满整行影响阅读）
         Expanded(
@@ -4328,70 +4320,10 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
     }
   }
 
-  /// 上下文用量可视化进度条：分段彩色 + 白色细分割线，点击打开详细弹窗
-  Widget _buildContextUsagePill(BuildContext context, AppColors c, AppState s, {Key? anchorKey}) {
-    final bd = s.contextTokenBreakdown();
-    final pct = bd.usedPct;
-    const colors = [
-      Color(0xFF10B981),
-      Color(0xFFF59E0B),
-      Color(0xFF8B5CF6),
-      Color(0xFF60A5FA),
-      Color(0xFFA78BFA),
-    ];
-    final values = [bd.system, bd.tools, bd.messages, bd.connectors, bd.skills];
-    final usedK = bd.formatK(bd.used);
-    final maxK = bd.formatK(bd.maxTokens);
-
-    return Expanded(
-      child: GestureDetector(
-        key: anchorKey,
-        onTap: () => _showContextUsageBreakdown(context, s),
-        child: MouseRegion(
-          cursor: SystemMouseCursors.click,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Row(children: [
-                Text('上下文分布', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: c.textSecondary)),
-                const Spacer(),
-                Text('${bd.formatUsedPct()} · ${usedK} / ${maxK}', style: TextStyle(fontSize: 11, color: c.textTertiary)),
-              ]),
-              const SizedBox(height: 6),
-              ClipRRect(
-                borderRadius: BorderRadius.circular(4),
-                child: Container(
-                  height: 6,
-                  color: c.inputFill,
-                  child: Row(
-                    children: [
-                      for (var i = 0; i < values.length; i++)
-                        if (values[i] > 0 && pct > 0)
-                          Expanded(
-                            flex: ((values[i] / bd.maxTokens) * 10000).round().clamp(1, 10000),
-                            child: Container(color: colors[i]),
-                          ),
-                      if (pct < 1)
-                        Expanded(
-                          flex: (((1 - pct) * 10000).round()).clamp(1, 10000),
-                          child: const SizedBox.shrink(),
-                        ),
-                    ],
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
 
   /// 上下文用量详细分布弹窗（按图6：顶部大百分比 + 副文字 + 白色细分割线彩色分段进度条 + 5 行圆点百分比）
   void _showContextUsageBreakdown(BuildContext context, AppState s, {GlobalKey? anchorKey}) {
-    final bd = s.contextTokenBreakdown();
-    // 5 个分类，按图6配色：绿/橙/紫/蓝/浅紫
+    final bd = s.contextTokenBreakdown();    // 5 个分类，按图6配色：绿/橙/紫/蓝/浅紫
     const colors = [
       Color(0xFF10B981), // 系统提示词（绿）
       Color(0xFFF59E0B), // 工具及子智能体（橙）
@@ -4404,7 +4336,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
 
     _showOverlayPanel(
       context,
-      anchorKey ?? _contextPillKey,
+      anchorKey ?? _contextRingKey,
       width: 360,
       height: 380,
       content: Column(

@@ -2513,6 +2513,14 @@ class AppState extends ChangeNotifier {
   void cancelChat() {
     if (!chatSending) return;
     _chatAbortRequested = true;
+    // R32: 立即在占位消息上给出"正在暂停"反馈——当前工具/流式步骤收尾后生效
+    for (var i = chatHistory.length - 1; i >= 0; i--) {
+      final m = chatHistory[i];
+      if (m.role == 'ai') {
+        m.statusLabel = '正在暂停（等待当前步骤完成）…';
+        break;
+      }
+    }
     notifyListeners();
   }
 
