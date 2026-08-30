@@ -73,7 +73,8 @@ class UpdateService {
   ];
 
   /// 兼容旧引用：首选清单源
-  static const String manifestUrl = manifestUrls.first;
+  static const String manifestUrl =
+      'https://raw.githubusercontent.com/wuhuQ614/afloat/main/update.json';
 
   /// 安装包下载镜像前缀：直连 GitHub Releases 失败时依次尝试
   static const List<String> downloadMirrors = [
