@@ -70,9 +70,11 @@ void main() {
     _check(info.winExeUrl!.startsWith('https://') && info.winExeUrl!.contains('/releases/download/'), 'win.exe_url 是 Releases 直链');
   }
 
-  // 2. 版本对比（本地 build 来自 pubspec）
-  _check(!_hasUpdate(info, localBuild), '本地 build=$localBuild vs 清单 build=${info.build}：本地==远端 → 无更新（不误弹）');
-  _check(_hasUpdate(info, localBuild - 1), '本地 build=${localBuild - 1} < ${info.build} → 有更新（会弹窗）');
+  // 2. 版本对比：锚点断言（对任意远端 build 成立）
+  //    - v1.0.0 基线（build 1）必须能收到更新弹窗
+  //    - 与远端 build 一致的版本不弹（不误弹/不循环）
+  _check(_hasUpdate(info, 1), 'build=1（v1.0.0 基线）< ${info.build} → 有更新（会弹窗）');
+  _check(!_hasUpdate(info, info.build), 'build=${info.build} 与远端一致 → 无更新（不误弹、不循环）');
   _check(!_hasUpdate(info, 999), '本地 build=999 > ${info.build} → 无更新');
 
   // 3. 版本号与 URL 一致性：URL 里的 tag 应包含清单 version

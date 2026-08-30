@@ -1,14 +1,15 @@
 {
-  "version": "1.1.0",
+  "version": "1.1.1",
   "build": 2,
   "force": false,
   "notes": [
+    "修复：手机端引导页卡片底部文字被裁（窄屏纵向布局适配）",
     "新增：应用内在线更新（检查新版本 / 下载安装，支持关闭与不再提醒）",
     "新增：课程提醒——下课前 5 分钟系统通知下一节课",
     "优化：聊天界面精简，回复内容更紧凑",
     "移除：贪吃蛇双人模式"
   ],
   "android": {
-    "apk_url": "https://github.com/wuhuQ614/afloat/releases/download/v1.1.0/afloat.apk"
+    "apk_url": "https://github.com/wuhuQ614/afloat/releases/download/v1.1.1/afloat.apk"
   }
 }
