@@ -49,28 +49,35 @@ _Info _parse(Map<String, dynamic> j) {
 bool _hasUpdate(_Info remote, int localBuild) => remote.build > localBuild;
 
 void main() {
+  // 0. 从 pubspec.yaml 读本地版本 build 号（动态，不再写死）
+  final pubspec = File('pubspec.yaml').readAsStringSync();
+  final m = RegExp(r'^version:\s*[\d.]+\+(\d+)\s*$', multiLine: true).firstMatch(pubspec);
+  _check(m != null, 'pubspec.yaml version 行可解析（x.y.z+build）');
+  final localBuild = int.parse(m!.group(1)!);
+
   // 1. 读取并解析真实 update.json
   final raw = File('update.json').readAsStringSync();
   final j = jsonDecode(raw) as Map<String, dynamic>;
   final info = _parse(j);
   _check(info.version.isNotEmpty, 'version 非空：${info.version}');
   _check(info.build > 0, 'build 为正整数：${info.build}');
-  _check(info.winExeUrl != null && info.winExeUrl!.startsWith('https://'), 'win.exe_url 是 https 直链');
   _check(info.androidApkUrl != null && info.androidApkUrl!.startsWith('https://'), 'android.apk_url 是 https 直链');
-  _check(info.winExeUrl!.contains('/releases/download/'), 'exe 走 GitHub Releases 直链');
   _check(info.androidApkUrl!.contains('/releases/download/'), 'apk 走 GitHub Releases 直链');
-  _check(info.winExeUrl!.endsWith('.exe'), 'exe 文件名以 .exe 结尾');
   _check(info.androidApkUrl!.endsWith('.apk'), 'apk 文件名以 .apk 结尾');
   _check(info.force == false, '当前 force=false（非强制）');
+  // win 节可选：存在时必须是合法直链
+  if (info.winExeUrl != null) {
+    _check(info.winExeUrl!.startsWith('https://') && info.winExeUrl!.contains('/releases/download/'), 'win.exe_url 是 Releases 直链');
+  }
 
-  // 2. 版本对比（本地 = pubspec version 1.0.0+1 → build=1）
-  _check(!_hasUpdate(info, 1), '本地 build=1 == 清单 build=${info.build} → 无更新（不误弹）');
-  _check(_hasUpdate(info, 0), '本地 build=0 < ${info.build} → 有更新');
+  // 2. 版本对比（本地 build 来自 pubspec）
+  _check(!_hasUpdate(info, localBuild), '本地 build=$localBuild vs 清单 build=${info.build}：本地==远端 → 无更新（不误弹）');
+  _check(_hasUpdate(info, localBuild - 1), '本地 build=${localBuild - 1} < ${info.build} → 有更新（会弹窗）');
   _check(!_hasUpdate(info, 999), '本地 build=999 > ${info.build} → 无更新');
 
   // 3. 版本号与 URL 一致性：URL 里的 tag 应包含清单 version
-  final tag = info.winExeUrl!.split('/releases/download/')[1].split('/')[0];
-  _check(tag == 'v${info.version}', 'Release tag(v$tag) 与 version(${info.version}) 对应');
+  final tag = info.androidApkUrl!.split('/releases/download/')[1].split('/')[0];
+  _check(tag == 'v${info.version}', 'Release tag($tag) 与 version(${info.version}) 对应');
 
-  stdout.writeln('\n全部 $_assertions 项断言通过');
+  stdout.writeln('\n全部 $_assertions 项断言通过（本地 build=$localBuild，远端 build=${info.build}）');
 }
