@@ -49,6 +49,9 @@ class _TimetablePageState extends State<TimetablePage> {
   /// 每 30 秒刷新：当前上课节次/下一节课高亮、"今天"列与表头、跨天跨周跟随
   Timer? _ticker;
 
+  /// 上次调度课程提醒的日期：跨天后需重新调度（通知是按"当天具体时刻"调度的）
+  DateTime? _lastReminderDay;
+
   AppState get s => widget.state;
   TimetableData? get _data => s.timetable;
   bool get _dark => s.darkMode;
@@ -60,6 +63,9 @@ class _TimetablePageState extends State<TimetablePage> {
     _week = d == null ? 1 : d.weekOf(DateTime.now());
     // 定时刷新：30s 粒度足够响应"上课中/下一节"状态切换
     _ticker = Timer.periodic(const Duration(seconds: 30), (_) => _onTick());
+    // 打开课程表页时（重新）调度今天的系统通知提醒。
+    // 调度动作只在 App 前台发生，之后由操作系统在指定时刻弹出（App 后台/被杀也能弹）
+    if (d != null) unawaited(s.scheduleClassReminders());
   }
 
   @override
@@ -78,9 +84,20 @@ class _TimetablePageState extends State<TimetablePage> {
     final sysWeek = d.weekOf(_today);
     if (_followSystem && _week != sysWeek) {
       setState(() => _week = sysWeek);
+      // 跨周（必然已跨天）→ 重新调度课程提醒
+      unawaited(s.scheduleClassReminders());
     } else {
       // 刷新"今天"列高亮 / 当前节次标记
       setState(() {});
+    }
+    // 跨天但同周（周一→周二…）也要重调度：通知按"当天具体时刻"调度，
+    // 昨天调度的时刻在今天已失效，必须按今天课表重新下发
+    final today = _today;
+    if (_lastReminderDay == null) {
+      _lastReminderDay = today;
+    } else if (_lastReminderDay != today) {
+      _lastReminderDay = today;
+      unawaited(s.scheduleClassReminders());
     }
   }
 

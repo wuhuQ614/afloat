@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 在线更新：APK 下载到应用内部缓存目录 getCacheDir()/apk/，
+     通过 FileProvider 以 content:// 暴露给系统安装器 -->
+<paths>
+    <cache-path name="apk_cache" path="apk/" />
+</paths>

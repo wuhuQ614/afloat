@@ -1,7 +1,7 @@
 /// SmartEnglish 智能英语学习 - Flutter Windows 桌面版 (afloat 风格)
 library;
 
-import 'dart:async' show Timer;
+import 'dart:async' show Timer, unawaited;
 import 'dart:convert';
 import 'dart:io' show File, FileMode, Platform, Directory, Process, ProcessStartMode;
 import 'dart:ui' show FontFeature, PlatformDispatcher;
@@ -28,6 +28,7 @@ import 'widgets/pages.dart';
 import 'widgets/exam_page.dart';
 import 'widgets/dev_console.dart';
 import 'widgets/settings_dialog.dart';
+import 'widgets/update_dialog.dart';
 import 'widgets/platform_select_page.dart';
 import 'widgets/timetable_page.dart';
 import 'widgets/glass_background.dart';
@@ -481,6 +482,10 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
     if (mounted) setState(() => _ready = true);
     // 初始化帧率
     _updateFrameRate();
+    // 启动 6 秒后静默检查在线更新：有新版才弹窗，网络失败/已是最新则完全无感知
+    unawaited(Future<void>.delayed(const Duration(seconds: 6), () {
+      if (mounted) UpdateDialog.checkAndShow(context);
+    }));
   }
 
   /// 状态监听：只在「影响根页面结构/窗口状态的字段」变化时才 setState 重建 MaterialApp。

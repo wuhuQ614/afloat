@@ -84,6 +84,8 @@ const List<String> kBundledSkillFiles = [
   'work-data-analysis',
   'work-research-brief',
   'work-pro-translation',
+  'timetable-import',
+  'timetable-edit',
 ];
 
 /// 原生自带的学习技能（非资产 .md，由 Dart 内置，随应用能力绑定）。

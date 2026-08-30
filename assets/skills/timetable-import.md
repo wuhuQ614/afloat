@@ -28,6 +28,14 @@ source: AFloat/timetable-import
 
 工具仅在**学习模式**下可用（课程表模式下没有 Agent 工具循环）。
 
+## 关键调用约定
+
+**直接调工具循环里的工具，**不要**用 `run_code` 串起来**：`run_code` 的代码解析器只识别
+"单条 `await tools.xxx({...})` + `return`"的极简形式，把多步流程塞进 `run_code` 会被拒
+（返回 `reason: "no_tool_calls_parsed"`）。本技能的工作流请按步骤**直接**调用对应工具
+（`get_timetable_summary` / `ask_user_question` / `validate_timetable` / `import_timetable`），
+由 Agent 工具循环天然串联。
+
 ## 工作流程（两道校验，缺一不可）
 
 1. **查询现状**：先调一次 `get_timetable_summary`。如果已导入，告诉用户当前课表名 + 课程数，让其确认是否覆盖。

@@ -1,7 +1,23 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    
+
+    <!-- ===== 课程提醒：系统通知 ===== -->
+    <!-- 发送通知（Android 13+ 需运行时申请，由 App 内首次导入课表时触发） -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 精确定时：保证"下课铃前 5 分钟"准时弹出。
+         注意 Android 14+ 该权限默认不授予，代码中已做降级：
+         精确调度失败时自动退化为"允许延迟的不精确调度"，提醒仍会送达 -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <!-- 手机重启后恢复已调度的课程提醒 -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- 通知振动 -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- 低电耗/熄屏状态下仍能唤醒并弹出提醒 -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- ===== 在线更新：应用内安装 APK（Android 8+ 需此权限才能唤起系统安装器）===== -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
     <application
         android:label="afloat"
         android:name="${applicationName}"
@@ -34,6 +50,17 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+        <!-- 在线更新：FileProvider 把缓存目录下的 APK 以 content:// 暴露给系统安装器
+             （Android 7+ 禁止跨进程直接传 file:// 路径） -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and

@@ -308,6 +308,15 @@ class Storage {
   static String loadTimetableJson() => _get('timetableJson', '');
   static void saveTimetableJson(String v) => _set('timetableJson', v);
 
+  // ===== 在线更新 =====
+  /// 被用户点"关闭"忽略的更新版本（存 build 号字符串）。
+  /// 该版本不再自动弹窗；下次推送更高 build 时才重新自动提醒。
+  static String loadIgnoredUpdateBuild() => _get('ignoredUpdateBuild', '');
+  static void saveIgnoredUpdateBuild(String v) => _set('ignoredUpdateBuild', v);
+  /// 用户点"不再显示"后置 true：自动检查不再弹窗，但设置页手动检查仍可更新。
+  static bool loadUpdateReminderDisabled() => _getBool('updateReminderDisabled', false);
+  static void saveUpdateReminderDisabled(bool v) => _setBool('updateReminderDisabled', v);
+
   // ===== UI 风格 =====
   /// 'classic' | 'glass'
   static String loadUiStyle() => _get('uiStyle', 'classic');

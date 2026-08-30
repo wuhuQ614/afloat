@@ -13,6 +13,7 @@ import '../services/wechat_service.dart';
 import '../state.dart';
 import '../theme_colors.dart' show kPrimary, AppColors;
 import 'learn_page.dart' show AppScope;
+import 'update_dialog.dart';
 
 const _primary = kPrimary;
 
@@ -1028,13 +1029,15 @@ class _SettingsDialogState extends State<SettingsDialog> {
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       _sectionTitle('高级功能', c),
       const SizedBox(height: 14),
-      _SwitchRow(
-        icon: Icons.bug_report_outlined,
-        title: '开发者模式',
-        value: s.devMode,
-        onChanged: (v) => s.setDevMode(v),
-        c: c,
-      ),
+      // 开发者模式开关已按需求从学习模式设置中隐藏（用户要求）。
+      // 若要恢复：取消下面注释即可（devMode 状态与持久化逻辑仍在 state.dart / storage.dart 中保留）。
+      // _SwitchRow(
+      //   icon: Icons.bug_report_outlined,
+      //   title: '开发者模式',
+      //   value: s.devMode,
+      //   onChanged: (v) => s.setDevMode(v),
+      //   c: c,
+      // ),
       const SizedBox(height: 10),
       // R35: 微信 ClawBot 接入（weixin_clawbot）：扫码绑定 → 收消息 → agent 应答回传微信
       Container(
@@ -1111,6 +1114,30 @@ class _SettingsDialogState extends State<SettingsDialog> {
             '绑定后微信收到的消息会转给 AI 助手自动应答回传（速率约 7 条 / 5 分钟，由微信 ClawBot 限制）。\n'
             '前置：需在 OpenClaw 微信插件完成一次命令行登录。',
             style: TextStyle(fontSize: 10.5, height: 1.5, color: c.textTertiary),
+          ),
+        ]),
+      ),
+      const SizedBox(height: 10),
+      Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: c.isLight ? const Color(0xFFF7F8FA) : const Color(0xFF26262C),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: c.border),
+        ),
+        child: Row(children: [
+          Icon(Icons.system_update_alt_rounded, size: 18, color: c.textSecondary),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text('在线更新', style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w700, color: c.text)),
+              const SizedBox(height: 2),
+              Text('从 GitHub Releases 检查新版本', style: TextStyle(fontSize: 11.5, color: c.textTertiary)),
+            ]),
+          ),
+          OutlinedButton(
+            onPressed: () => UpdateDialog.checkAndShow(context, quiet: false, manual: true),
+            child: const Text('检查更新', style: TextStyle(fontSize: 12.5)),
           ),
         ]),
       ),

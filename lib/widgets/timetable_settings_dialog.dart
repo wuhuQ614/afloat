@@ -152,6 +152,8 @@ class TimetableSettingsDialog extends StatelessWidget {
                     c: c,
                   ),
                   const SizedBox(height: 22),
+                  // 课程提醒：手机端默认开启、无 UI 开关（用户要求），桌面端自动无行为
+                  const SizedBox(height: 10),
                   // "应用模式"段移到这里：放设置最下方（辅助设置，不影响主要操作）
                   _sectionTitle(c, '应用模式'),
                   const SizedBox(height: 10),

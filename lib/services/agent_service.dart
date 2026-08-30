@@ -1072,6 +1072,22 @@ class AgentService {
         {
           'type': 'function',
           'function': {
+            'name': 'get_timetable_full',
+            'description':
+                '获取当前课程表（如果已导入）的**完整 JSON 内容**：学期名、开学日期、总周数、'
+                '节次时间分布（periods）、全部课程（courses）。返回的 json 字段与 import_timetable 的输入 schema 完全一致。'
+                '当用户要求**修改课表**（增删课程、改课程名/教室/教师/节次/周次/作息时间/学期名/开学日期/总周数等）时，'
+                '必须先调用本工具拿到当前完整课表，在其返回的 json 基础上做最小修改，'
+                '再 validate_timetable 校验、import_timetable 写回。'
+                '**不要**把本工具连同 validate_timetable / import_timetable 一起塞进 run_code 串成一段——'
+                'run_code 解析器只认"单条 await tools.xxx({...}) + return"形式，多步会被拒。'
+                '本工具仅在学习模式下生效。',
+            'parameters': {'type': 'object', 'properties': {}},
+          },
+        },
+        {
+          'type': 'function',
+          'function': {
             'name': 'validate_timetable',
             'description':
                 '第 1 道校验：干跑校验课表 JSON（只解析统计，不写入、不切模式）。'

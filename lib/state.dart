@@ -24,6 +24,7 @@ import 'services/agent_service.dart';
 import 'services/chat_capabilities.dart';
 import 'services/mcp_client.dart';
 import 'services/skill_store.dart';
+import 'services/notification_service.dart';
 
 /// 单词跨度信息（用于词组匹配）
 class _WordSpan {
@@ -430,6 +431,11 @@ class AppState extends ChangeNotifier {
   String appMode = 'english';
   /// 课程表模式当前生效的课表数据（null = 未导入），持久化为 JSON 原文
   TimetableData? timetable;
+  /// 是否开启"下节课提醒"系统通知（当前课程结束前 5 分钟弹出下一节课信息）。
+  /// 仅 Android / iOS 具备系统通知能力；桌面端无任何行为。
+  /// 该功能**默认开启且不提供 UI 开关**（用户要求），故无持久化字段。
+  /// 提前多少分钟提醒（当前课程结束前）
+  static const int classReminderMinutes = 5;
   /// UI 风格：'classic' = 经典(不透明), 'glass' = 毛玻璃(半透明模糊)
   String uiStyle = 'classic';
   /// 是否为毛玻璃样式。深色模式是独立第三主题，
@@ -616,6 +622,14 @@ class AppState extends ChangeNotifier {
         timetable = null;
       }
     }
+    // 注册通知点击回调：点击"下节课提醒"通知 → 回到课程表模式
+    NotificationService.instance.onTap = (payload) {
+      if (payload == NotificationService.payloadTimetable) {
+        setAppMode('timetable');
+      }
+    };
+    // 注意：此处不主动调度提醒——调度会触发系统通知权限申请，
+    // 放在 App 启动阶段弹权限框体验很差。改为在"导入课表"与"打开课程表页"时调度。
     uiStyle = Storage.loadUiStyle();
     navIndicator = Storage.loadNavIndicator();
     // 手机端启动即进入沉浸式全屏（隐藏系统状态栏/导航栏），电脑端不受影响
@@ -3068,6 +3082,8 @@ class AppState extends ChangeNotifier {
           return await _toolImportTimetable(args);
         case 'get_timetable_summary':
           return _toolGetTimetableSummary();
+        case 'get_timetable_full':
+          return _toolGetTimetableFull();
         case 'validate_timetable':
           return _toolValidateTimetable(args);
         default:
@@ -6489,6 +6505,8 @@ class AppState extends ChangeNotifier {
         return '正在导入课程表';
       case 'get_timetable_summary':
         return '正在读取课程表';
+      case 'get_timetable_full':
+        return '正在读取完整课程表';
       case 'validate_timetable':
         return '正在校验课表 JSON';
       case 'list_mcp_tools':
@@ -6855,6 +6873,30 @@ class AppState extends ChangeNotifier {
       }),
       ok: true,
       actionLabel: '已读《${d.name}》（${d.courses.length} 门课）',
+    );
+  }
+
+  /// 工具：get_timetable_full — 返回当前课表**完整 JSON**（未导入返回空）。
+  ///
+  /// 返回的 `json` 字段与 `import_timetable` 的输入 schema 完全一致（toJson/parse round-trip），
+  /// Agent 修改课表时应先拿它，在其基础上做**最小改动**后写回，避免漏课。
+  ToolExecResult _toolGetTimetableFull() {
+    final d = timetable;
+    if (d == null) {
+      return ToolExecResult(
+        content: jsonEncode({'ok': true, 'imported': false}),
+        ok: true,
+        actionLabel: '当前未导入课表',
+      );
+    }
+    return ToolExecResult(
+      content: jsonEncode({
+        'ok': true,
+        'imported': true,
+        'json': d.toJson(),
+      }),
+      ok: true,
+      actionLabel: '已读取完整课表《${d.name}》（${d.courses.length} 门课 / ${d.periods.length} 节次）',
     );
   }
 
@@ -7794,6 +7836,66 @@ class AppState extends ChangeNotifier {
     timetable = t;
     Storage.saveTimetableJson(t == null ? '' : jsonEncode(t.toJson()));
     notifyListeners();
+    // 课表变化后同步系统通知：清除课表则撤销全部提醒，否则重新调度今天的提醒
+    if (t == null) {
+      unawaited(NotificationService.instance.cancelAll());
+    } else {
+      unawaited(scheduleClassReminders());
+    }
+  }
+
+  /// 调度今天的课程提醒（系统级定时通知，App 在后台/被杀也能弹出）
+  ///
+  /// 对今天排课的每一节课：在其**结束前 [classReminderMinutes] 分钟**调度一条
+  /// 系统通知，内容为下一节课的名称 / 开始时间 / 教室。
+  ///
+  /// 实现要点：
+  /// - 用 `zonedSchedule` 交给操作系统定时，而不是 Dart Timer —— App 进入后台后
+  ///   Timer 会被冻结/回收，只有系统级调度才能保证按时弹出；
+  /// - 前提是用户至少打开过一次 App（否则没有机会调度），这是本地通知的固有特性；
+  /// - 同一门课的通知 id 固定，重复调度只会覆盖，不会堆积重复通知。
+  Future<void> scheduleClassReminders() async {
+    final d = timetable;
+    final svc = NotificationService.instance;
+    if (d == null || !svc.supported) return;
+
+    await svc.init();
+    // 已授权时直接返回 true 且不弹框；未授权则弹出系统授权框
+    final granted = await svc.requestPermission();
+    if (!granted) return;
+
+    final now = DateTime.now();
+    final week = d.weekOf(now);
+    final day = now.weekday; // 1=周一 … 7=周日，与 TimetableCourse.day 一致
+    final midnight = DateTime(now.year, now.month, now.day);
+    final courses = d.coursesFor(day, week); // 已按 startPeriod 升序
+
+    // 最后一节课没有"下一节课"，故只遍历到 length - 1
+    for (var i = 0; i < courses.length - 1; i++) {
+      final cur = courses[i];
+      final next = courses[i + 1];
+      final endPeriod = d.periodAt(cur.endPeriod);
+      if (endPeriod == null) continue;
+
+      // 本节课结束时刻 → 提前 N 分钟提醒
+      final endAt = midnight.add(Duration(minutes: _hmOf(endPeriod.end)));
+      final remindAt =
+          endAt.subtract(const Duration(minutes: classReminderMinutes));
+
+      final nextPeriod = d.periodAt(next.startPeriod);
+      final parts = <String>[
+        if (nextPeriod != null) '${nextPeriod.start} 开始',
+        if (next.room.isNotEmpty) next.room,
+      ];
+
+      await svc.schedule(
+        id: NotificationService.idFor(day, cur.startPeriod),
+        localTime: remindAt,
+        title: '下节课：${next.name}',
+        body: parts.join(' · '),
+        payload: NotificationService.payloadTimetable,
+      );
+    }
   }
 
   /// 完成首次启动引导（写 Storage + 刷新 UI）
