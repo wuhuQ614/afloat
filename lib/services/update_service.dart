@@ -46,6 +46,15 @@ class UpdateInfo {
   }
 }
 
+/// 更新检查结果：区分"无更新"与"网络不可达"（后者不能误导用户说已是最新）
+class UpdateCheckResult {
+  /// 非 null 表示有可用新版本
+  final UpdateInfo? info;
+  /// 至少有一个清单源成功返回（true 时才可信"已是最新"）
+  final bool networkOk;
+  const UpdateCheckResult({required this.info, required this.networkOk});
+}
+
 /// 在线更新服务：检查 GitHub Releases 上的新版本并下载安装包。
 ///
 /// 远端约定：
@@ -54,40 +63,93 @@ class UpdateInfo {
 class UpdateService {
   UpdateService._();
 
-  /// 更新清单默认直链（仓库根目录，改版本号无需发新 Release）
-  static const String manifestUrl =
-      'https://raw.githubusercontent.com/wuhuQ614/afloat/main/update.json';
+  /// 更新清单候选源（按序尝试）。
+  /// 国内网络 raw.githubusercontent.com 直链常不可达，jsdelivr CDN / ghproxy 镜像通常可达；
+  /// 首个成功返回的源生效。
+  static const List<String> manifestUrls = [
+    'https://raw.githubusercontent.com/wuhuQ614/afloat/main/update.json',
+    'https://cdn.jsdelivr.net/gh/wuhuQ614/afloat@main/update.json',
+    'https://ghproxy.net/https://raw.githubusercontent.com/wuhuQ614/afloat/main/update.json',
+  ];
+
+  /// 兼容旧引用：首选清单源
+  static const String manifestUrl = manifestUrls.first;
+
+  /// 安装包下载镜像前缀：直连 GitHub Releases 失败时依次尝试
+  static const List<String> downloadMirrors = [
+    'https://ghproxy.net/',
+    'https://gh-proxy.com/',
+  ];
 
   /// 当前平台（Windows / Android / 其它）
   static bool get isWindows => !kIsWeb && Platform.isWindows;
   static bool get isAndroid => !kIsWeb && Platform.isAndroid;
 
-  /// 检查是否有新版本。
-  /// - 返回 `UpdateInfo`：远端 build 高于本地 → 有新版本；
-  /// - 返回 `null`：已是最新，或网络失败 / 清单损坏（静默当无更新，不打断用户）。
+  /// 检查是否有新版本（简化版：不区分"无更新"与"网络不可达"）。
+  /// 返回 `UpdateInfo`：远端 build 高于本地 → 有新版本；`null`：无更新或检查失败。
   static Future<UpdateInfo?> check({String? manifestUrl}) async {
+    final r = await checkEx();
+    return r.info;
+  }
+
+  /// 检查是否有新版本（完整结果）。
+  /// - [UpdateCheckResult.info] 非 null：远端 build 高于本地 → 有新版本；
+  /// - info 为 null 且 networkOk 为 true：已是最新；
+  /// - networkOk 为 false：所有清单源均不可达（网络问题，**不能**谎报"已是最新"）。
+  static Future<UpdateCheckResult> checkEx() async {
     final client = http.Client();
     try {
-      final resp = await client
-          .get(Uri.parse(manifestUrl ?? UpdateService.manifestUrl))
-          .timeout(const Duration(seconds: 10));
-      if (resp.statusCode != 200) return null;
-      final info = UpdateInfo.fromJson(
-          jsonDecode(utf8.decode(resp.bodyBytes)) as Map<String, dynamic>);
       final local = await PackageInfo.fromPlatform();
       final localBuild = int.tryParse(local.buildNumber) ?? 0;
-      if (info.build <= localBuild) return null;
-      return info;
+
+      // 依次尝试所有清单源
+      Object? lastErr;
+      for (final url in manifestUrls) {
+        try {
+          final resp = await client
+              .get(Uri.parse(url))
+              .timeout(const Duration(seconds: 8));
+          if (resp.statusCode != 200) continue;
+          final info = UpdateInfo.fromJson(
+              jsonDecode(utf8.decode(resp.bodyBytes)) as Map<String, dynamic>);
+          if (info.build <= localBuild) {
+            return UpdateCheckResult(info: null, networkOk: true);
+          }
+          return UpdateCheckResult(info: info, networkOk: true);
+        } catch (e) {
+          lastErr = e; // 记录最后一个错误，继续尝试下一个源
+        }
+      }
+      return UpdateCheckResult(info: null, networkOk: false);
     } catch (_) {
-      return null;
+      return UpdateCheckResult(info: null, networkOk: false);
     } finally {
       client.close();
     }
   }
 
   /// 下载文件到 [saveTo]，带进度回调 [onProgress]（0.0~1.0）。
-  /// 返回最终文件路径；失败抛异常。
+  /// 直连 [url] 失败时自动尝试镜像前缀（国内网络 GitHub Releases 直链常不可达）。
+  /// 返回最终文件路径；全部失败抛异常。
   static Future<String> download(
+    String url, {
+    required void Function(double progress) onProgress,
+    required String saveTo,
+  }) async {
+    final candidates = [url, for (final m in downloadMirrors) '$m$url'];
+    Object? lastErr;
+    for (final u in candidates) {
+      try {
+        onProgress(0); // 每次换源重置进度
+        return await _downloadOne(u, onProgress: onProgress, saveTo: saveTo);
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+    throw lastErr ?? HttpException('所有下载源均失败');
+  }
+
+  static Future<String> _downloadOne(
     String url, {
     required void Function(double progress) onProgress,
     required String saveTo,

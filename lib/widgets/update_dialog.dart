@@ -29,15 +29,18 @@ class UpdateDialog extends StatefulWidget {
     bool quiet = true,
     bool manual = false,
   }) async {
-    final info = await UpdateService.check();
+    final result = await UpdateService.checkEx();
     if (!context.mounted) return;
+    final info = result.info;
     if (info == null) {
       if (!quiet) {
+        // 区分"网络不可达"与"确实已最新"，避免把网络问题谎报成"已是最新版本"
+        final msg = result.networkOk ? '已是最新版本' : '网络无法访问更新服务器，请检查网络后重试';
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('已是最新版本', style: TextStyle(fontSize: 12.5)),
+          SnackBar(
+            content: Text(msg, style: const TextStyle(fontSize: 12.5)),
             behavior: SnackBarBehavior.floating,
-            duration: Duration(seconds: 2),
+            duration: const Duration(seconds: 2),
           ),
         );
       }
