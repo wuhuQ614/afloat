@@ -10,6 +10,7 @@ import 'package:desktop_drop/desktop_drop.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_math_fork/flutter_math.dart';
 import 'package:flutter_svg/flutter_svg.dart';
@@ -28,6 +29,7 @@ import 'widgets/exam_page.dart';
 import 'widgets/dev_console.dart';
 import 'widgets/settings_dialog.dart';
 import 'widgets/platform_select_page.dart';
+import 'widgets/timetable_page.dart';
 import 'widgets/glass_background.dart';
 import 'widgets/code_card.dart';
 import 'widgets/maimemo_wordbook_page.dart';
@@ -371,6 +373,14 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
   // 页面索引已上提到 AppState.page（0 学习 1 答题 2 学习报告 3 查询 | 更多: 4 题库 5 错题本 6 生词本 7 答题记录 8 默写）
   bool _lastDarkMode = false;
   bool _lastFullscreen = false;
+  /// 决定根页面结构的字段快照（用于 _onState 判断是否需要重建 MaterialApp）
+  bool _lastOnboarded = false;
+  String _lastAppMode = '';
+  String _lastUiMode = '';
+  bool _lastGlass = false;
+  int _lastPage = 0;
+  bool _lastAgentFullscreen = false;
+  bool _lastDevMode = false;
   /// 手机端浏览器页是否临时显示底部导航栏
   bool _showBrowserNav = false;
   Timer? _browserNavTimer;
@@ -390,7 +400,10 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
   static final _reLink = RegExp(r'\[([^\]]+)\]\(([^)]+)\)');
   static final _reOrderedList = RegExp(r'^(\d+)\.\s+(.*)$');
   // R7: 表格解析（| col1 | col2 | + |---|---| 分隔行）
-  static final _reTableRow = RegExp(r'^\s*\|.+\|\s*$');
+  // R38: 尾 `|` 可选——模型常省略数据行尾管道（如 `| word | pos. → 释义`），
+  // 此前要求强制 `\|$` 会让这类行无法被识别为表格行，触发"表格 0 数据行"bug
+  // （_parseTableRow 内部已经 substring 兼容无尾管道，正则无需重复约束）。
+  static final _reTableRow = RegExp(r'^\s*\|.+\|?\s*$');
   static final _reTableSeparator = RegExp(r'^\s*\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)+\|?\s*$');
   // R14: 水平分割线（--- 或 *** 或 ___）：3 个及以上相同字符即可，
   // 旧正则要求 ≥5 个字符，导致模型最常用的 "---" 显示为字面文本
@@ -410,6 +423,17 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
   @override
   void initState() {
     super.initState();
+    // 初始化模式字段快照：_state.init() 异步加载后会与初值不同，
+    // _onState 据此触发一次重建（此时 _ready 已 true，直接渲染正确分支）
+    _lastOnboarded = _state.onboardingDone;
+    _lastAppMode = _state.appMode;
+    _lastUiMode = _state.uiMode;
+    _lastGlass = _state.isGlassUI;
+    _lastDarkMode = _state.darkMode;
+    _lastFullscreen = _state.fullscreen;
+    _lastPage = _state.page;
+    _lastAgentFullscreen = _state.agentFullscreen;
+    _lastDevMode = _state.devMode;
     _state.addListener(_onState);
     _init();
     // 全局键盘监听（不受焦点转移影响）
@@ -459,10 +483,15 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
     _updateFrameRate();
   }
 
+  /// 状态监听：只在「影响根页面结构/窗口状态的字段」变化时才 setState 重建 MaterialApp。
+  /// AI 流式输出、词汇剖析进度、课程表 30s 定时刷新等高频通知一律不重建根树——
+  /// 子树内部已有各自的 ListenableBuilder 做细粒度刷新。
   void _onState() {
     if (!mounted) return;
+    var needRebuild = false;
     if (_state.darkMode != _lastDarkMode) {
       _lastDarkMode = _state.darkMode;
+      needRebuild = true;
     }
     // 全屏切换：仅在状态变化时应用，并延迟到当前帧渲染完成之后，
     // 避免启动首帧或设置对话框打开时与窗口全屏切换冲突导致白屏/卡死
@@ -473,6 +502,40 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
           windowManager.setFullScreen(_state.fullscreen).catchError((_) {});
         });
       }
+      needRebuild = true;
+    }
+    // 以下 4 个字段决定根页面树结构（加载页 / 引导页 / 课程表 / 学习模式），
+    // 变化时重建——两个模式页面由此按需构造：切走即销毁，不会同时加载
+    if (_state.onboardingDone != _lastOnboarded) {
+      _lastOnboarded = _state.onboardingDone;
+      needRebuild = true;
+    }
+    if (_state.appMode != _lastAppMode) {
+      _lastAppMode = _state.appMode;
+      needRebuild = true;
+    }
+    if (_state.uiMode != _lastUiMode) {
+      _lastUiMode = _state.uiMode;
+      needRebuild = true;
+    }
+    if (_state.isGlassUI != _lastGlass) {
+      _lastGlass = _state.isGlassUI;
+      needRebuild = true;
+    }
+    // devMode：控制全局开发者控制台挂载/卸载（位于根 Stack，需根树重建）
+    if (_state.devMode != _lastDevMode) {
+      _lastDevMode = _state.devMode;
+      needRebuild = true;
+    }
+    // page / agentFullscreen：决定"浏览器页/考场全屏独占、隐藏侧边栏"与"专注全屏"布局分支，
+    // 该判定位于子树 ListenableBuilder 之外，需根树重建才生效（均为用户点击级低频变化）
+    if (_state.page != _lastPage) {
+      _lastPage = _state.page;
+      needRebuild = true;
+    }
+    if (_state.agentFullscreen != _lastAgentFullscreen) {
+      _lastAgentFullscreen = _state.agentFullscreen;
+      needRebuild = true;
     }
     // 根据省电模式调整帧率
     _updateFrameRate();
@@ -480,8 +543,9 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
     if (_state.page != 19 && _showBrowserNav) {
       _showBrowserNav = false;
       _browserNavTimer?.cancel();
+      needRebuild = true;
     }
-    setState(() {});
+    if (needRebuild) setState(() {});
   }
 
   static const _frameRateChannel = MethodChannel('com.smartenglish/framerate');
@@ -514,14 +578,21 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
       final a = _getAiIconAsset(m);
       if (a != null) precacheImage(AssetImage(a), context);
     }
+    // 注意：此处不监听 _state 重建 MaterialApp——状态变化由 _onState 按字段判断是否需要
+    // setState（AI 流式输出等高频通知不会重建整棵树），模式页面也只在切换时才构造
     return AppScope(
       state: _state,
-      child: ListenableBuilder(
-        listenable: _state,
-        builder: (context, _) => MaterialApp(
+      child: MaterialApp(
         title: 'AFloat',
         debugShowCheckedModeBanner: false,
         navigatorKey: _rootNavKey,
+        // 中文本地化（showDatePicker 等 Material 组件需注册后才能用 zh locale）
+        localizationsDelegates: const [
+          GlobalMaterialLocalizations.delegate,
+          GlobalCupertinoLocalizations.delegate,
+          GlobalWidgetsLocalizations.delegate,
+        ],
+        supportedLocales: const [Locale('zh', 'CN'), Locale('en', 'US')],
         theme: _buildTheme(Brightness.light),
         darkTheme: _buildTheme(Brightness.dark),
         themeMode: _state.darkMode ? ThemeMode.dark : ThemeMode.light,
@@ -561,7 +632,13 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                       )
                     : !_state.onboardingDone
                         ? OnboardingPage(state: _state)
-                        : _state.uiMode.isEmpty
+                        // 课程表模式：与英语学习完全独立的两大模式，整树切换
+                        : _state.appMode == 'timetable'
+                            ? KeyedSubtree(
+                                key: const ValueKey('timetable'),
+                                child: TimetablePage(state: _state),
+                              )
+                            : _state.uiMode.isEmpty
                             ? PlatformSelectPage(
                                 onDesktop: () => _switchUiMode('desktop'),
                                 onMobile: () => _switchUiMode('mobile'),
@@ -571,8 +648,10 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                                     key: const ValueKey('english_desktop'),
                                     child: Scaffold(
                                     // 浏览器页（19）与考场/游戏一样全屏独占：隐藏侧边栏与 AI 对话栏
+                                    // 内容区不再包 _state ListenableBuilder：内部已用 pageNotifier
+                                    // 细粒度控制，AI 流式输出等高频通知不会连带重建学习/答题页
                                     body: (_state.page == 10 || _state.page == 11 || _state.page == 20 || _state.page == 19)
-                                        ? ListenableBuilder(listenable: _state, builder: (ctx, _) => _buildMainContent())
+                                        ? _buildMainContent()
                                         : (_state.agentFullscreen
                                             // R14: 专注全屏：图标导航栏 + 全宽聊天页
                                             ? ListenableBuilder(
@@ -584,7 +663,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                                               )
                                             : Row(children: [
                                                 _buildSidebar(),
-                                                Expanded(child: ListenableBuilder(listenable: _state, builder: (ctx, _) => _buildMainContent())),
+                                                Expanded(child: _buildMainContent()),
                                               ])),
                                     ),
                                   )
@@ -602,7 +681,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
             AgentPromptHost(state: _state),
           ]);
         }),
-      )),
+      ),
     );
   }
 
@@ -1022,43 +1101,50 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
     );
   }
 
+  /// 内容区：只监听 pageNotifier（切页才重建布局），AI 流式输出等高频
+  /// notifyListeners 不会连带重建学习/答题页面，右侧对话面板自行细粒度刷新
   Widget _buildMainContent() {
-    final isGlass = _state.isGlassUI;
     final c = AppColors(!_state.darkMode);
-    // 考场/游戏/浏览器沉浸模式（page==10/11/20/19）：隐藏 AI 对话栏（右侧30%），内容独占
-    if (_state.page == 10 || _state.page == 11 || _state.page == 20 || _state.page == 19) {
-      return Row(children: [
-        Expanded(child: _animatedPage()),
-      ]);
-    }
-    return Row(children: [
-      // 中间内容区（70%）
-      Expanded(
-        flex: 7,
-        child: isGlass
-          ? ClipRect(child: BackdropFilter(
-              filter: glassBlurFilter(sigma: 20),
-              child: Container(
-                decoration: BoxDecoration(
-                  gradient: glassTintGradient(c.bg, _state.darkMode ? 0.45 : 0.5),
-                ),
-                child: _animatedPage(),
-              ),
-            ))
-          : _animatedPage(),
-      ),
-      // 右侧 AI 对话助手（30%）— 监听 darkMode + chatUpdate，避免流式输出时全应用重建
-      Expanded(
-        flex: 3,
-        child: ListenableBuilder(
-          listenable: _state,
-          builder: (ctx, _) => ListenableBuilder(
-            listenable: _state.chatUpdateNotifier,
-            builder: (ctx, _) => _buildChatPanel(),
+    return ListenableBuilder(
+      listenable: _state.pageNotifier,
+      builder: (ctx, _) {
+        final isGlass = _state.isGlassUI;
+        // 考场/游戏/浏览器沉浸模式（page==10/11/20/19）：隐藏 AI 对话栏（右侧30%），内容独占
+        if (_state.page == 10 || _state.page == 11 || _state.page == 20 || _state.page == 19) {
+          return Row(children: [
+            Expanded(child: _animatedPage()),
+          ]);
+        }
+        return Row(children: [
+          // 中间内容区（70%）
+          Expanded(
+            flex: 7,
+            child: isGlass
+              ? ClipRect(child: BackdropFilter(
+                  filter: glassBlurFilter(sigma: 20),
+                  child: Container(
+                    decoration: BoxDecoration(
+                      gradient: glassTintGradient(c.bg, _state.darkMode ? 0.45 : 0.5),
+                    ),
+                    child: _animatedPage(),
+                  ),
+                ))
+              : _animatedPage(),
           ),
-        ),
-      ),
-    ]);
+          // 右侧 AI 对话助手（30%）— 监听 darkMode + chatUpdate，避免流式输出时全应用重建
+          Expanded(
+            flex: 3,
+            child: ListenableBuilder(
+              listenable: _state,
+              builder: (ctx2, _) => ListenableBuilder(
+                listenable: _state.chatUpdateNotifier,
+                builder: (ctx3, _) => _buildChatPanel(),
+              ),
+            ),
+          ),
+        ]);
+      },
+    );
   }
 
   // ===== 手机端布局 =====
@@ -1093,74 +1179,93 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
           // body 延伸到导航栏之后：玻璃染色层连续覆盖全屏，否则 bottomNavigationBar
           // 槽位露出未染色的玻璃底层，与 body 之间会出现一条锋利的色差接缝
           extendBody: true,
-          appBar: immersiveMode
-              ? null
-              : AppBar(
-            backgroundColor: glassBg,
-            elevation: 0,
-            title: Row(children: [
-              const SizedBox(width: 0),
-            ]),
-            actions: [
-              IconButton(
-                icon: const Icon(Icons.settings_outlined, size: 20),
-                onPressed: () => showDialog(context: ctx, builder: (_) => const SettingsDialog()),
-              ),
-            ],
-          ),
-          body: Stack(children: [
-            Positioned.fill(
-              child: isGlass
-                ? ClipRect(child: BackdropFilter(
-                    filter: glassBlurFilter(sigma: 20),
-                    child: Container(
-                      decoration: BoxDecoration(
-                        gradient: glassTintGradient(c.bg, _state.darkMode ? 0.4 : 0.45),
+          // 手机端顶部不再有 AppBar 容器——避免顶部"白色挡板"；
+          // 右上角的设置入口改放 body Stack 右上角（绝对定位），内容由 SafeArea 顶开状态栏
+          appBar: null,
+          // body 外层 SafeArea(top:true) 兜住状态栏空间——删 AppBar 后，
+          // 主页内容（LearnPage 等）顶部不再被刘海遮挡；bottom:false 让导航栏仍能紧贴底部
+          body: SafeArea(
+            top: true,
+            bottom: false,
+            child: Stack(children: [
+              Positioned.fill(
+                child: isGlass
+                  ? ClipRect(child: BackdropFilter(
+                      filter: glassBlurFilter(sigma: 20),
+                      child: Container(
+                        decoration: BoxDecoration(
+                          gradient: glassTintGradient(c.bg, _state.darkMode ? 0.4 : 0.45),
+                        ),
+                        // extendBody 后 Scaffold 会把导航栏高度注入 body 的 MediaQuery
+                        // padding.bottom，内容避开悬浮导航栏，染色层则连续铺满全屏
+                        child: Builder(builder: (bctx) => Padding(
+                          padding: EdgeInsets.only(bottom: MediaQuery.of(bctx).padding.bottom),
+                          child: _animatedPage(),
+                        )),
                       ),
-                      // extendBody 后 Scaffold 会把导航栏高度注入 body 的 MediaQuery
-                      // padding.bottom，内容避开悬浮导航栏，染色层则连续铺满全屏
-                      child: Builder(builder: (bctx) => Padding(
-                        padding: EdgeInsets.only(bottom: MediaQuery.of(bctx).padding.bottom),
-                        child: _animatedPage(),
-                      )),
-                    ),
-                  ))
-                : Builder(builder: (bctx) => Padding(
-                    padding: EdgeInsets.only(bottom: MediaQuery.of(bctx).padding.bottom),
-                    child: _animatedPage(),
-                  )),
-            ),
-            // 浏览器沉浸模式下，底部上滑区域唤出导航栏
-            if (browserMode && !_showBrowserNav)
+                    ))
+                  : Builder(builder: (bctx) => Padding(
+                      padding: EdgeInsets.only(bottom: MediaQuery.of(bctx).padding.bottom),
+                      child: _animatedPage(),
+                    )),
+              ),
+              // 右上角"三点"设置入口（取代原 AppBar.actions）：半透明胶囊底，
+              // 绝对定位、外层 SafeArea 已 top:true 自动避开状态栏；不占 AppBar 高度→顶部不再有白色挡板
               Positioned(
-                bottom: 0,
-                left: 0,
+                top: 0,
                 right: 0,
-                height: 28,
-                child: GestureDetector(
-                  behavior: HitTestBehavior.translucent,
-                  onVerticalDragUpdate: (details) {
-                    if (details.primaryDelta != null && details.primaryDelta! < -8) {
-                      setState(() {
-                        _showBrowserNav = true;
-                        _browserNavTimer?.cancel();
-                        _browserNavTimer = Timer(const Duration(seconds: 3), () {
-                          if (mounted) setState(() => _showBrowserNav = false);
-                        });
-                      });
-                    }
-                  },
-                  onTap: () => setState(() {
-                    _showBrowserNav = true;
-                    _browserNavTimer?.cancel();
-                    _browserNavTimer = Timer(const Duration(seconds: 3), () {
-                      if (mounted) setState(() => _showBrowserNav = false);
-                    });
-                  }),
-                  child: Container(color: Colors.transparent),
+                child: Padding(
+                  padding: const EdgeInsets.only(right: 6, top: 4),
+                  child: _NavPressFeedback(
+                    borderRadius: BorderRadius.circular(999),
+                    onTap: () => showDialog(context: ctx, builder: (_) => const SettingsDialog()),
+                    child: Container(
+                      width: 36,
+                      height: 36,
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                        color: c.isLight
+                            ? Colors.white.withValues(alpha: 0.55)
+                            : const Color(0xFF141418).withValues(alpha: 0.55),
+                        shape: BoxShape.circle,
+                      ),
+                      child: Icon(Icons.more_horiz_rounded, size: 20, color: c.textSecondary),
+                    ),
+                  ),
                 ),
               ),
-          ]),
+              // 浏览器沉浸模式下，底部上滑区域唤出导航栏
+              if (browserMode && !_showBrowserNav)
+                Positioned(
+                  bottom: 0,
+                  left: 0,
+                  right: 0,
+                  height: 28,
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.translucent,
+                    onVerticalDragUpdate: (details) {
+                      if (details.primaryDelta != null && details.primaryDelta! < -8) {
+                        setState(() {
+                          _showBrowserNav = true;
+                          _browserNavTimer?.cancel();
+                          _browserNavTimer = Timer(const Duration(seconds: 3), () {
+                            if (mounted) setState(() => _showBrowserNav = false);
+                          });
+                        });
+                      }
+                    },
+                    onTap: () => setState(() {
+                      _showBrowserNav = true;
+                      _browserNavTimer?.cancel();
+                      _browserNavTimer = Timer(const Duration(seconds: 3), () {
+                        if (mounted) setState(() => _showBrowserNav = false);
+                      });
+                    }),
+                    child: Container(color: Colors.transparent),
+                  ),
+                ),
+            ]),
+          ),
           bottomNavigationBar: immersiveMode
               ? (browserMode && _showBrowserNav ? NavigationBar(
             selectedIndex: navIndex,
@@ -1207,11 +1312,13 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
       2 => 2,
       _ => -1,
     };
-    // 毛玻璃：玻璃模式下实时模糊；高性能模式退化为高不透明度实底
+    // 毛玻璃：玻璃模式下实时模糊；高性能模式退化为高不透明度实底。
+    // 底色 alpha 极低（0.18/0.28）——导航栏彻底悬浮在主页面之上，主页卡片/背景可从胶囊
+    // 透过来看到，酷安 V16 风格；之前 0.55/0.7 仍形成"挡板"挡住主页面底部内容
     final useBlur = _state.isGlassUI && !_state.highPerformanceMode;
     final barColor = c.isLight
-        ? Colors.white.withValues(alpha: useBlur ? 0.72 : 0.98)
-        : const Color(0xFF141418).withValues(alpha: useBlur ? 0.68 : 0.97);
+        ? Colors.white.withValues(alpha: useBlur ? 0.18 : 0.28)
+        : const Color(0xFF141418).withValues(alpha: useBlur ? 0.18 : 0.28);
 
     Widget tabItem(int i, (IconData, IconData, int, String) tab) {
       final selected = selectedTab == i;
@@ -1333,10 +1440,11 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
       decoration: BoxDecoration(
         color: barColor,
         borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: c.divider),
-        boxShadow: [
-          BoxShadow(color: Colors.black.withValues(alpha: c.isLight ? 0.08 : 0.3), blurRadius: 18, offset: const Offset(0, 6)),
-        ],
+        // 边框几乎隐去（0.18）——之前 0.6 形成明显"胶囊外壳"挡板感；
+        // 不彻底删是为了在浅色背景上保留极淡的轮廓以让胶囊有形
+        border: Border.all(color: c.divider.withValues(alpha: 0.18)),
+        // 不再画 boxShadow：阴影是"挡板感"主因，去掉后导航栏真正贴合背景
+        boxShadow: const [],
       ),
       child: Stack(children: [
         // 液态玻璃顶部高光：一条自上而下渐隐的白色柔光
@@ -2150,6 +2258,9 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
   // R37: 无管道对齐表的识别（表头 + 「空格分隔的多段短横线」分隔行 + 空格对齐内容行）
   static final _reDashRowSep = RegExp(r'^\s*-{2,}(?:\s+-{2,})+\s*$');
   static final _reAlignSplit = RegExp(r'\s{2,}');
+  // R38: 单空格也能切分——用于从分隔行推算列数、以及表头用单空格分隔时的 fallback。
+  // 仅在「切分列数与分隔行列数一致」时才采信，避免把普通句子误判成表。
+  static final _reAlignSplitAnySpace = RegExp(r'\s+');
 
   /// R37: 把模型常输出的"无管道空格对齐表"预处理成标准管道表，
   /// 复用既有表格渲染（此前这类表只被渲染成分割线 + 散落文本）。
@@ -2178,9 +2289,19 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
         continue;
       }
       if (!inDashTable && out.isNotEmpty && out.last.trim().isNotEmpty && !out.last.contains('|') && _reDashRowSep.hasMatch(line)) {
-        // 上一行是表头（非空、非管道、非其他块级语法）→ 转成管道表头 + 分隔行
-        final headerCells = out.last.trim().split(_reAlignSplit);
-        if (headerCells.length >= 2) {
+        // 上一行是表头（非空、非管道、非其他块级语法）→ 转成管道表头 + 分隔行。
+        // R38: 分隔行的列数决定表头该怎么切。模型表头常只用「单个空格」分隔
+        // （如 `单词 词性 释义`），而 _reAlignSplit 要求 2+ 空格 → 切出 1 列，
+        // headerCells.length>=2 不成立，整张表退化为散落文本。
+        // 此处先用多空格切，列数与分隔行不一致时退回单空格切分。
+        final sepCols = t.split(_reAlignSplitAnySpace).length;
+        var headerCells = out.last.trim().split(_reAlignSplit);
+        if (headerCells.length != sepCols) {
+          final single = out.last.trim().split(_reAlignSplitAnySpace);
+          if (single.length == sepCols) headerCells = single;
+        }
+        // 列数仍与分隔行不一致 → 不是对齐表（可能是普通句子），退化为正常行。
+        if (headerCells.length >= 2 && headerCells.length == sepCols) {
           inDashTable = true;
           tableCols = headerCells.length;
           out[out.length - 1] = '| ${headerCells.join(' | ')} |';
@@ -2191,6 +2312,12 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
       if (inDashTable) {
         if (t.startsWith('#') || t.startsWith('>') || t.startsWith('```')) {
           inDashTable = false; // 表结束，当前行走正常解析
+          out.add(line);
+          continue;
+        }
+        // R38: 已是管道格式的数据行（模型混用「空格表头 + 管道数据行」）保持原样。
+        // 此前这类行会被按空格切分并重拼，切出 `| | word | pos | |  |` 的嵌套管道错乱列。
+        if (t.contains('|')) {
           out.add(line);
           continue;
         }
@@ -2916,46 +3043,83 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
         builder: (ctx, setSt) {
           Widget body;
           if (page == 'skills') {
-            body = Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                buildHeader('选择技能', onBack: () => setSt(() => page = 'main')),
-                Flexible(
-                  child: ListView(
-                    shrinkWrap: true,
-                    padding: EdgeInsets.zero,
-                    children: [
-                      _darkMenuItem(
-                        icon: const Icon(Icons.block_outlined, size: 20, color: textSecondary),
-                        title: '无技能',
-                        trailing: s.activeSkill.isEmpty
-                            ? const Icon(Icons.check_rounded, size: 18, color: Color(0xFF10B981))
-                            : const SizedBox(width: 18),
-                        onTap: () {
-                          s.setActiveSkill('');
-                          entry.remove();
-                          _showChatToast(context, '已清除技能');
-                        },
+            // 合并三类技能：通用对话技能（kChatSkills 5 个） + Agent 工具技能（kAgentToolSkills 19 个） +
+            // SkillStore 动态加载技能（26 内置 + 11 原生 + 用户自定义）。前者为兼容旧"已激活技能"体系，
+            // 后者才是真正"内置"技能库（用户在设置中启用/禁用、新增自定义后实时同步）
+            // ListenableBuilder(listenable: s) 让 SkillStore 异步加载完成后自动重建
+            body = ListenableBuilder(
+              listenable: s,
+              builder: (innerCtx, _) {
+                final merged = <ChatSkill>[
+                  ...kChatSkills,
+                  ...kAgentToolSkills,
+                  for (final sk in s.skillStore.enabled)
+                    ChatSkill(
+                      sk.id, sk.name, sk.description, sk.content,
+                      icon: Icons.auto_fix_high_rounded,
+                    ),
+                ];
+                // 按 id 去重：前面的来源优先（kChatSkills > kAgentToolSkills > SkillStore）
+                final seen = <String>{};
+                final skills = <ChatSkill>[];
+                for (final sk in merged) {
+                  if (seen.add(sk.id)) skills.add(sk);
+                }
+                return Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    buildHeader('选择技能', onBack: () => setSt(() => page = 'main')),
+                    if (!s.skillStore.loaded)
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+                        child: Row(children: [
+                          const SizedBox(
+                            width: 12, height: 12,
+                            child: CircularProgressIndicator(strokeWidth: 1.5, color: Color(0xFFA78BFA)),
+                          ),
+                          const SizedBox(width: 8),
+                          Text('正在加载技能库…',
+                              style: TextStyle(fontSize: 12, color: textTertiary)),
+                        ]),
                       ),
-                      const Divider(height: 1, color: Color(0xFF3D3D45)),
-                      for (final skill in kAgentToolSkills)
-                        _darkMenuItem(
-                          icon: skillIcon(skill),
-                          title: skill.name,
-                          subtitle: skill.description,
-                          trailing: s.activeSkill == skill.id
-                              ? const Icon(Icons.check_rounded, size: 18, color: Color(0xFF10B981))
-                              : const SizedBox(width: 18),
-                          onTap: () {
-                            s.setActiveSkill(skill.id);
-                            entry.remove();
-                            _showChatToast(context, '已启用技能「${skill.name}」');
-                          },
-                        ),
-                    ],
-                  ),
-                ),
-              ],
+                    Flexible(
+                      child: ListView(
+                        shrinkWrap: true,
+                        padding: EdgeInsets.zero,
+                        children: [
+                          _darkMenuItem(
+                            icon: const Icon(Icons.block_outlined, size: 20, color: textSecondary),
+                            title: '无技能',
+                            trailing: s.activeSkill.isEmpty
+                                ? const Icon(Icons.check_rounded, size: 18, color: Color(0xFF10B981))
+                                : const SizedBox(width: 18),
+                            onTap: () {
+                              s.setActiveSkill('');
+                              entry.remove();
+                              _showChatToast(context, '已清除技能');
+                            },
+                          ),
+                          const Divider(height: 1, color: Color(0xFF3D3D45)),
+                          for (final skill in skills)
+                            _darkMenuItem(
+                              icon: skillIcon(skill),
+                              title: skill.name,
+                              subtitle: skill.description,
+                              trailing: s.activeSkill == skill.id
+                                  ? const Icon(Icons.check_rounded, size: 18, color: Color(0xFF10B981))
+                                  : const SizedBox(width: 18),
+                              onTap: () {
+                                s.setActiveSkill(skill.id);
+                                entry.remove();
+                                _showChatToast(context, '已启用技能「${skill.name}」');
+                              },
+                            ),
+                        ],
+                      ),
+                    ),
+                  ],
+                );
+              },
             );
           } else if (page == 'connectors') {
             body = Column(
@@ -3831,41 +3995,6 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
       );
     }
 
-    // Max 模式自定义开关：白色 thumb + 绿色激活态 + 圆角胶囊
-    Widget maxSwitch(bool value, ValueChanged<bool> onChanged) {
-      return GestureDetector(
-        onTap: () => onChanged(!value),
-        behavior: HitTestBehavior.opaque,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 180),
-          curve: Curves.easeOut,
-          width: 44,
-          height: 26,
-          padding: const EdgeInsets.all(2.5),
-          decoration: BoxDecoration(
-            color: value ? accent : const Color(0xFF34343C),
-            borderRadius: BorderRadius.circular(999),
-          ),
-          child: AnimatedAlign(
-            duration: const Duration(milliseconds: 180),
-            curve: Curves.easeOut,
-            alignment: value ? Alignment.centerRight : Alignment.centerLeft,
-            child: Container(
-              width: 21,
-              height: 21,
-              decoration: BoxDecoration(
-                color: value ? Colors.white : const Color(0xFFBDBDC6),
-                shape: BoxShape.circle,
-                boxShadow: const [
-                  BoxShadow(color: Color(0x33000000), blurRadius: 2, offset: Offset(0, 1)),
-                ],
-              ),
-            ),
-          ),
-        ),
-      );
-    }
-
     // 模型 logo：品牌色渐变圆底 + 白色图标（不裸渲染黑灰 SVG）
     Widget modelIcon(String model) {
       return _aiLogo(model, size: 24);
@@ -3887,7 +4016,6 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
     }
     // 选中状态提升到外层闭包：避免 StatefulBuilder 每次 build 重新初始化（修复选中特效不变）
     int curSelectedIdx = initialIdx;
-    bool curMaxMode = s.chatThinking;
 
     // ===== R20: 悬停模型详情卡（仿 Cherry Studio：右侧浮出模型信息 + 思考强度） =====
     // DeepSeek 系显示 关闭/高/超高 三档思考强度（真实写入请求参数）；
@@ -4010,14 +4138,6 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                             ),
                           ),
                       ]),
-                    ] else ...[
-                      cardRow(
-                        '深度思考',
-                        maxSwitch(s.chatThinking, (v) {
-                          s.setChatThinking(v);
-                          setCard(() {});
-                        }),
-                      ),
                     ],
                   ],
                 ),
@@ -4130,31 +4250,8 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
 
     // 关闭回调：OverlayEntry 在 builder 中通过 [onClose] 传入；
     // "配置自定义模型" 等需要先关掉浮层再走新路由的入口，调用 onClose() 即可移除浮层
-    Widget content(int selectedIdx, bool maxMode, void Function(int, bool) onChanged, {VoidCallback? onClose}) {
+    Widget content(int selectedIdx, void Function(int) onChanged, {VoidCallback? onClose}) {
       final listItems = <Widget>[
-        // R23: Max 模式（1M 上下文）纯文字开关——旧版图标开关因样式问题隐藏，改为文字态
-        InkWell(
-          onTap: () {
-            s.setChatThinking(!maxMode);
-            onChanged(selectedIdx, !maxMode);
-          },
-          hoverColor: Colors.transparent,
-          splashColor: Colors.transparent,
-          highlightColor: Colors.transparent,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-            child: Row(children: [
-              Text('Max 模式（1M 上下文）',
-                  style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w700, color: textPrimary, decoration: TextDecoration.none)),
-              const Spacer(),
-              // R30: 开关为纯视觉指示（IgnorePointer 防止与外层 InkWell 双触发——
-              // 此前两层手势叠加互相抵消，表现为"开关无法切换"）
-              IgnorePointer(
-                child: maxSwitch(maxMode, (_) {}),
-              ),
-            ]),
-          ),
-        ),
         Container(height: 1, color: dividerColor),
         // 模型行：价格 + tags 都来自 ApiProfile 字段（不硬编码）；行间不加分割线（R23）
         for (var i = 0; i < profiles.length; i++) ...[
@@ -4176,7 +4273,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
               } else {
                 s.saveApiProfiles(s.apiProfiles, i, notify: false);
               }
-              onChanged(i, maxMode);
+              onChanged(i);
             },
           ),
         ],
@@ -4265,12 +4362,10 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
         isScrollControlled: true,
         builder: (ctx) {
           return StatefulBuilder(builder: (ctx, setState) {
-            void onChanged(int idx, bool mode) {
+            void onChanged(int idx) {
               setState(() {
                 curSelectedIdx = idx;
-                curMaxMode = mode;
               });
-              if (mode != s.chatThinking) s.setChatThinking(mode);
             }
             return Container(
               decoration: const BoxDecoration(
@@ -4279,7 +4374,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
               ),
               child: SizedBox(
                 height: MediaQuery.of(context).size.height * 0.6,
-                child: chrome(content(curSelectedIdx, curMaxMode, onChanged, onClose: () => Navigator.of(ctx).pop())),
+                child: chrome(content(curSelectedIdx, onChanged, onClose: () => Navigator.of(ctx).pop())),
               ),
             );
           });
@@ -4297,16 +4392,14 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
             backgroundColor: Colors.transparent,
             insetPadding: const EdgeInsets.all(24),
             child: StatefulBuilder(builder: (ctx, setState) {
-              void onChanged(int idx, bool mode) {
+              void onChanged(int idx) {
                 setState(() {
                   curSelectedIdx = idx;
-                  curMaxMode = mode;
                 });
-                if (mode != s.chatThinking) s.setChatThinking(mode);
               }
               return SizedBox(
                 width: popupWidth,
-                child: chrome(content(curSelectedIdx, curMaxMode, onChanged, onClose: () => Navigator.of(ctx).pop())),
+                child: chrome(content(curSelectedIdx, onChanged, onClose: () => Navigator.of(ctx).pop())),
               );
             }),
           ),
@@ -4329,12 +4422,10 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
       late OverlayEntry entry;
       entry = OverlayEntry(builder: (ctx) {
         return StatefulBuilder(builder: (ctx, setState) {
-          void onChanged(int idx, bool mode) {
+          void onChanged(int idx) {
             setState(() {
               curSelectedIdx = idx;
-              curMaxMode = mode;
             });
-            if (mode != s.chatThinking) s.setChatThinking(mode);
           }
           return Stack(
             children: [
@@ -4366,7 +4457,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                         child: child,
                       ),
                     ),
-                    child: chrome(content(curSelectedIdx, curMaxMode, onChanged, onClose: () {
+                    child: chrome(content(curSelectedIdx, onChanged, onClose: () {
                       hideHoverCard();
                       entry.remove();
                     })),
@@ -4427,14 +4518,6 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                     '剩余 ${bd.formatK(bd.maxTokens - bd.used)} (${(100 - bd.usedPct * 100).toStringAsFixed(1)}%)',
                     style: const TextStyle(fontSize: 11, color: Color(0xFF85859A)),
                   ),
-                  if (s.chatThinking) ...[
-                    const SizedBox(width: 8),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-                      decoration: BoxDecoration(color: const Color(0xFF10B981).withValues(alpha: 0.15), borderRadius: BorderRadius.circular(4)),
-                      child: const Text('Max 模式 1M', style: TextStyle(fontSize: 10, color: Color(0xFF10B981), fontWeight: FontWeight.w600)),
-                    ),
-                  ],
                 ]),
               ],
             ),
@@ -4756,6 +4839,12 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
     final attach = _chatAttachmentName;
     final fileText = _chatFileText;
     if (msg.isEmpty && img == null && attach == null) return;
+    // R40: 图片大小防护——base64 膨胀 33%，超 4MB 的请求体多数服务商会拒收/超时，
+    // 异常曾在回退路径无兜底时导致 chatSending 卡死（表现为"发送无响应"）。
+    if (img != null && img.length > 4 * 1024 * 1024) {
+      _showChatToast(context, '图片过大（base64 后 ${(img.length / 1024 / 1024).toStringAsFixed(1)}MB），请压缩或截图后重试');
+      return;
+    }
     if (text == null) _chatCtrl.clear();
     if (attach != null && !_conversationFiles.contains(attach)) {
       _conversationFiles.add(attach);

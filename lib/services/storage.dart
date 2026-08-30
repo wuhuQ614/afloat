@@ -298,6 +298,16 @@ class Storage {
   static String loadUiMode() => _get('uiMode', '');
   static void saveUiMode(String v) => _set('uiMode', v);
 
+  // ===== 应用模式 =====
+  /// 'english' = 英语学习 | 'timetable' = 课程表
+  static String loadAppMode() => _get('appMode', 'english');
+  static void saveAppMode(String v) => _set('appMode', v);
+
+  // ===== 课程表数据 =====
+  /// 导入的课程表 JSON 原文（含节次时间分布与课程列表），空串=未导入
+  static String loadTimetableJson() => _get('timetableJson', '');
+  static void saveTimetableJson(String v) => _set('timetableJson', v);
+
   // ===== UI 风格 =====
   /// 'classic' | 'glass'
   static String loadUiStyle() => _get('uiStyle', 'classic');
@@ -594,6 +604,9 @@ class Storage {
       'highPerformanceMode': _getBool('highPerformanceMode', false),
       'uiStyle': _get('uiStyle', 'classic'),
       'navIndicator': _get('navIndicator', 'underline'),
+      // 应用模式与课程表（JSON 原文）
+      'appMode': _get('appMode', 'english'),
+      'timetableJson': _get('timetableJson', ''),
       // 自定义词库
       'customWordbook': _get('customWordbook', ''),
     };
@@ -698,6 +711,9 @@ class Storage {
       b('highPerformanceMode');
       s('uiStyle');
       s('navIndicator');
+      // 应用模式 + 课程表
+      s('appMode');
+      s('timetableJson');
       // 自定义词库
       s('customWordbook');
       return true;

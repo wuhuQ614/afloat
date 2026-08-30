@@ -3,6 +3,7 @@
 library;
 
 import 'package:flutter/material.dart';
+import 'dart:io' show Platform;
 import '../models.dart';
 import '../state.dart';
 import 'aurora_backdrop.dart';
@@ -47,10 +48,13 @@ class OnboardingPage extends StatefulWidget {
 }
 
 class _OnboardingPageState extends State<OnboardingPage> {
-  static const _totalSteps = 5;
+  // 学习模式 4 步：应用模式 → 主题 → API → 词汇剖析 → 欢迎（"选择使用端"页已被自动检测取代）
+  // 课程表模式 2 步：应用模式 → 主题（课程表专属欢迎页已删除）
+  // 进度计数 = 当前步+1 / _totalSteps，自动适配两种模式
+  int get _totalSteps => s.appMode == 'timetable' ? 2 : 4;
   final PageController _pageCtrl = PageController();
   /// 翻页过渡层的全局 key：滚动时只局部重建这四层，不重建 PageView 本体
-  final List<GlobalKey> _pageKeys = List.generate(_totalSteps, (_) => GlobalKey());
+  final List<GlobalKey> _pageKeys = List.generate(6, (_) => GlobalKey());
   /// 当前连续页位置（仅翻页动画期间更新；未 attach 时禁止读 controller.page，会触发 assert）
   double _pos = 0;
   int _step = 0;
@@ -73,10 +77,16 @@ class _OnboardingPageState extends State<OnboardingPage> {
     _keyCtrl = TextEditingController(text: s.apiConfig.key);
     _modelCtrl = TextEditingController(text: s.apiConfig.model);
     s.addListener(_onState);
-    // 监听翻页位移：PageController 是 ChangeNotifier，滚动/动画期间逐帧通知。
-    // 此处必须用 hasClients 守卫：controller 未 attach 到 viewport 前读 .page 会
-    // 触发 "cannot be accessed before a PageView is built with it" assert（启动即崩）
     _pageCtrl.addListener(_onPageScroll);
+    // 自动识别双端：Android/iOS → mobile；其余（Windows/macOS/Linux/Web）→ desktop
+    // 取代"选择使用端"页，用户无需手动选。已选过的不再覆盖
+    _autoDetectUiMode();
+  }
+
+  void _autoDetectUiMode() {
+    if (s.uiMode.isNotEmpty) return;
+    final detected = (Platform.isAndroid || Platform.isIOS) ? 'mobile' : 'desktop';
+    s.setUiMode(detected);
   }
 
   void _onPageScroll() {
@@ -109,7 +119,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
 
   void _goTo(int idx) {
     if (idx < 0 || idx >= _totalSteps) return;
-    if (_step == 2) _saveApiIfFilled(); // 离开 API 页（任意方向）均尝试保存
+    if (_step == 2 && s.appMode != 'timetable') _saveApiIfFilled(); // 离开 API 页（任意方向）均尝试保存
     _pageCtrl.animateToPage(idx, duration: const Duration(milliseconds: 260), curve: Curves.easeOutCubic);
   }
 
@@ -124,11 +134,10 @@ class _OnboardingPageState extends State<OnboardingPage> {
   }
 
   void _skipAll() {
-    if (_step == 2) _saveApiIfFilled();
+    if (_step == 2 && s.appMode != 'timetable') _saveApiIfFilled();
     _ensureUiMode();
     s.completeOnboarding();
   }
-
   /// 未选择使用端时兜底为电脑端（与平台选择页默认一致）
   void _ensureUiMode() {
     if (s.uiMode.isEmpty) s.setUiMode('desktop');
@@ -271,24 +280,29 @@ class _OnboardingPageState extends State<OnboardingPage> {
   // PageView 本体只建一次；滚动时通过 listener + 过渡层局部 setState 驱动动效，
   // 不在 build 期间访问 controller.page（未 attach 前读会崩）
   Widget _buildPages(_Pal pal) {
-    final pages = [
-      _buildStepPlatform(pal), // 0 使用端
-      _buildStepTheme(pal),    // 1 外观模式
-      _buildStepApi(pal),      // 2 API
-      _buildStepMode(pal),     // 3 词汇剖析强度
-      _buildStepWelcome(pal),  // 4 欢迎
-    ];
-    // 关闭桌面端默认滚动条：引导页内容基本一屏放下，常驻滚动条轨道是视觉噪音
+    // "选择使用端"页已由 initState 自动检测取代；课程表专属欢迎页已删除
+    // 课程表模式：仅 2 步（应用模式 → 主题），跳过 API/词汇剖析/欢迎
+    // 学习模式：4 步（应用模式 → 主题 → API → 词汇剖析）+ 结束欢迎
+    final pages = s.appMode == 'timetable'
+        ? [
+            _buildStepAppMode(pal),  // 0 应用模式
+            _buildStepTheme(pal),    // 1 主题
+          ]
+        : [
+            _buildStepAppMode(pal),  // 0 应用模式
+            _buildStepTheme(pal),    // 1 主题
+            _buildStepApi(pal),      // 2 API
+            _buildStepMode(pal),     // 3 词汇剖析强度
+          ];
     return ScrollConfiguration(
       behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
       child: PageView(
         controller: _pageCtrl,
         physics: const ClampingScrollPhysics(),
-        // 启用隐式滚动：PageView 会完整预构建相邻步骤页（默认只缓存 250px，不足一页），
-        // 翻页时不再首帧同步构建页面，避免"卡死一下"
         allowImplicitScrolling: true,
         onPageChanged: (i) {
-          if (_step == 2) _saveApiIfFilled();
+          // 学习模式 API 页 index=2，离开尝试保存；课程表模式无 API 页
+          if (_step == 2 && s.appMode != 'timetable') _saveApiIfFilled();
           setState(() => _step = i);
         },
         children: [
@@ -320,22 +334,22 @@ class _OnboardingPageState extends State<OnboardingPage> {
     ]);
   }
 
-  // ===== 第 1 页：选择使用端（电脑端 / 手机端）— 与外观模式同款卡片 =====
-  Widget _buildStepPlatform(_Pal pal) {
-    final mode = s.uiMode.isEmpty ? 'desktop' : s.uiMode;
+  // ===== 第 0 页：选择应用模式（课程表 / 学习模式）=====
+  // 选课程表时"下一步"直接完成引导进入课程表使用页（该模式不依赖 API 配置）
+  Widget _buildStepAppMode(_Pal pal) {
     return _pageShell(_StaggeredFadeIn(active: _step == 0, children: [
-      _pageHead(pal, '选择使用端', '选择你使用的设备，之后可随时在设置中切换。'),
+      _pageHead(pal, '选择使用模式', '两大独立模式。选课程表可直接进入使用页，之后随时在侧边栏切换。'),
       Row(children: [
         Expanded(
           child: SizedBox(
             height: 220,
             child: _SelectCard(
-              title: '电脑端',
-              subtitle: 'Desktop',
-              selected: mode == 'desktop',
+              title: '学习模式',
+              subtitle: 'AI 出题 / 词汇 / 考试 / 对话',
+              selected: s.appMode != 'timetable',
               pal: pal,
-              preview: _buildDevicePreview(pal, isDesktop: true),
-              onTap: () => s.setUiMode('desktop'),
+              preview: _buildModePreview(pal, timetable: false),
+              onTap: () => s.setAppMode('english'),
             ),
           ),
         ),
@@ -344,12 +358,12 @@ class _OnboardingPageState extends State<OnboardingPage> {
           child: SizedBox(
             height: 220,
             child: _SelectCard(
-              title: '手机端',
-              subtitle: 'Mobile',
-              selected: mode == 'mobile',
+              title: '课程表',
+              subtitle: 'JSON 导入课表 · 周视图',
+              selected: s.appMode == 'timetable',
               pal: pal,
-              preview: _buildDevicePreview(pal, isDesktop: false),
-              onTap: () => s.setUiMode('mobile'),
+              preview: _buildModePreview(pal, timetable: true),
+              onTap: () => s.setAppMode('timetable'),
             ),
           ),
         ),
@@ -357,8 +371,10 @@ class _OnboardingPageState extends State<OnboardingPage> {
     ]));
   }
 
-  // ===== 第 1 页：选择主题（第三大主题：经典 / 毛玻璃 / 深色） =====
+  // ===== 第 1 页：选择主题（第三大主题：经典 / 浅蓝 / 深色） =====
+  // 毛玻璃主题的对外命名统一为"浅蓝"（学习/课程表引导页一致），沿用浅蓝玻璃的视觉隐喻
   Widget _buildStepTheme(_Pal pal) {
+    const glassLabel = '浅蓝';
     return _pageShell(_StaggeredFadeIn(active: _step == 1, children: [
       _pageHead(pal, '选择主题'),
       Row(children: [
@@ -377,7 +393,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
         Expanded(child: SizedBox(
           height: 200,
           child: _SelectCard(
-            title: '毛玻璃',
+            title: glassLabel,
             subtitle: 'Glass',
             selected: !s.darkMode && s.uiStyle == 'glass',
             pal: pal,
@@ -400,7 +416,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
           ),
         )),
         const SizedBox(width: 16),
-        Expanded(child: const SizedBox(height: 200)),
+        const Expanded(child: SizedBox(height: 200)),
       ]),
     ]));
   }
@@ -536,19 +552,6 @@ class _OnboardingPageState extends State<OnboardingPage> {
     ]));
   }
 
-  // ===== 第 4 页：欢迎语 =====
-  Widget _buildStepWelcome(_Pal pal) {
-    return _pageShell(_StaggeredFadeIn(active: _step == 4, children: [
-      const SizedBox(height: 56),
-      Text('欢迎使用', style: TextStyle(fontSize: 34, fontWeight: FontWeight.w600, color: pal.h1, letterSpacing: 2)),
-      const SizedBox(height: 16),
-      Text(
-        s.apiConfig.ready ? '一切就绪，开始你的词汇学习之旅。' : '初始配置已完成，AI 接口可稍后在设置中补充。',
-        style: TextStyle(fontSize: 14, color: pal.sub),
-      ),
-    ]));
-  }
-
   // ===== 底部：单主按钮（第 2/3 页附"上一步"文字链接） =====
   Widget _buildBottomBar(_Pal pal) {
     final isLast = _step == _totalSteps - 1;
@@ -575,7 +578,11 @@ class _OnboardingPageState extends State<OnboardingPage> {
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
               padding: const EdgeInsets.symmetric(horizontal: 24),
             ),
-            onPressed: isLast ? () { _ensureUiMode(); s.completeOnboarding(); } : () => _goTo(_step + 1),
+            onPressed: isLast
+                ? () { _ensureUiMode(); s.completeOnboarding(); }
+                // 课程表模式仅 2 步（应用模式 → 主题）：最后一步直接完成引导进入课表页；
+                // 学习模式 4 步（应用模式 → 主题 → API → 词汇剖析）
+                : () => _goTo(_step + 1),
             child: Text(isLast ? '开始使用' : '下一步'),
           ),
         ),
@@ -801,29 +808,63 @@ Widget _buildThemePreview(_Pal pal, {required String style}) {
   );
 }
 
-/// 使用端预览（电脑端宽窗口 / 手机端窄竖屏）
-Widget _buildDevicePreview(_Pal pal, {required bool isDesktop}) {
+/// 应用模式预览：学习模式（AI 界面线条）/ 课程表（迷你周视图网格）
+Widget _buildModePreview(_Pal pal, {required bool timetable}) {
   final isDark = pal.dark;
   final cardBg = isDark ? const Color(0xFF1E1E2E) : const Color(0xFFF0F0F5);
   final sidebarBg = isDark ? const Color(0xFF252538) : const Color(0xFFE8E8F0);
   final lineColor = isDark ? const Color(0xFF3A3A55) : const Color(0xFFD8D8E2);
   final accentColor = isDark ? const Color(0xFF7B7BFF) : const Color(0xFF6B6BFF);
-  final frame = _miniFrame(
+  return _miniFrame(
     cardBg: cardBg,
     sidebarBg: sidebarBg,
     lineColor: lineColor,
-    body: Row(children: [
-      if (isDesktop) ...[
-        _navRail(sidebarBg, lineColor, accentColor),
-        const SizedBox(width: 6),
-      ],
-      Expanded(child: _lineContent(cardBg, lineColor, accentColor, tall: false)),
-    ]),
-  );
-  return Container(
-    color: cardBg,
-    padding: const EdgeInsets.all(8),
-    child: isDesktop ? frame : Center(child: SizedBox(width: 88, child: frame)),
+    body: timetable
+        ? Column(children: [
+            // 表头一行：日期刻度线
+            Container(
+              height: 10,
+              decoration: BoxDecoration(color: lineColor, borderRadius: BorderRadius.circular(2)),
+            ),
+            const SizedBox(height: 4),
+            // 迷你周网格：7 列 × 3 行，随机位置放两块彩色课程块
+            Expanded(
+              child: Row(children: [
+                for (var col = 0; col < 7; col++) ...[
+                  Expanded(
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: cardBg,
+                        borderRadius: BorderRadius.circular(2),
+                        border: Border.all(color: lineColor, width: 0.6),
+                      ),
+                      margin: const EdgeInsets.symmetric(horizontal: 1),
+                      child: Column(children: [
+                        const Spacer(),
+                        if (col == 1 || col == 3)
+                          Expanded(
+                            flex: col == 1 ? 2 : 3,
+                            child: Container(
+                              margin: const EdgeInsets.all(1.5),
+                              decoration: BoxDecoration(
+                                color: (col == 1 ? const Color(0xFFB7C4F5) : const Color(0xFFD9C9F7)).withValues(alpha: isDark ? 0.45 : 1),
+                                borderRadius: BorderRadius.circular(2),
+                              ),
+                            ),
+                          ),
+                        const Spacer(flex: 2),
+                      ]),
+                    ),
+                  ),
+                ],
+              ]),
+            ),
+          ])
+        : Row(children: [
+            _navRail(sidebarBg, lineColor, accentColor),
+            const SizedBox(width: 6),
+            Expanded(child: _lineContent(cardBg, lineColor, accentColor, tall: true, highlight: true)),
+          ]),
   );
 }
 

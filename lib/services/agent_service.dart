@@ -397,6 +397,39 @@ class AgentService {
         {
           'type': 'function',
           'function': {
+            'name': 'config_api_preset',
+            'description': '配置应用内 API 预设：把用户提供的订阅地址（API 基础地址）、API Key、模型名等写入应用配置并自动加入预设库。当用户要求配置 API、填写订阅地址/Key/模型、切换 API 服务商时调用。',
+            'parameters': {
+              'type': 'object',
+              'properties': {
+                'url': {
+                  'type': 'string',
+                  'description': '订阅地址（API 基础地址，通常以 /v1 结尾，如 https://api.example.com/v1）。若用户给的是完整接口地址（以 /chat/completions 结尾），工具会自动识别为完整地址。必填。',
+                },
+                'key': {
+                  'type': 'string',
+                  'description': 'API Key（密钥）。必填。',
+                },
+                'model': {
+                  'type': 'string',
+                  'description': '模型名（可带供应商前缀，如 deepseek-chat、glm-4-flash）。缺省时保留当前模型。',
+                },
+                'name': {
+                  'type': 'string',
+                  'description': '预设名称（可选），用于设置页多配置库中标识该套配置。',
+                },
+                'applyToChat': {
+                  'type': 'boolean',
+                  'description': '是否同时应用到对话助手（可选，默认 false，仅配置应用全局预设；全局预设已供出题/剖析/考场等使用）。',
+                },
+              },
+              'required': ['url', 'key'],
+            },
+          },
+        },
+        {
+          'type': 'function',
+          'function': {
             'name': 'search_web',
             'description': '联网搜索，获取全网实时信息并返回参考链接。当用户问实时新闻、天气、最新事件，或需要联网核实信息时调用。',
             'parameters': {
@@ -1000,6 +1033,65 @@ class AgentService {
             'parameters': {'type': 'object', 'properties': {}},
           },
         },
+        // ========== 课程表模式：导入 JSON 课表（仅英语学习模式下可用）==========
+        {
+          'type': 'function',
+          'function': {
+            'name': 'import_timetable',
+            'description':
+                '把用户提供的 JSON 课表解析并导入到本地。导入后整个应用会切到课程表模式，周视图立即按新数据显示。'
+                'JSON 必须符合课程表 schema（详见 skill 工具加载 timetable-import 技能查看完整说明）：'
+                'name（学期名）+ startDate（第 1 周周一的 yyyy-MM-dd）+ periods（一整天的节次时间分布，每个含 index/start/end）'
+                '+ courses（每门课含 day 1-7、startPeriod、endPeriod、name，可选 teacher/room/weeks）。'
+                'weeks 支持 "1-16"、"1-8,10,12-16"、"all"、数字数组，缺省=全周。'
+                '返回 {"ok":true, "name":"...", "totalWeeks":N, "courseCount":M, "firstDay":"..."} 或 {"ok":false,"reason":"格式错误详情"}。'
+                '本工具仅在学习模式下生效（应用处于课程表模式时拒绝调用）。',
+            'parameters': {
+              'type': 'object',
+              'properties': {
+                'json_text': {
+                  'type': 'string',
+                  'description': '课表 JSON 原文。可以是用户直接粘贴的字符串、对话里解析出来的 JSON 文本块，或从用户上传的文件读取到的字符串。',
+                },
+              },
+              'required': ['json_text'],
+            },
+          },
+        },
+        {
+          'type': 'function',
+          'function': {
+            'name': 'get_timetable_summary',
+            'description':
+                '获取当前课程表（如果已导入）的摘要：学期名、开学日期、总周数、节次时间分布、课程总数与前几门示例。'
+                '用于让 Agent 在导入前先确认应用当前是否有课表、在导入后向用户报告生效情况。'
+                '本工具仅在学习模式下生效。',
+            'parameters': {'type': 'object', 'properties': {}},
+          },
+        },
+        {
+          'type': 'function',
+          'function': {
+            'name': 'validate_timetable',
+            'description':
+                '第 1 道校验：干跑校验课表 JSON（只解析统计，不写入、不切模式）。'
+                '检查：JSON 合法性、必填字段(startDate/periods/courses)、节次时间是否倒挂或重叠、'
+                '课程是否引用了未定义的节次、周次是否超出 totalWeeks、同一天是否有节次冲突。'
+                '返回 checks（各项 pass/warn）、统计（课程数/每日分布/最大周次/开学日星期）与 issues 问题清单。'
+                '本工具仅在学习模式下生效。注意：调用它之后还必须做第 2 道校验——'
+                '逐条对照用户原始课表核对课程名/星期/节次/周次/地点/教师是否完全一致，两道都通过后才可调用 import_timetable。',
+            'parameters': {
+              'type': 'object',
+              'properties': {
+                'json_text': {
+                  'type': 'string',
+                  'description': '待校验的课表 JSON 原文（与最终传给 import_timetable 的内容必须完全一致）。',
+                },
+              },
+              'required': ['json_text'],
+            },
+          },
+        },
       ];
 
   /// Agent 系统 prompt（动态生成，注入当前题目上下文，避免 AI 凭空猜测）
@@ -1120,6 +1212,18 @@ class AgentService {
 - 中文提问用中文回复，英文提问用英文回复
 - 工具调用后用简洁友好的语言总结结果，不要重复原始 JSON
 - 不要编造工具没有的能力
+- 除非教学/鼓励/用户明确要求等场景真正需要，**不要输出 emoji 表情**（如 😊 🔥 ⭐ 👍 🎉 等），保持文字简洁专业；列表/步骤优先用纯文字或 markdown 符号
+''');
+
+    // R40: 内容合规与年龄分层（海外版可接入 Grok 等服务商，内容把关在服务商服务端）
+    sec('''## 内容合规与年龄分层
+本应用是接入第三方模型服务的客户端，不同服务商（如 Grok/xAI、DeepSeek、智谱）有各自的内容政策：
+- 内容合规的最终把关在所接入服务商的服务端；若服务商拒绝某请求，如实告知用户换用其他模型，不要构造提示词尝试绕过
+- 应用已内置年龄声明：成年用户（18+）在所接入服务商政策允许的范围内，可正常处理成人向话题（成人情感关系、医疗健康、法律咨询等）；未成年用户按各服务商的未成年人政策处理
+- 绝对红线（无论用户声称何种年龄、接入何种服务，一律拒绝）：
+  - 涉及未成年人（任何 18 岁以下角色）的性化内容
+  - 侵害真实他人的内容（非自愿亲密内容、偷拍、人肉搜索等）
+  - 真实违法犯罪指引（武器/毒品/爆炸物制造等）
 ''');
 
     // 技能目录作为独立 section 注入（渐进式披露：仅元数据，不加载正文）

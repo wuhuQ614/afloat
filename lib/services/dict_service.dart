@@ -3,6 +3,7 @@
 /// 架构：
 /// - 通用词库 (dict.bin): 约10000词，用于词汇剖析
 /// - 专升本词库 (zsb-dict.bin): 约2900词，用于AI出题时约束词汇范围
+/// - 四级词库 (cet4-dict.bin): 约2600词，用于CET-4难度出题时约束词汇范围
 /// - 内建高频词库: 约100个常用词，始终可用
 library;
 
@@ -13,6 +14,7 @@ import 'binary_dict.dart';
 class DictService {
   static final BinaryDict _dict = BinaryDict(); // 通用词库
   static final BinaryDict _zsb = BinaryDict(); // 专升本词库
+  static final BinaryDict _cet4 = BinaryDict(); // 四级词库
 
   static Future<void> loadExternalDict() async {
     await _dict.load('assets/dict.bin');
@@ -22,7 +24,14 @@ class DictService {
     await _zsb.load('assets/zsb-dict.bin');
   }
 
+  static Future<void> loadCet4Dict() async {
+    await _cet4.load('assets/cet4-dict.bin');
+  }
+
   static bool get zsbReady => _zsb.isLoaded;
+
+  /// 四级词库是否已加载
+  static bool get cet4Ready => _cet4.isLoaded;
 
   /// 通用词库是否已加载
   static bool get dictReady => _dict.isLoaded;
@@ -33,11 +42,16 @@ class DictService {
   /// 专升本词库全部词条（词 → 释义，含词性）——按词性路由用
   static List<MapEntry<String, DictEntry>> zsbEntries() => _zsb.entries();
 
-  /// 查询英文单词（通用词库优先，回退专升本词库，再回退内建高频词库）
+  /// 四级词库全部词条（词 → 释义，含词性）——按词性路由用
+  static List<MapEntry<String, DictEntry>> cet4Entries() => _cet4.entries();
+
+  /// 查询英文单词（通用词库优先，回退四级词库，再回退专升本词库，再回退内建高频词库）
   static DictEntry? lookup(String word) {
     final w = word.toLowerCase();
     final d = _dict.lookup(w);
     if (d != null) return d;
+    final c = _cet4.lookup(w);
+    if (c != null) return c;
     final z = _zsb.lookup(w);
     if (z != null) return z;
     return _inlineDict[w];
@@ -46,6 +60,10 @@ class DictService {
   static List<String> zsbWords() => _zsb.words();
 
   static DictEntry? zsbLookup(String word) => _zsb.lookup(word.toLowerCase());
+
+  static List<String> cet4Words() => _cet4.words();
+
+  static DictEntry? cet4Lookup(String word) => _cet4.lookup(word.toLowerCase());
 
   /// 内建高频词库（约 100 个常用词，始终可用）
   static const Map<String, DictEntry> _inlineDict = {

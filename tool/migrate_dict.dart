@@ -16,6 +16,7 @@ import 'dart:io';
 void main() async {
   await migrate('assets/dict-merged.json', 'assets/dict.bin');
   await migrate('assets/zsb-dict.json', 'assets/zsb-dict.bin');
+  await migrateCet4();
   print('Done!');
 }
 
@@ -41,6 +42,58 @@ Future<void> migrate(String jsonPath, String binPath) async {
     ));
   });
 
+  await _writeBin(entries, binPath, src: jsonPath);
+}
+
+/// 四级词汇库迁移：读取 TypeWords 的 CET4_T.json（数组格式）生成 cet4-dict.bin
+///
+/// 源结构：[{"id":..,"word":"...","phonetic0":"...","phonetic1":"...",
+///            "trans":[{"pos":"n.","cn":"..."}], ...}]
+Future<void> migrateCet4() async {
+  const src = r'E:\YINGYU\YINGYU\TypeWords-master\TypeWords-master\public\dicts\en\word\CET4_T.json';
+  const binPath = 'assets/cet4-dict.bin';
+  final srcFile = File(src);
+  if (!srcFile.existsSync()) {
+    print('Skip cet4 ($src not found)');
+    return;
+  }
+
+  final raw = await srcFile.readAsString(encoding: utf8);
+  final arr = jsonDecode(raw) as List<dynamic>;
+  final entries = <_Entry>[];
+  for (final item in arr) {
+    final m = item as Map<String, dynamic>;
+    final word = (m['word'] ?? '').toString().trim().toLowerCase();
+    if (word.isEmpty) continue;
+
+    final transList = (m['trans'] as List?) ?? [];
+    var pos = '';
+    final cns = <String>[];
+    for (final t in transList) {
+      final tm = t as Map<String, dynamic>;
+      if (pos.isEmpty) pos = (tm['pos'] ?? '').toString();
+      final cn = (tm['cn'] ?? '').toString().trim();
+      if (cn.isNotEmpty && !cns.contains(cn)) cns.add(cn);
+    }
+    final phonetic = (m['phonetic0'] ?? '').toString();
+    entries.add(_Entry(
+      word: word,
+      phonetic: phonetic,
+      pos: pos,
+      translation: cns.join('；'),
+      other: '',
+    ));
+  }
+
+  if (entries.isEmpty) {
+    print('Skip cet4 (no entries)');
+    return;
+  }
+  await _writeBin(entries, binPath, src: src);
+}
+
+/// 将词条列表写入二进制词库文件
+Future<void> _writeBin(List<_Entry> entries, String binPath, {required String src}) async {
   entries.sort((a, b) => a.word.compareTo(b.word));
 
   // 第一遍：计算 index 和 data 大小
@@ -106,7 +159,7 @@ Future<void> migrate(String jsonPath, String binPath) async {
   await outFile.writeAsBytes(outBuf.toBytes());
 
   final sizeKB = outFile.lengthSync() / 1024;
-  print('$jsonPath -> $binPath: ${entries.length} entries, ${sizeKB.toStringAsFixed(1)} KB');
+  print('$src -> $binPath: ${entries.length} entries, ${sizeKB.toStringAsFixed(1)} KB');
 }
 
 class _Entry {

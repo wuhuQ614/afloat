@@ -81,6 +81,10 @@ class AppColors {
 
   Color get bg => isLight ? _lightBgTint : kDarkBg;
   Color get card => glassCardColor(isLight);
+  /// 不透明卡片色（弹窗/对话框专用）：玻璃主题下 card 为 78% 半透明白，
+  /// 作为 Dialog 底色会让下层页面（毛玻璃背景 + 粒子动效）持续参与合成，
+  /// 滚动/输入时开销明显；弹窗一律用此实底色，等价于高性能模式下的 card
+  Color get cardSolid => isLight ? Colors.white : kDarkCard;
   Color get sidebar => glassSidebarColor(isLight);
   Color get border => glassBorderColor(isLight);
   Color get cardAlt => isLight ? _lightBgTint : kDarkCardAlt;

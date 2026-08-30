@@ -13,6 +13,7 @@ import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:excel/excel.dart';
 import 'models.dart';
+import 'timetable_models.dart';
 import 'theme_colors.dart' show AppColors;
 import 'services/api_service.dart';
 import 'services/maimemo_service.dart';
@@ -303,9 +304,6 @@ int estimateContextWindowByModel(String model) {
   return 256000; // 默认 256K
 }
 
-/// Max 模式下扩展后的上下文窗口（token 数）
-const int kMaxModeContextWindow = 1000000; // 1M
-
 /// 全局状态 InheritedWidget，提供 AppState 给子树
 class AppScope extends InheritedWidget {
   final AppState state;
@@ -427,6 +425,11 @@ class AppState extends ChangeNotifier {
   bool onboardingDone = false;
   /// '' = 未选择（首次启动）, 'desktop' = 桌面端, 'mobile' = 手机端
   String uiMode = '';
+  /// 应用模式（与英语学习完全独立的两大模式）：
+  /// 'english' = 英语学习模式, 'timetable' = 课程表模式（JSON 导入课表）
+  String appMode = 'english';
+  /// 课程表模式当前生效的课表数据（null = 未导入），持久化为 JSON 原文
+  TimetableData? timetable;
   /// UI 风格：'classic' = 经典(不透明), 'glass' = 毛玻璃(半透明模糊)
   String uiStyle = 'classic';
   /// 是否为毛玻璃样式。深色模式是独立第三主题，
@@ -453,7 +456,18 @@ class AppState extends ChangeNotifier {
 
   /// 当前页面索引（0 学习 1 答题 2 学习报告 3 查询 4-8 更多功能子页 9 更多功能选择页 10 沉浸考场 11 成绩解析页）
   /// 上提到 AppState，便于对话指令出题后直接切换到答题页
-  int page = 0;
+  int _page = 0;
+  int get page => _page;
+  /// 改 page 会同时驱动 pageNotifier：内容区只监听它即可，
+  /// 不必订阅整个 _state（避免 AI 流式输出等高频通知连带重建学习页）
+  set page(int v) {
+    if (_page == v) return;
+    _page = v;
+    pageNotifier.value = v;
+  }
+
+  /// 页面切换专用通知器（仅 page 变化时自增，供内容区细粒度重建）
+  final ValueNotifier<int> pageNotifier = ValueNotifier<int>(0);
 
   /// 每次加载新题目（题库/AI 生成）时自增，供 AnswerPage 侦测换题并清空作答框
   int questionSeq = 0;
@@ -586,6 +600,22 @@ class AppState extends ChangeNotifier {
     AppColors.highPerformance = highPerformanceMode;
     onboardingDone = Storage.loadOnboardingDone();
     uiMode = Storage.loadUiMode();
+    // 自动识别双端（取代"选择使用端"页）：首次启动/老用户从未设置时按平台兜底，
+    // Android/iOS → mobile，其余（Windows/macOS/Linux/Web）→ desktop
+    if (uiMode.isEmpty) {
+      uiMode = (Platform.isAndroid || Platform.isIOS) ? 'mobile' : 'desktop';
+      Storage.saveUiMode(uiMode);
+    }
+    // 应用模式与课程表数据（timetable 为独立模式，解析失败按未导入处理，不阻塞启动）
+    appMode = Storage.loadAppMode() == 'timetable' ? 'timetable' : 'english';
+    final timetableJson = Storage.loadTimetableJson();
+    if (timetableJson.isNotEmpty) {
+      try {
+        timetable = TimetableData.parse(timetableJson);
+      } catch (_) {
+        timetable = null;
+      }
+    }
     uiStyle = Storage.loadUiStyle();
     navIndicator = Storage.loadNavIndicator();
     // 手机端启动即进入沉浸式全屏（隐藏系统状态栏/导航栏），电脑端不受影响
@@ -652,6 +682,7 @@ class AppState extends ChangeNotifier {
     // 延迟加载词典，不阻塞启动
     DictService.loadExternalDict();
     DictService.loadZsbDict();
+    DictService.loadCet4Dict();
     // 启动时恢复词库数据（生词本/自定义词库/墨墨词库），否则重启后显示为空
     loadWordBook();
     loadCustomWordbook();
@@ -919,8 +950,11 @@ class AppState extends ChangeNotifier {
     };
     final dirDesc = isZh2En ? '中译英（题目为中文，答案为英文）' : '英译中（题目为英文，答案为中文）';
     var vocabHint = '';
-    if (selectedLevel == 'zsb' && DictService.zsbReady) {
-      final allWords = DictService.zsbWords();
+    final useZsb = selectedLevel == 'zsb' && DictService.zsbReady;
+    final useCet4 = selectedLevel == 'cet4' && DictService.cet4Ready;
+    if (useZsb || useCet4) {
+      final allWords = useZsb ? DictService.zsbWords() : DictService.cet4Words();
+      final dictName = useZsb ? '专升本' : '四级';
       if (allWords.length >= 20) {
         // 根据用户设置的单词量决定每题从词库抽取的单词数
         final wordsPerQuestion = wordCount;
@@ -953,7 +987,7 @@ class AppState extends ChangeNotifier {
         for (var i = 0; i < articlePool.length; i++) {
           sb.writeln('第${i + 1}题(${articlePool[i].length}词): ${articlePool[i].join(', ')}');
         }
-        vocabHint = '\n【本次出题词汇池】以下单词已由系统从专升本大纲随机抽取（必须从对应词汇池中选词组句，允许使用派生词、变形及少量连接词/介词/冠词；不必用完全部单词）：\n$sb';
+        vocabHint = '\n【本次出题词汇池】以下单词已由系统从$dictName大纲随机抽取（必须从对应词汇池中选词组句，允许使用派生词、变形及少量连接词/介词/冠词；不必用完全部单词）：\n$sb';
       }
     }
 
@@ -975,11 +1009,11 @@ class AppState extends ChangeNotifier {
           '请以JSON数组格式返回，格式如下：\n' +
           '[{"chinese": "中文内容", "english": "英文内容", "knowledge": ["知识点1"]}]\n' +
           '只返回JSON数组，不要其他内容。';
-    } else if (selectedLevel == 'zsb' && vocabHint.isNotEmpty) {
+    } else if ((selectedLevel == 'zsb' || selectedLevel == 'cet4') && vocabHint.isNotEmpty) {
       if (selectedType == 'reading') {
         systemPrompt = '你是一个英语出题专家。请根据下方给出的【词汇池】，从每个词汇池中挑选合适的单词，写成一篇通顺、地道的英文短文（约 $wordCount 词），并针对短文出 3-4 道阅读理解选择题。' +
             (customReq.isNotEmpty ? '额外要求：$customReq。' : '') +
-            '要求：${levelGuides['zsb']}' +
+            '要求：${levelGuides[selectedLevel]}' +
             '每个词汇池对应一篇文章；英文必须优先使用词汇池中的单词（允许使用派生词、变形及少量连接词/介词/冠词），不得大量使用词汇池之外的生僻词；题目紧扣文章内容，考查细节理解、推断、主旨大意等；每题 4 个选项且只有一个正确答案。' +
             '\n\n$vocabHint' +
             '\n请以JSON数组格式返回，每道题对应一个词汇池，格式如下：\n' +
@@ -988,7 +1022,7 @@ class AppState extends ChangeNotifier {
       } else if (selectedType == 'choice') {
         systemPrompt = '你是一个英语出题专家。请根据下方给出的【词汇池】，从每个词汇池中挑选合适的单词，各出 1 道单项选择题（题干为英文，4 个选项，考查词汇辨析、固定搭配或基础语法）。' +
             (customReq.isNotEmpty ? '额外要求：$customReq。' : '') +
-            '要求：${levelGuides['zsb']}' +
+            '要求：${levelGuides[selectedLevel]}' +
             '每个词汇池对应一道题；题干和选项优先使用词汇池中的单词（允许使用派生词、变形及少量连接词/介词/冠词）；正确答案必须唯一且给出解析。' +
             '\n\n$vocabHint' +
             '\n请以JSON数组格式返回，每道题对应一个词汇池，格式如下：\n' +
@@ -997,7 +1031,7 @@ class AppState extends ChangeNotifier {
       } else if (selectedType == 'grammar') {
         systemPrompt = '你是一个英语出题专家。请根据下方给出的【词汇池】，从每个词汇池中挑选合适的单词，各出 1 道语法填空题。给出带空格的英文句子（用 ____ 表示空格），并给出中文语境提示。' +
             (customReq.isNotEmpty ? '额外要求：$customReq。' : '') +
-            '要求：${levelGuides['zsb']}' +
+            '要求：${levelGuides[selectedLevel]}' +
             '每个词汇池对应一道题；句子优先使用词汇池中的单词（允许使用派生词、变形及少量连接词/介词/冠词）。' +
             '\n\n$vocabHint' +
             '\n请以JSON数组格式返回，每道题对应一个词汇池，格式如下：\n' +
@@ -1006,7 +1040,7 @@ class AppState extends ChangeNotifier {
       } else if (selectedType == 'writing') {
         systemPrompt = '你是一个英语出题专家。请根据下方给出的【词汇池】，从每个词汇池中挑选合适的单词，各出 1 道写作题（给出写作要求和参考范文）。' +
             (customReq.isNotEmpty ? '额外要求：$customReq。' : '') +
-            '要求：${levelGuides['zsb']}' +
+            '要求：${levelGuides[selectedLevel]}' +
             '每个词汇池对应一道题；范文优先使用词汇池中的单词（允许使用派生词、变形及少量连接词/介词/冠词）。' +
             '\n\n$vocabHint' +
             '\n请以JSON数组格式返回，每道题对应一个词汇池，格式如下：\n' +
@@ -1016,7 +1050,7 @@ class AppState extends ChangeNotifier {
         // translation / mixed 默认走翻译题模式
         systemPrompt = '你是一个英语出题专家。请根据下方给出的【词汇池】，从每个词汇池中挑选合适的单词，组合成一篇通顺、地道的英文短文（约 $wordCount 词），并为每篇短文写一句对应内容的中文翻译作为题目（中文字数与英文相当）。' +
             (customReq.isNotEmpty ? '额外要求：$customReq。' : '') +
-            '要求：${levelGuides['zsb']}' +
+            '要求：${levelGuides[selectedLevel]}' +
             '每个词汇池对应生成一道题；所有英文必须优先使用词汇池中的单词（允许使用派生词、变形及少量连接词/介词/冠词），不得大量使用词汇池之外的生僻词；句子语法正确、自然流畅。' +
             '\n\n$vocabHint' +
             '\n请以JSON数组格式返回，每道题对应一个词汇池，格式如下：\n' +
@@ -2259,6 +2293,9 @@ class AppState extends ChangeNotifier {
   /// 每次弹窗自增 id，供 UI 区分是否已消费
   int _promptSeq = 0;
 
+  /// ask_user_question 问卷中"用户补充说明"在 answers map 里的约定 key（非题目 id）
+  static const String kAskUserNoteKey = '__note__';
+
   /// 弹出一个模态选择框并等待用户选择。
   /// [options] 为 [{ 'id', 'label', 'description'? }, ...]。
   /// 返回选中的 option id；用户取消/关闭或超时返回 null。
@@ -2305,6 +2342,9 @@ class AppState extends ChangeNotifier {
 
   /// UI 层用户点"确认"后回填答案，唤醒挂起的 ask_user_question 工具调用
   /// 若 answers 全空则拒绝唤醒（避免误触或重复触发导致 agent 拿到空答案继续走）
+  ///
+  /// answers 中的 `kAskUserNoteKey`（'__note__'）是用户在第 2 页填写的补充说明，
+  /// 不是题目 id——_toolAskUserQuestion 组装返回时会把它取出单独作为 note 字段
   void completeAskAnswers(Map<String, List<String>> answers) {
     final hasAny = answers.values.any((v) => v.isNotEmpty);
     if (!hasAny) return;
@@ -2488,23 +2528,37 @@ class AppState extends ChangeNotifier {
       _notifyChatUpdate();
       String rawReasoning = '';
       String fullContent = '';
-      reply = await ApiService.streamChat(
-        history,
-        prompt,
-        config: effectiveChatConfig,
-        extraParams: thinkingParams,
-        onReasoning: (chunk) {
-          rawReasoning += chunk;
-          msg.reasoning = rawReasoning;
-          _notifyChatUpdate();
-        },
-        onDelta: (chunk) {
-          fullContent += chunk;
-          msg.content = fullContent;
-          if (onDelta != null) onDelta(chunk);
-          _notifyChatUpdate();
-        },
-      );
+      try {
+        reply = await ApiService.streamChat(
+          history,
+          prompt,
+          config: effectiveChatConfig,
+          extraParams: thinkingParams,
+          onReasoning: (chunk) {
+            rawReasoning += chunk;
+            msg.reasoning = rawReasoning;
+            _notifyChatUpdate();
+          },
+          onDelta: (chunk) {
+            fullContent += chunk;
+            msg.content = fullContent;
+            if (onDelta != null) onDelta(chunk);
+            _notifyChatUpdate();
+          },
+        );
+      } catch (e) {
+        // R40: 异常必须兜住——否则 chatSending 卡死，之后所有发送被
+        // `if (chatSending) return ''` 拦截，表现为"永久无响应"。
+        // 带图消息常见失败：服务商不支持 image_url 格式 / 图片 base64 过大。
+        debugPrint('[sendChat] 流式回退异常: $e');
+        msg.content = hasImage
+            ? '抱歉，图片消息请求失败：$e\n当前模型可能不支持图片输入，或图片过大。可切换支持视觉的模型（如 GLM-4.6V / DeepSeek-VL）后重试。'
+            : '抱歉，请求失败：$e\n请检查网络或模型配置后重试。';
+        _notifyChatUpdate();
+        chatSending = false;
+        notifyListeners();
+        return msg.content;
+      }
       if (reply.isEmpty && msg.content.isEmpty) {
         reply = fallbackReply(trimmed);
         msg.content = reply;
@@ -2513,9 +2567,20 @@ class AppState extends ChangeNotifier {
       }
       _notifyChatUpdate();
     } else {
-      final r = await ApiService.callAI(history, prompt,
-          config: effectiveChatConfig, extraParams: thinkingParams);
-      reply = (r == null || r.isEmpty) ? fallbackReply(trimmed) : r;
+      try {
+        final r = await ApiService.callAI(history, prompt,
+            config: effectiveChatConfig, extraParams: thinkingParams);
+        reply = (r == null || r.isEmpty) ? fallbackReply(trimmed) : r;
+      } catch (e) {
+        // R40: 同上——异常必须兜住并复位 chatSending
+        debugPrint('[sendChat] 非流式回退异常: $e');
+        reply = '抱歉，请求失败：$e\n请检查网络或模型配置后重试。';
+        chatHistory.add(ChatMessage(role: 'ai', content: reply, modelLabel: cfg.model));
+        _notifyChatUpdate();
+        chatSending = false;
+        notifyListeners();
+        return reply;
+      }
       chatHistory.add(ChatMessage(role: 'ai', content: reply, modelLabel: cfg.model));
       _notifyChatUpdate();
     }
@@ -2854,6 +2919,8 @@ class AppState extends ChangeNotifier {
     if (name == 'write_file' || name == 'edit_file' || name == 'bash') return true;
     // 修改设置（config_settings 的 set）需要完全访问
     if (name == 'config_settings' && (args['action'] as String?) == 'set') return true;
+    // 配置 API 预设会写入 Key 等敏感信息，需要完全访问
+    if (name == 'config_api_preset') return true;
     return false;
   }
 
@@ -2940,6 +3007,8 @@ class AppState extends ChangeNotifier {
           return _toolGetStudyReport();
         case 'config_settings':
           return _toolConfigSettings(args);
+        case 'config_api_preset':
+          return _toolConfigApiPreset(args);
         case 'search_web':
           return await _toolSearchWeb(args);
         case 'backup_data':
@@ -2994,6 +3063,13 @@ class AppState extends ChangeNotifier {
           return await _toolJobKill(args);
         case 'check_repeat':
           return await _toolCheckRepeat();
+        // ========== 课程表模式（仅学习模式可见）==========
+        case 'import_timetable':
+          return await _toolImportTimetable(args);
+        case 'get_timetable_summary':
+          return _toolGetTimetableSummary();
+        case 'validate_timetable':
+          return _toolValidateTimetable(args);
         default:
           if (name.startsWith('mcp__')) {
           final toolName = name.substring(5);
@@ -3705,6 +3781,65 @@ class AppState extends ChangeNotifier {
       content: '{"ok":true,"key":"$key","value":"$value"}',
       ok: true,
       actionLabel: '已设置「$key」',
+    );
+  }
+
+  /// 配置应用内 API 预设：按用户提供的订阅地址/Key/模型写入全局配置并同步预设库。
+  /// 完整的接口地址（以 /chat/completions 结尾）自动识别为 fullUrl，否则按基础地址自动拼接。
+  ToolExecResult _toolConfigApiPreset(Map<String, dynamic> args) {
+    final url = ((args['url'] as String?) ?? '').trim();
+    final key = ((args['key'] as String?) ?? '').trim();
+    final model = ((args['model'] as String?) ?? '').trim();
+    final pname = ((args['name'] as String?) ?? '').trim();
+    final v = args['applyToChat'];
+    final applyToChat = v == true || (v as String? ?? '') == 'true';
+
+    if (url.isEmpty || key.isEmpty) {
+      return ToolExecResult(
+        content: '{"ok":false,"reason":"must_provide_url_and_key","hint":"订阅地址(url) 与 API Key(key) 均为必填"}',
+        ok: false,
+        actionLabel: '配置 API 预设失败：缺少 URL 或 Key',
+      );
+    }
+    final isFullUrl = url.endsWith('/chat/completions');
+    final newCfg = ApiConfig(
+      url: isFullUrl ? url : url.replaceAll(RegExp(r'/+$'), ''),
+      key: key,
+      model: model.isEmpty ? apiConfig.model : model,
+      temperature: apiConfig.temperature,
+      vision: apiConfig.vision,
+      fullUrl: isFullUrl,
+      questionMode: apiConfig.questionMode,
+      questionSpeed: apiConfig.questionSpeed,
+      contextLength: apiConfig.contextLength,
+    );
+    // 写入全局配置并同步预设库（同名 URL+Key 覆盖，否则追加）
+    saveApiConfig(newCfg);
+    if (pname.isNotEmpty) {
+      final idx = apiProfiles.indexWhere((p) => p.config.url == newCfg.url && p.config.key == newCfg.key);
+      if (idx >= 0) {
+        apiProfiles[idx] = ApiProfile(name: pname, config: newCfg);
+        Storage.saveApiProfiles(apiProfiles);
+      }
+    }
+    // 可选：同样写入对话助手配置库（覆盖/追加，保持选中索引）
+    if (applyToChat) {
+      final ci = chatProfiles.indexWhere((p) => p.config.url == newCfg.url && p.config.key == newCfg.key);
+      if (ci >= 0) {
+        chatProfiles[ci] = ApiProfile(name: chatProfiles[ci].name, config: newCfg);
+      } else {
+        chatProfiles.add(ApiProfile(name: pname.isEmpty ? '默认配置' : pname, config: newCfg));
+        chatProfileIdx = chatProfiles.isEmpty ? -1 : chatProfiles.length - 1;
+      }
+      chatApiConfig = newCfg;
+      Storage.saveChatConfig(chatApiConfig);
+      Storage.saveChatProfiles(chatProfiles);
+      Storage.saveChatProfileIdx(chatProfileIdx);
+    }
+    return ToolExecResult(
+      content: '{"ok":true,"url":"${newCfg.url}","model":"${newCfg.model}","apiKeyConfigured":true,"fullUrl":$isFullUrl,"appliedToChat":$applyToChat}',
+      ok: true,
+      actionLabel: '已配置 API 预设${pname.isEmpty ? '' : '「$pname」'}（${newCfg.model}）',
     );
   }
 
@@ -4615,15 +4750,26 @@ class AppState extends ChangeNotifier {
         actionLabel: '用户未在 10 分钟内回答',
       );
     }
+    // 用户在第 2 页填写的补充说明（约定 key，非题目 id）
+    final note = (answers[kAskUserNoteKey] ?? const <String>[]).join(' ').trim();
     final answerList = <Map<String, dynamic>>[];
     for (final q in qs) {
       final sel = answers[q.id] ?? const <String>[];
       answerList.add({'id': q.id, 'selected': sel, 'custom': null});
     }
     return ToolExecResult(
-      content: jsonEncode({'ok': true, 'answers': answerList, 'pending': false}),
+      content: jsonEncode({
+        'ok': true,
+        'answers': answerList,
+        'pending': false,
+        if (note.isNotEmpty) 'note': note,
+        if (note.isNotEmpty)
+          'noteHint': '以下是用户在选项之外补充填写的内容，请一并纳入考虑：$note',
+      }),
       ok: true,
-      actionLabel: answers.isEmpty ? '用户未作答（超时）' : '已收到用户回答',
+      actionLabel: answers.isEmpty
+          ? '用户未作答（超时）'
+          : (note.isEmpty ? '已收到用户回答' : '已收到用户回答（含补充说明）'),
     );
   }
 
@@ -5658,9 +5804,12 @@ class AppState extends ChangeNotifier {
       }
     }
     // 追加当前用户消息
+    // R39: 不再检 cfg.vision——用户传图就是想让模型看，模型真不识别会自己报错。
+    // 历史回传（line 5710）原本就不检 vision；当前消息却检，前后行为不一致。
+    // 视觉/图片理解能力由各模型 API 端自己处理（GLM-4.6V/DeepSeek-VL 等）。
     baseHistory.add({
       'role': 'user',
-      'content': imageData != null && imageData.isNotEmpty && cfg.vision
+      'content': (imageData != null && imageData.isNotEmpty)
           ? ApiService.buildContent(text, imageData)
           : text,
     });
@@ -5723,7 +5872,7 @@ class AppState extends ChangeNotifier {
           // 思考参数（R20 真实生效入口）：DeepSeek 按强度档位（关闭/高/超高），
           // 其他模型按"是否思考"开关
           extraParams: chatThinkExtraParams(model: cfg.model),
-          // R7: 输出上限联动上下文窗口（Max 模式 1M → 128K；普通 200K → 16K），
+          // R7: 输出上限联动上下文窗口（默认 200K → 16K），
           // 思考模式下 reasoning 会占用输出预算，已包含在联动上限中
           maxTokens: effectiveOutputLimit,
           // 暂停按钮：流式期间逐行探测，命中立即断开
@@ -5752,6 +5901,11 @@ class AppState extends ChangeNotifier {
         placeholder.statusLabel = null;
         // R9: 本轮流式决策结束，闭合本轮思考段（补记时长）
         roundThink?.endedAt = DateTime.now();
+        // R38: 流式链路中断/超时——显式标注"内容可能不完整"。
+        // 此前已累积的半截内容被静默当作完整回复展示（用户感知为"吞字"）
+        if ((resp.error ?? '').isNotEmpty) {
+          placeholder.content = '${placeholder.content}\n\n> ⚠️ ${resp.error}，回复可能不完整。回复「继续」让我接着输出。';
+        }
 
         if (resp.content == null && resp.toolCalls.isEmpty) {
           // API 失败，移除占位消息，回退
@@ -6248,6 +6402,9 @@ class AppState extends ChangeNotifier {
         final action = (args['action'] as String?) ?? 'get';
         final key = (args['key'] as String?) ?? '';
         return action == 'set' ? '正在修改设置${key.isEmpty ? '' : ' · $key'}' : '正在读取设置';
+      case 'config_api_preset':
+        final model = ((args['model'] as String?) ?? '').trim();
+        return model.isEmpty ? '正在配置 API 预设' : '正在配置 API 预设 · $model';
       case 'search_web':
         final q = ((args['query'] as String?) ?? '').trim();
         return q.isEmpty ? '正在联网搜索' : '正在搜索「${clip(q, 24)}」';
@@ -6328,6 +6485,12 @@ class AppState extends ChangeNotifier {
         return '正在压缩对话上下文';
       case 'check_repeat':
         return '正在检查重复调用';
+      case 'import_timetable':
+        return '正在导入课程表';
+      case 'get_timetable_summary':
+        return '正在读取课程表';
+      case 'validate_timetable':
+        return '正在校验课表 JSON';
       case 'list_mcp_tools':
         return '正在查询 MCP 工具清单';
       case 'call_mcp_tool':
@@ -6390,6 +6553,8 @@ class AppState extends ChangeNotifier {
         return '读取学习报告';
       case 'config_settings':
         return '读取设置';
+      case 'config_api_preset':
+        return '配置 API 预设';
       case 'search_web':
         return '联网搜索';
       case 'backup_data':
@@ -6433,6 +6598,264 @@ class AppState extends ChangeNotifier {
       default:
         return '调用工具';
     }
+  }
+
+  // ===== 课程表模式工具（仅学习模式可见）=====
+  /// 工具：import_timetable — 解析 JSON 并写入课表，触发整树切到课程表视图
+  /// 学习模式以外的 appMode 一律拒绝（防御：Agent 只在学习模式下运行，这里兜底）
+  Future<ToolExecResult> _toolImportTimetable(Map<String, dynamic> args) async {
+    if (appMode != 'english') {
+      return ToolExecResult(
+        content: '{"ok":false,"reason":"timetable_unavailable_in_timetable_mode"}',
+        ok: false,
+        actionLabel: '课程表导入仅在学习模式可用',
+      );
+    }
+    final raw = (args['json_text'] as String?) ?? '';
+    if (raw.trim().isEmpty) {
+      return ToolExecResult(
+        content: '{"ok":false,"reason":"empty_input"}',
+        ok: false,
+        actionLabel: 'json_text 不能为空',
+      );
+    }
+    try {
+      final data = TimetableData.parse(raw);
+      setTimetable(data);
+      // 导入成功后整树切到课程表视图（在 chat 流里等下一帧再切，避免在工具返回中重建路由）
+      setAppMode('timetable');
+      // 返回摘要：学期名/总周数/课数/本周第一天，方便 Agent 向用户复述
+      final firstDay = data.dateOf(data.weekOf(DateTime.now()), 1);
+      final firstDayStr = '${firstDay.year}-${firstDay.month.toString().padLeft(2, '0')}-${firstDay.day.toString().padLeft(2, '0')}';
+      final summary = {
+        'ok': true,
+        'name': data.name,
+        'totalWeeks': data.totalWeeks,
+        'periodCount': data.periods.length,
+        'courseCount': data.courses.length,
+        'firstDay': firstDayStr,
+        'startDate': '${data.startDate.year}-${data.startDate.month.toString().padLeft(2, '0')}-${data.startDate.day.toString().padLeft(2, '0')}',
+      };
+      return ToolExecResult(
+        content: jsonEncode(summary),
+        ok: true,
+        actionLabel: '已导入《${data.name}》（${data.courses.length} 门课 / ${data.totalWeeks} 周）',
+      );
+    } on TimetableFormatException catch (e) {
+      return ToolExecResult(
+        content: jsonEncode({'ok': false, 'reason': 'format_error', 'message': e.message}),
+        ok: false,
+        actionLabel: '课表 JSON 解析失败：${e.message}',
+      );
+    } catch (e) {
+      return ToolExecResult(
+        content: jsonEncode({'ok': false, 'reason': 'unknown', 'message': e.toString()}),
+        ok: false,
+        actionLabel: '导入失败：$e',
+      );
+    }
+  }
+
+  /// 工具：validate_timetable — 干跑校验（只解析统计，不写入、不切模式）。
+  /// 供 Agent 在 import_timetable 之前做第 1 道校验；第 2 道由 Agent 对照用户原始课表复核。
+  ToolExecResult _toolValidateTimetable(Map<String, dynamic> args) {
+    if (appMode != 'english') {
+      return ToolExecResult(
+        content: '{"ok":false,"reason":"timetable_unavailable_in_timetable_mode"}',
+        ok: false,
+        actionLabel: '课表校验仅在学习模式可用',
+      );
+    }
+    final raw = (args['json_text'] as String?) ?? '';
+    if (raw.trim().isEmpty) {
+      return ToolExecResult(
+        content: '{"ok":false,"reason":"empty_input"}',
+        ok: false,
+        actionLabel: 'json_text 不能为空',
+      );
+    }
+    TimetableData data;
+    try {
+      data = TimetableData.parse(raw);
+    } on TimetableFormatException catch (e) {
+      // 第 1 道校验未通过：直接返回错误，不要继续导入
+      return ToolExecResult(
+        content: jsonEncode({
+          'ok': true,
+          'valid': false,
+          'checks': {'json_parse': 'pass', 'required_fields': 'fail'},
+          'issues': [
+            {'level': 'error', 'code': 'format_error', 'message': e.message},
+          ],
+        }),
+        ok: true,
+        actionLabel: '第 1 道校验未通过：${e.message}',
+      );
+    } catch (e) {
+      return ToolExecResult(
+        content: jsonEncode({
+          'ok': true,
+          'valid': false,
+          'checks': {'json_parse': 'fail'},
+          'issues': [
+            {'level': 'error', 'code': 'parse_error', 'message': e.toString()},
+          ],
+        }),
+        ok: true,
+        actionLabel: '第 1 道校验未通过：$e',
+      );
+    }
+
+    // ---- 逐项体检 ----
+    final issues = <Map<String, dynamic>>[];
+
+    // 1) 课程为空
+    if (data.courses.isEmpty) {
+      issues.add({'level': 'warn', 'code': 'no_courses', 'message': 'courses 为空——导入后课表是空白的'});
+    }
+    // 2) 节次定义检查：时间格式已在 parse 校验，这里查倒挂与重叠
+    final reversed = <String>[];
+    final overlapped = <String>[];
+    for (var i = 0; i < data.periods.length; i++) {
+      final p = data.periods[i];
+      if (_hmOf(p.start) >= _hmOf(p.end)) {
+        reversed.add('第${p.index}节时间倒挂（${p.start} ≥ ${p.end}）');
+      }
+      if (i > 0) {
+        final prev = data.periods[i - 1];
+        if (_hmOf(p.start) < _hmOf(prev.end)) {
+          overlapped.add('第${prev.index}节与第${p.index}节时间重叠');
+        }
+      }
+    }
+    if (reversed.isNotEmpty) {
+      issues.add({'level': 'warn', 'code': 'period_reverse', 'message': '节次时间倒挂：${reversed.take(3).join('；')}'});
+    }
+    if (overlapped.isNotEmpty) {
+      issues.add({'level': 'warn', 'code': 'period_overlap', 'message': '节次时间重叠：${overlapped.take(3).join('；')}'});
+    }
+    // 3) 课程引用了未定义的节次
+    final defined = data.periods.map((p) => p.index).toSet();
+    final orphans = <String>[];
+    for (final c in data.courses) {
+      if (!defined.contains(c.startPeriod) || !defined.contains(c.endPeriod)) {
+        orphans.add('${c.name}（第${c.startPeriod}-${c.endPeriod}节）');
+      }
+    }
+    if (orphans.isNotEmpty) {
+      issues.add({'level': 'warn', 'code': 'undefined_period', 'message': '以下课程引用了 periods 中未定义的节次：${orphans.take(5).join('、')}'});
+    }
+    // 4) 周次越界
+    var maxWeek = 0;
+    for (final c in data.courses) {
+      if (c.weeks != null && c.weeks!.isNotEmpty) {
+        final m = c.weeks!.reduce((a, b) => a > b ? a : b);
+        if (m > maxWeek) maxWeek = m;
+      }
+    }
+    if (maxWeek > data.totalWeeks) {
+      issues.add({'level': 'warn', 'code': 'weeks_overflow', 'message': '课程最大周次 $maxWeek 超过 totalWeeks(${data.totalWeeks})，超出的周次不会显示'});
+    }
+    // 5) 同一天同一节次冲突
+    final conflicts = <String>[];
+    for (var day = 1; day <= 7; day++) {
+      final list = data.courses.where((c) => c.day == day).toList()
+        ..sort((a, b) => a.startPeriod.compareTo(b.startPeriod));
+      for (var i = 0; i < list.length; i++) {
+        for (var j = i + 1; j < list.length; j++) {
+          final a = list[i], b = list[j];
+          final overlapWeeks = a.weeks == null || b.weeks == null || a.weeks!.intersection(b.weeks!).isNotEmpty;
+          if (overlapWeeks && a.startPeriod <= b.endPeriod && b.startPeriod <= a.endPeriod) {
+            conflicts.add('周${['一', '二', '三', '四', '五', '六', '日'][day - 1]}：${a.name} 与 ${b.name} 节次重叠');
+          }
+        }
+      }
+    }
+    if (conflicts.length > 3) {
+      issues.add({'level': 'warn', 'code': 'course_conflict', 'message': '共 ${conflicts.length} 处时间冲突：${conflicts.take(3).join('；')}…'});
+    } else if (conflicts.isNotEmpty) {
+      issues.add({'level': 'warn', 'code': 'course_conflict', 'message': conflicts.join('；')});
+    }
+
+    // ---- 统计（供 Agent 做第 2 道人工复核）----
+    final perDay = <int>[0, 0, 0, 0, 0, 0, 0];
+    for (final c in data.courses) {
+      if (c.day >= 1 && c.day <= 7) perDay[c.day - 1]++;
+    }
+    final startWeekday = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'][data.startDate.weekday - 1];
+    final firstMonday = data.dateOf(1, 1);
+    final fmt = (DateTime d) =>
+        '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+
+    final hasError = issues.any((i) => i['level'] == 'error');
+    return ToolExecResult(
+      content: jsonEncode({
+        'ok': true,
+        'valid': !hasError,
+        'checks': {
+          'json_parse': 'pass',
+          'required_fields': 'pass',
+          'periods_time': reversed.isEmpty && overlapped.isEmpty ? 'pass' : 'warn',
+          'periods_defined': orphans.isEmpty ? 'pass' : 'warn',
+          'weeks_range': maxWeek <= data.totalWeeks ? 'pass' : 'warn',
+          'conflicts': conflicts.isEmpty ? 'pass' : 'warn',
+        },
+        'name': data.name,
+        'startDate': fmt(data.startDate),
+        'startWeekday': startWeekday,
+        'firstWeekMonday': fmt(firstMonday),
+        'totalWeeks': data.totalWeeks,
+        'periodCount': data.periods.length,
+        'courseCount': data.courses.length,
+        'maxWeekUsed': maxWeek,
+        'coursesPerDay': {'一': perDay[0], '二': perDay[1], '三': perDay[2], '四': perDay[3], '五': perDay[4], '六': perDay[5], '日': perDay[6]},
+        'issues': issues,
+        'next': '第 1 道校验已完成。请再做第 2 道校验：逐条对照用户原始课表核对课程名/星期/节次/周次/地点/教师是否完全一致，确认无误后调用 import_timetable。',
+      }),
+      ok: true,
+      actionLabel: issues.isEmpty
+          ? '第 1 道校验通过（${data.courses.length} 门课 / ${data.periods.length} 节次 / ${data.totalWeeks} 周）'
+          : '第 1 道校验通过，但有 ${issues.length} 条警告（${data.courses.length} 门课）',
+    );
+  }
+
+  static int _hmOf(String t) {
+    final p = t.split(':');
+    return int.parse(p[0]) * 60 + int.parse(p[1]);
+  }
+
+  /// 工具：get_timetable_summary — 返回当前课表摘要（未导入返回空）
+  ToolExecResult _toolGetTimetableSummary() {
+    final d = timetable;
+    if (d == null) {
+      return ToolExecResult(
+        content: jsonEncode({'ok': true, 'imported': false}),
+        ok: true,
+        actionLabel: '当前未导入课表',
+      );
+    }
+    final samples = d.courses.take(5).map((c) => {
+          'name': c.name,
+          if (c.teacher.isNotEmpty) 'teacher': c.teacher,
+          if (c.room.isNotEmpty) 'room': c.room,
+          'day': c.day,
+          'startPeriod': c.startPeriod,
+          'endPeriod': c.endPeriod,
+          if (c.weeks != null) 'weeks': TimetableData.weeksToSpec(c.weeks!),
+        }).toList();
+    return ToolExecResult(
+      content: jsonEncode({
+        'ok': true,
+        'imported': true,
+        'name': d.name,
+        'totalWeeks': d.totalWeeks,
+        'periodCount': d.periods.length,
+        'courseCount': d.courses.length,
+        'samples': samples,
+      }),
+      ok: true,
+      actionLabel: '已读《${d.name}》（${d.courses.length} 门课）',
+    );
   }
 
   /// R3: 直接赋最终文本 + 一次通知（删除假流式，消除 O(n²) substring + 人为延迟）
@@ -6945,6 +7368,7 @@ class AppState extends ChangeNotifier {
     chatShowReasoning = showReasoning;
     chatStream = stream;
     chatThinking = thinking;
+    _syncThinkLevelFromChatThinking(); // 与 DeepSeek 思考强度双向同步（防 Max 关不掉）
     if (fullAccess != null) chatFullAccess = fullAccess;
     Storage.saveChatIndependent(independent);
     Storage.saveChatConfig(config);
@@ -6977,11 +7401,30 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 设置对话思考模式（Max 模式）
+  /// 设置对话思考开关（请求是否携带思考参数；上下文窗口已固定 200K，与 1M Max 无关）
   void setChatThinking(bool v) {
     chatThinking = v;
     Storage.saveChatThinking(v);
+    _syncThinkLevelFromChatThinking();
     notifyListeners();
+  }
+
+  /// Max 开关(chatThinking) 与 DeepSeek 思考强度(chatThinkLevel) 双向同步：
+  /// - 开启 Max：强度若为 off 则提到 high（保证思考真的生效）
+  /// - 关闭 Max：强度同步置 off（DeepSeek 请求参数读的是 chatThinkLevel，
+  ///   不同步会导致"思考模式开启后 Max 关不掉"——chatThinking=false 而请求仍带思考）
+  void _syncThinkLevelFromChatThinking() {
+    if (chatThinking) {
+      if (chatThinkLevel == 'off') {
+        chatThinkLevel = 'high';
+        Storage.saveChatThinkLevel('high');
+      }
+    } else {
+      if (chatThinkLevel != 'off') {
+        chatThinkLevel = 'off';
+        Storage.saveChatThinkLevel('off');
+      }
+    }
   }
 
   /// DeepSeek 思考强度档位：off=关闭 / high=高 / ultra=超高。
@@ -7069,10 +7512,22 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 当前选中的技能对象（可能为 null）。同时搜索通用技能与 Agent 工具技能。
+  /// 当前选中的技能对象（可能为 null）。先查通用+Agent 工具技能硬编码库，
+  /// 再 fallback 到 SkillStore 动态加载的技能（含内置 + 用户自定义），
+  /// 这样在聊天面板选择 SkillStore 里的技能后 activeSkillName/currentSkill 仍能正确解析
   ChatSkill? get currentSkill {
     for (final s in kAllChatSkills) {
       if (s.id == activeSkill) return s;
+    }
+    final storeSkill = skillStore.find(activeSkill);
+    if (storeSkill != null) {
+      return ChatSkill(
+        storeSkill.id,
+        storeSkill.name,
+        storeSkill.description,
+        storeSkill.content,
+        icon: Icons.auto_fix_high_rounded,
+      );
     }
     return null;
   }
@@ -7177,7 +7632,7 @@ class AppState extends ChangeNotifier {
     return _charsToTokens('联网搜索: $searchUrl');
   }
 
-  /// 获取上下文用量分布（已使用各分类 token 数）。窗口大小根据用户设置 + Max 模式动态决定。
+  /// 获取上下文用量分布（已使用各分类 token 数）。窗口大小取用户设置（默认 200K）。
   ChatTokenBreakdown contextTokenBreakdown() {
     final system = _estimateSystemPromptTokens();
     final tools = _estimateToolsTokens();
@@ -7205,21 +7660,18 @@ class AppState extends ChangeNotifier {
   }
 
   /// 当前生效的上下文窗口长度（token 数）：
-  /// - Max 模式（chatThinking=true）→ 扩展到 1000K
-  /// - 否则用用户设置 apiConfig.contextLength（默认 200K）
+  /// 上下文窗口：固定用用户设置 apiConfig.contextLength（默认 200K）。
+  /// Max 模式（1M 上下文）已移除——所有模型统一默认 200K
   int get effectiveContextWindow {
-    if (chatThinking) return kMaxModeContextWindow;
     final userLen = apiConfig.contextLength;
     return userLen > 0 ? userLen : 200000;
   }
 
   /// 输出上限（max_tokens）联动上下文窗口：
-  /// - 上下文 ≥ 1M（Max 模式）→ 128K 输出
   /// - 上下文 ≥ 500K → 64K 输出
   /// - 其余（默认 200K）→ 16K 输出
   int get effectiveOutputLimit {
     final ctx = effectiveContextWindow;
-    if (ctx >= 1000000) return 128000;
     if (ctx >= 500000) return 64000;
     return 16000;
   }
@@ -7320,6 +7772,30 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 收起 Agent 触发的词汇剖析（切翻译方向/换题时调用：
+  /// 剖析标注会覆盖题目文本，方向切换后必须收起才能看到新题目）
+  void dismissAnalysis() {
+    if (chatTriggeredAnalysis) {
+      chatTriggeredAnalysis = false;
+      notifyListeners();
+    }
+  }
+
+  /// 切换应用模式：'english' = 英语学习 | 'timetable' = 课程表
+  void setAppMode(String mode) {
+    if (appMode == mode) return;
+    appMode = mode == 'timetable' ? 'timetable' : 'english';
+    Storage.saveAppMode(appMode);
+    notifyListeners();
+  }
+
+  /// 导入/清除课程表数据（传 null 清除）；持久化为 JSON 原文
+  void setTimetable(TimetableData? t) {
+    timetable = t;
+    Storage.saveTimetableJson(t == null ? '' : jsonEncode(t.toJson()));
+    notifyListeners();
+  }
+
   /// 完成首次启动引导（写 Storage + 刷新 UI）
   void completeOnboarding() {
     onboardingDone = true;
@@ -7386,6 +7862,11 @@ class AppState extends ChangeNotifier {
       highPerformanceMode = Storage.loadHighPerformanceMode();
       AppColors.highPerformance = highPerformanceMode;
       uiMode = Storage.loadUiMode();
+      // 备份中无 uiMode（旧版备份）时按平台自动识别，避免退回"选择使用端"页
+      if (uiMode.isEmpty) {
+        uiMode = (Platform.isAndroid || Platform.isIOS) ? 'mobile' : 'desktop';
+        Storage.saveUiMode(uiMode);
+      }
       uiStyle = Storage.loadUiStyle();
       navIndicator = Storage.loadNavIndicator();
       apiProfiles = Storage.loadApiProfiles();

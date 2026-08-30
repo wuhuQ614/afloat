@@ -474,7 +474,7 @@ class ApiConfig {
   String questionMode;
   /// 出题速度：fast=快速（关闭AI思考，直出） / normal=正常（允许AI深度思考）
   String questionSpeed;
-  /// 模型上下文窗口长度（token 数）。默认 200K；Max 模式下临时扩展到 1000K（见 AppState.chatThinking）
+  /// 模型上下文窗口长度（token 数）。默认 200K
   int contextLength;
 
   ApiConfig({this.url = '', this.key = '', this.model = 'gpt-5.1', this.temperature = '0.3', this.vision = true, this.fullUrl = false, this.questionMode = 'auto', this.questionSpeed = 'fast', this.contextLength = 200000});

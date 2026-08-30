@@ -24,6 +24,7 @@ import 'dart:math' as math;
 import '../state.dart'
     show
         AppScope,
+        AppState,
         AskUserQuestion,
         ChatMessage,
         PlanSubmission,
@@ -904,6 +905,15 @@ class _AgentAskUserPanelState extends State<AgentAskUserPanel> {
   // R29: 用户确认后自动折叠为摘要条，点击可重新展开查看
   bool _confirmed = false;
   bool _open = false;
+  /// 第 2 页（补充填写）：用户在已有选项之外自行补充说明，可留空
+  bool _onNotePage = false;
+  final TextEditingController _noteCtrl = TextEditingController();
+
+  @override
+  void dispose() {
+    _noteCtrl.dispose();
+    super.dispose();
+  }
 
   void _toggle(AskUserQuestion q, String label) {
     setState(() {
@@ -924,7 +934,26 @@ class _AgentAskUserPanelState extends State<AgentAskUserPanel> {
     });
   }
 
-  void _confirmAll() {
+  /// 第 1 页点"确定"：不直接提交，先进第 2 页让用户补充填写
+  void _goNotePage() {
+    final hasAny = widget.questions.any((q) => (widget.answers[q.id] ?? const <String>[]).isNotEmpty);
+    if (!hasAny) {
+      // 一题都没选：至少要有答案，提示用户先选择
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('请至少选择一个选项', style: TextStyle(fontSize: 12)),
+        duration: Duration(seconds: 2),
+      ));
+      return;
+    }
+    setState(() => _onNotePage = true);
+  }
+
+  /// 第 2 页点"提交"：答案 + 补充说明一起回传给 Agent
+  void _submitAll() {
+    final note = _noteCtrl.text.trim();
+    final payload = Map<String, List<String>>.from(widget.answers);
+    // 补充内容挂在约定的特殊 key 上（state 侧组装时取出，不参与题目计数）
+    if (note.isNotEmpty) payload[AppState.kAskUserNoteKey] = [note];
     final summary = <String>[];
     for (final q in widget.questions) {
       final sel = widget.answers[q.id] ?? const <String>[];
@@ -932,9 +961,11 @@ class _AgentAskUserPanelState extends State<AgentAskUserPanel> {
     }
     // 回传 AppState：唤醒挂起的 ask_user_question 工具调用，
     // 让模型下一轮真正拿到用户选择（此前只弹 SnackBar，答案无回传路径）
-    AppScope.of(context).completeAskAnswers(Map<String, List<String>>.from(widget.answers));
+    AppScope.of(context).completeAskAnswers(payload);
+    widget.msgRef.askAnswers = payload;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text('已选择：${summary.join(" | ")}', style: const TextStyle(fontSize: 12)),
+      content: Text(note.isEmpty ? '已提交：${summary.join(" | ")}' : '已提交（含补充）：${summary.join(" | ")}',
+          style: const TextStyle(fontSize: 12)),
       duration: const Duration(seconds: 2),
     ));
     // R29: 作答完成 → 自动折叠
@@ -951,6 +982,7 @@ class _AgentAskUserPanelState extends State<AgentAskUserPanel> {
 
     // R29: 已确认 → 折叠为一条摘要（点击展开完整面板）
     if (_confirmed) {
+      final note = (widget.answers[AppState.kAskUserNoteKey] ?? const <String>[]).join('');
       final answerSummary = widget.questions.map((q) {
         final sel = widget.answers[q.id] ?? const <String>[];
         final qq = q.question.length > 14 ? '${q.question.substring(0, 14)}…' : q.question;
@@ -972,12 +1004,24 @@ class _AgentAskUserPanelState extends State<AgentAskUserPanel> {
               const Icon(Icons.check_circle_rounded, size: 15, color: Color(0xFF10B981)),
               const SizedBox(width: 8),
               Expanded(
-                child: Text(
-                  '已回答：$answerSummary',
-                  style: TextStyle(fontSize: 12, color: textSecondary),
-                  maxLines: _open ? 6 : 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
+                  Text(
+                    '已回答：$answerSummary',
+                    style: TextStyle(fontSize: 12, color: textSecondary),
+                    maxLines: _open ? 6 : 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  if (note.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 3),
+                      child: Text(
+                        '补充：$note',
+                        style: TextStyle(fontSize: 11.5, color: accent, height: 1.35),
+                        maxLines: _open ? 8 : 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                ]),
               ),
               Icon(_open ? Icons.keyboard_arrow_up_rounded : Icons.keyboard_arrow_down_rounded, size: 16, color: textSecondary),
             ]),
@@ -986,6 +1030,83 @@ class _AgentAskUserPanelState extends State<AgentAskUserPanel> {
       );
     }
 
+    // ===== 第 2 页：补充填写（在已选项之外自行补充说明，可留空）=====
+    if (_onNotePage) {
+      return Container(
+        margin: const EdgeInsets.only(top: 4),
+        decoration: BoxDecoration(
+          color: cardBg,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: accent.withValues(alpha: 0.3)),
+        ),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 10, 12, 2),
+            child: Row(children: [
+              Icon(Icons.edit_note_rounded, size: 14, color: accent),
+              const SizedBox(width: 6),
+              Text('补充说明（可选）', style: TextStyle(fontSize: 13, color: textPrimary, fontWeight: FontWeight.w600)),
+            ]),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 2, 12, 6),
+            child: Text(
+              widget.questions.map((q) {
+                final sel = widget.answers[q.id] ?? const <String>[];
+                final qq = q.question.length > 12 ? '${q.question.substring(0, 12)}…' : q.question;
+                return '$qq：${sel.isEmpty ? '未选' : sel.join('、')}';
+              }).join('；'),
+              style: TextStyle(fontSize: 11, color: textSecondary, height: 1.45),
+              maxLines: 3,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
+            child: TextField(
+              controller: _noteCtrl,
+              minLines: 3,
+              maxLines: 6,
+              autofocus: true,
+              style: TextStyle(fontSize: 12.5, color: textPrimary, height: 1.5),
+              decoration: InputDecoration(
+                hintText: '还有什么要告诉 AI 的？例如具体要求、约束、偏好…',
+                hintStyle: TextStyle(fontSize: 12, color: textSecondary.withValues(alpha: 0.7)),
+                filled: true,
+                fillColor: widget.light ? Colors.white : const Color(0xFF1E1E23),
+                contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide(color: borderColor)),
+                enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide(color: borderColor)),
+                focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide(color: accent, width: 1.4)),
+              ),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+            child: Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+              TextButton(
+                onPressed: () => setState(() => _onNotePage = false),
+                child: Text('返回修改', style: TextStyle(fontSize: 12, color: textSecondary)),
+              ),
+              const SizedBox(width: 6),
+              FilledButton(
+                onPressed: _submitAll,
+                style: FilledButton.styleFrom(
+                  backgroundColor: accent,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
+                  minimumSize: Size.zero,
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+                child: const Text('提交', style: TextStyle(fontSize: 12)),
+              ),
+            ]),
+          ),
+        ]),
+      );
+    }
+
+    // ===== 第 1 页：选项选择 =====
     return Container(
       margin: const EdgeInsets.only(top: 4),
       decoration: BoxDecoration(
@@ -1051,9 +1172,17 @@ class _AgentAskUserPanelState extends State<AgentAskUserPanel> {
         Padding(
           padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
           child: Row(mainAxisAlignment: MainAxisAlignment.end, children: [
-            TextButton(
-              onPressed: _confirmAll,
-              child: const Text('已选择', style: TextStyle(fontSize: 12)),
+            // "已选择" → "确定"：点击后进入第 2 页补充填写，而不是直接提交
+            FilledButton(
+              onPressed: _goNotePage,
+              style: FilledButton.styleFrom(
+                backgroundColor: accent,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
+                minimumSize: Size.zero,
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+              child: const Text('确定', style: TextStyle(fontSize: 12)),
             ),
           ]),
         ),

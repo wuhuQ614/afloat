@@ -9,6 +9,9 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+  intl: any
   http: ^1.2.2
   shared_preferences: ^2.3.2
   file_picker: ^8.1.2
@@ -37,6 +40,7 @@ flutter:
   assets:
     - assets/dict.bin
     - assets/zsb-dict.bin
+    - assets/cet4-dict.bin
     - assets/questions.json
     - assets/grammar_course.json
     - assets/ai-icons/

@@ -284,40 +284,8 @@ class _GlassBasePainter extends CustomPainter {
         );
       }
     }
-
-    // 5) 星座多边形（引导页右下角的几何点缀）：细线五边形 + 发光节点，
-    //    节点用玻璃配色（天蓝/薰衣草紫/青），逐点错相闪烁、整体随呼吸明暗。
-    const nodes = [
-      Offset(0.845, 0.600),
-      Offset(0.940, 0.685),
-      Offset(0.905, 0.830),
-      Offset(0.785, 0.870),
-      Offset(0.752, 0.715),
-    ];
-    final pts = [for (final n in nodes) Offset(n.dx * w, n.dy * h)];
-    linePaint.color = gridLine.withValues(alpha: (m.isLight ? 0.20 : 0.42) * breathe);
-    canvas.drawPath(Path()..addPolygon(pts, true), linePaint);
-    final nodeCols = m.isLight
-        ? const [Color(0xFF5EB2F7), Color(0xFF8E7BF3), Color(0xFF2FBFD8), Color(0xFF5EB2F7), Color(0xFF8E7BF3)]
-        : const [Color(0xFF7FC4F8), Color(0xFFA78BFA), Color(0xFF6FD8E8), Color(0xFF7FC4F8), Color(0xFFA78BFA)];
-    for (var i = 0; i < pts.length; i++) {
-      final tw = 0.6 + 0.4 * math.sin(m.elapsed * 0.9 + i * 1.7);
-      final p = pts[i];
-      const glowR = 14.0;
-      canvas.drawCircle(
-        p,
-        glowR,
-        Paint()
-          ..shader = RadialGradient(colors: [
-            nodeCols[i % nodeCols.length].withValues(alpha: 0.35 * tw * darkScale),
-            nodeCols[i % nodeCols.length].withValues(alpha: 0),
-          ]).createShader(Rect.fromCircle(center: p, radius: glowR)),
-      );
-      canvas.drawRect(
-        Rect.fromLTWH(p.dx - 1.6, p.dy - 1.6, 3.2, 3.2),
-        Paint()..color = nodeCols[i % nodeCols.length].withValues(alpha: (m.isLight ? 0.75 : 0.95) * tw),
-      );
-    }
+    // 注：原先的第 5) 星座多边形（右下角五边形 + 发光节点）已取消——
+    // 课程表页大块留白区域星座显得突兀，删除后背景更干净
   }
 
   /// 沿采样点展开光带多边形并柔边填充：宽度包络两端收窄、中部饱满

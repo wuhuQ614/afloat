@@ -28,11 +28,15 @@ class AIResponse {
   final List<ToolCall> toolCalls;
   final String reasoning; // 思考过程内容（reasoning_content 字段）
   final String? finishReason; // 'stop' | 'length'（输出被 max_tokens 截断）| 'tool_calls' | ...
+  // R38: 流式链路错误（连接中断/空闲超时等）——已累积内容照常返回，
+  // 但调用方必须知道"内容可能不完整"，否则截断被当作完整回复静默展示
+  final String? error;
   const AIResponse({
     required this.content,
     required this.toolCalls,
     this.reasoning = '',
     this.finishReason,
+    this.error,
   });
 }
 
@@ -514,6 +518,10 @@ class ApiService {
       toolCalls: toolCalls,
       reasoning: reasoning,
       finishReason: finishReason,
+      // R38: 流式链路错误透传（中断/超时）——调用方据此提示"内容可能不完整"
+      error: lastError != null && (lastError!.contains('流式响应中断') || lastError!.contains('流式响应超时'))
+          ? lastError
+          : null,
     );
   }
 

@@ -139,9 +139,9 @@ class _AnswerPageState extends State<AnswerPage> {
           ),
           padding: const EdgeInsets.all(3),
           child: Row(mainAxisSize: MainAxisSize.min, children: [
-            _buildDirSwitch('中', s.isZh2En, () => s.setDirection('zh2en'), c),
+            _buildDirSwitch('中', s.isZh2En, _switchDir('zh2en'), c),
             const SizedBox(width: 3),
-            _buildDirSwitch('英', !s.isZh2En, () => s.setDirection('en2zh'), c),
+            _buildDirSwitch('英', !s.isZh2En, _switchDir('en2zh'), c),
           ]),
         ),
       ],
@@ -162,6 +162,14 @@ class _AnswerPageState extends State<AnswerPage> {
   // 中英方向分段切换：
   //  - 浅色主题：选中态用「深色字 + 浅灰容器」(避免白字融白底)
   //  - 深色主题：选中态用「白色字 + 深灰容器」(保持原有对比)
+  // 切换前收起词汇剖析：剖析标注(固定渲染英文源)会覆盖题目文本，不收起则方向变了
+  // 题目显示却不变，表现为"中英切换无反应"
+  VoidCallback _switchDir(String d) => () {
+        setState(() => _showAnalysis = false);
+        s.dismissAnalysis();
+        s.setDirection(d);
+      };
+
   Widget _buildDirSwitch(String label, bool active, VoidCallback onTap, AppColors c) {
     // 选中态前景色按主题取
     final activeTextColor = c.isLight ? c.primaryText : Colors.white;
@@ -1950,6 +1958,8 @@ class _LearnPageState extends State<LearnPage> {
     parts.add('每题约 $wordCount 词');
     if (_selectedLevel == 'zsb') {
       parts.add('必须从专升本大纲词汇中选词，不得使用超纲词汇');
+    } else if (_selectedLevel == 'cet4') {
+      parts.add('必须从四级大纲词汇中选词，不得使用超纲词汇');
     }
     final customReq = parts.join('；');
 

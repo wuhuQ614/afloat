@@ -182,6 +182,8 @@ class _SettingsDialogState extends State<SettingsDialog> {
           body: ListView(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
             children: [
+              _buildAppModeCard(s, c),
+              const SizedBox(height: 14),
               _mobileGroup(c, const [
                 ['model', '模型设置'],
                 ['interface', '界面设置'],
@@ -283,7 +285,9 @@ class _SettingsDialogState extends State<SettingsDialog> {
               Expanded(
                 child: SingleChildScrollView(
                   padding: const EdgeInsets.fromLTRB(28, 8, 28, 24),
-                  child: _buildSection(s, c),
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    _buildSection(s, c),
+                  ]),
                 ),
               ),
             ]),
@@ -338,6 +342,65 @@ class _SettingsDialogState extends State<SettingsDialog> {
           ),
         ),
       ),
+    );
+  }
+
+  /// 应用模式切换卡：课程表 / 学习模式（桌面 + 手机共用）
+  /// 切换后整树切换到对应模式，UI 立即反映
+  Widget _buildAppModeCard(AppState s, AppColors c) {
+    final isTimetable = s.appMode == 'timetable';
+    Widget seg(String label, IconData icon, bool selected, VoidCallback onTap) {
+      return Expanded(
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: onTap,
+            borderRadius: BorderRadius.circular(10),
+            child: Container(
+              height: 60,
+              decoration: BoxDecoration(
+                color: selected ? c.primaryBg : Colors.transparent,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: selected ? c.primary.withValues(alpha: 0.4) : c.border, width: selected ? 1.4 : 1),
+              ),
+              child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+                Icon(icon, size: 19, color: selected ? c.primary : c.textTertiary),
+                const SizedBox(height: 3),
+                Text(label, style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: selected ? c.primary : c.textSecondary)),
+              ]),
+            ),
+          ),
+        ),
+      );
+    }
+    return Container(
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+      decoration: BoxDecoration(
+        color: c.inputFill,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: c.border),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Icon(Icons.swap_horizontal_circle_outlined, size: 16, color: c.textTertiary),
+          const SizedBox(width: 6),
+          Text('应用模式', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: c.textSecondary)),
+        ]),
+        const SizedBox(height: 10),
+        Row(children: [
+          seg('课程表', Icons.calendar_month_outlined, isTimetable, () {
+            if (isTimetable) return;
+            if (s.uiMode.isEmpty) s.setUiMode('desktop');
+            s.setAppMode('timetable');
+          }),
+          const SizedBox(width: 8),
+          seg('学习模式', Icons.school_outlined, !isTimetable, () {
+            if (!isTimetable) return;
+            if (s.uiMode.isEmpty) s.setUiMode('desktop');
+            s.setAppMode('english');
+          }),
+        ]),
+      ]),
     );
   }
 
@@ -661,6 +724,20 @@ class _SettingsDialogState extends State<SettingsDialog> {
   Widget _sectionInterfaceContent(AppState s, AppColors c) {
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       _sectionTitle('界面设置', c),
+      const SizedBox(height: 14),
+      // 应用模式（课程表 / 学习模式）
+      _settingRow('应用模式', c, child: Wrap(spacing: 10, runSpacing: 8, children: [
+        _buildChip2(s.appMode, 'timetable', '课程表', s, c, (_) {
+          if (s.appMode == 'timetable') return;
+          if (s.uiMode.isEmpty) s.setUiMode('desktop');
+          s.setAppMode('timetable');
+        }),
+        _buildChip2(s.appMode, 'english', '学习模式', s, c, (_) {
+          if (s.appMode == 'english') return;
+          if (s.uiMode.isEmpty) s.setUiMode('desktop');
+          s.setAppMode('english');
+        }),
+      ])),
       const SizedBox(height: 14),
       // 界面模式
       _settingRow('界面模式', c, child: Wrap(spacing: 10, runSpacing: 8, children: [

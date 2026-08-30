@@ -62,6 +62,7 @@ const List<String> kBundledSkillFiles = [
   'frontend-design',
   'flutter-ui-ux',
   'github',
+  'api-preset-config',
   'find-skill',
   'alipay-aipay',
   'glm-image-gen',
