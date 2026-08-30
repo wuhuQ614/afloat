@@ -4,24 +4,25 @@
 ///   数条宽大、两端收窄、边缘柔和的光带缓慢漂移摆动，浅蓝白核心 + 天蓝外晕。
 /// - 深色模式：深海霓虹极光——同构光带，但配色更饱和（青蓝/电光蓝）、
 ///   发光更强（plus 混合），在黑底上形成深邃的霓虹光幕。
-/// - 毛玻璃主题（liquidGlass）：液态玻璃——底层多彩柔光斑上悬浮数颗缓慢游走、
-///   边缘持续形变的半透明液滴，透过液滴可见轻微放大错位的底图（折射），
-///   配合白色厚度渐变与明亮边缘描边，呈现厚玻璃质感。
+/// - 毛玻璃主题（liquidGlass）：液态玻璃——高级晨光氛围（R26 起去掉底层的
+///   彩色泡泡球与悬浮液滴，改为"只有光、没有物"的构成）：
+///   整幅对角弥散的晨光渐变（中心缓漂）+ 两条超宽、边缘完全柔化的斜向光带
+///   （缓慢漂移，只留明暗层次观感）+ 数十颗 1~2px 微光尘粒子（上浮游动），
+///   动静结合呈现通透克制的高级感，配色与主界面 GlassBackground 天蓝同族一致。
 ///
 /// 实现说明：
 ///  - 光带由 4 个归一化锚点定义，锚点按正弦缓慢摆动；Catmull-Rom 采样成
 ///    平滑曲线后，沿法线向两侧展开为多边形（宽度包络两端收窄、中部饱满），
 ///    再填充"沿带方向透明→主色→透明"的线性渐变 + MaskFilter 高斯模糊。
 ///    每条带画两层：外层宽而淡（光晕），内层窄而亮（白色核心），形成丝缎质感。
-///  - 液滴轮廓为半径受 2 组正弦谐波调制的闭合曲线（液态形变）；底层光斑先录制
-///    成 Picture，液滴 clip 内重放（放大 + 偏移）制造折射错位。
+///  - 光尘粒子使用固定种子的伪随机序列（每帧重复），位置是时间的纯函数，
+///    无需状态管理，纵向循环上浮 + 横向轻摆 + 透明度浮潜。
 ///  - Ticker 驱动（非 AnimationController），每帧只重绘画布（repaint listenable），
 ///    不重建 widget 子树；active=false 时停 Ticker，零开销。
-///  - 全平台启用：每帧十余次模糊填充/描边，开销可控。
+///  - 全平台启用：每帧 2 次模糊光带 + 64 颗小粒子，开销可控。
 library;
 
 import 'dart:math' as math;
-import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 
@@ -124,35 +125,70 @@ const List<_Ribbon> _ribbons = [
   ),
 ];
 
-/// 一颗液态玻璃液滴的静态描述（位置/漂移幅度均为归一化坐标）
-class _GBlob {
-  /// 中心（相对画布宽/高）
-  final Offset c;
+/// 一条宽幅柔光带的静态描述（位置用相对画布的归一化坐标，运行时再换算成像素）
+class _Beam {
+  /// 4 个锚点（相对画布宽/高），Catmull-Rom 插值成平滑曲线
+  final List<Offset> anchors;
 
-  /// 基础半径（相对画布高度）
-  final double r;
+  /// 基础宽度（相对画布高度）
+  final double width;
 
-  /// 漂移幅度（相对画布宽/高）
-  final double dx, dy;
+  /// 锚点摆动幅度（相对画布高度）
+  final double sway;
 
-  /// 漂移角速度 rad/s
+  /// 摆动角速度 rad/s（越小越缓慢）
   final double speed;
 
-  /// 初相
+  /// 初相，错开各带节奏
   final double phase;
 
-  /// 取色索引
+  /// 取色索引（取模）
   final int colorIndex;
 
-  const _GBlob(this.c, this.r, this.dx, this.dy, this.speed, this.phase, this.colorIndex);
+  /// 整体不透明度系数（压暗淡化陪衬带）
+  final double alpha;
+
+  const _Beam({
+    required this.anchors,
+    required this.width,
+    required this.sway,
+    required this.speed,
+    required this.phase,
+    required this.colorIndex,
+    this.alpha = 1.0,
+  });
 }
 
-/// 液态玻璃液滴布局：四角错落分布，大小/速度/相位各异
-const List<_GBlob> _gblobs = [
-  _GBlob(Offset(0.20, 0.28), 0.21, 0.045, 0.040, 0.20, 0.0, 0),
-  _GBlob(Offset(0.76, 0.20), 0.16, 0.040, 0.050, 0.16, 1.9, 1),
-  _GBlob(Offset(0.62, 0.76), 0.23, 0.050, 0.035, 0.13, 3.6, 2),
-  _GBlob(Offset(0.14, 0.82), 0.13, 0.035, 0.045, 0.18, 5.1, 0),
+/// 宽幅柔光带布局：左上→右下主光带 + 右上→左下陪衬光带（超宽、极淡，
+/// 完全柔化后只剩明暗层次，看不出形状边界）
+const List<_Beam> _beams = [
+  _Beam(
+    anchors: [
+      Offset(-0.10, 0.12),
+      Offset(0.24, 0.02),
+      Offset(0.54, 0.12),
+      Offset(0.88, -0.06),
+    ],
+    width: 0.36,
+    sway: 0.022,
+    speed: 0.10,
+    phase: 0.0,
+    colorIndex: 0,
+  ),
+  _Beam(
+    anchors: [
+      Offset(0.60, 1.10),
+      Offset(0.78, 0.90),
+      Offset(0.96, 0.72),
+      Offset(1.12, 0.58),
+    ],
+    width: 0.26,
+    sway: 0.018,
+    speed: 0.085,
+    phase: 2.4,
+    colorIndex: 1,
+    alpha: 0.8,
+  ),
 ];
 
 /// 动画模型：仅持有累计时间与形态标志，step 后通知画布重绘
@@ -243,138 +279,95 @@ class _AuroraPainter extends CustomPainter {
   }
 
   // ===== 液态玻璃（毛玻璃主题，浅底） =====
-  /// 玻璃感的三个必要条件：
-  ///  1. 底下有彩色内容（多彩柔光斑）——没有参照物就显不出"透明"；
-  ///  2. 透过液滴看到轻微放大 + 错位的底图（折射扭曲）；
-  ///  3. 液滴内部白色厚度渐变 + 明亮边缘描边 + 高光点（玻璃轮廓语言）。
+  /// 高级晨光氛围（R26：去掉底层彩色泡泡球与悬浮液滴，改为无形状的光）：
+  ///  1. 晨光基底——整幅对角弥散渐变（冰蓝→淡青→暖白），中心缓慢漂移；
+  ///  2. 宽幅斜向柔光带——超宽、边缘完全柔化，只留光线明暗层次，不构成形状；
+  ///  3. 光尘粒子——64 颗 1~2px 微小亮点缓慢上浮、轻摆、透明度浮潜，
+  ///     像尘埃在光束里，赋予"呼吸感"。
   void _paintLiquidGlass(Canvas canvas, Size size) {
+    _paintDawn(canvas, size); // 1) 晨光基底
+    _paintSunbeams(canvas, size); // 2) 宽幅斜向柔光带
+    _paintDust(canvas, size); // 3) 光尘粒子
+  }
+
+  /// 晨光基底：大半径径向渐变自左上铺满全幅，中心按约 60s 周期缓慢漂移，
+  /// 冰蓝 → 淡青 → 暖白，作为整幅背景的呼吸底色（无任何形状边界）
+  void _paintDawn(Canvas c, Size size) {
     final w = size.width;
     final h = size.height;
     final t = m.elapsed;
+    final cx = w * (0.32 + 0.045 * math.sin(t * 0.10));
+    final cy = h * (0.22 + 0.035 * math.cos(t * 0.085));
+    final rect = Rect.fromCircle(center: Offset(cx, cy), radius: w * 1.15);
+    c.drawRect(
+      Offset.zero & size,
+      Paint()
+        ..shader = RadialGradient(
+          colors: const [
+            Color(0xFFFDFEFF), // 核心暖白
+            Color(0xFFE4F1FE), // 冰蓝
+            Color(0xFFD4EBFA), // 淡青
+            Color(0xFFE8F3FA), // 边缘冷调
+          ],
+          stops: const [0, 0.42, 0.75, 1],
+        ).createShader(rect),
+    );
+  }
 
-    // 1) 底层多彩光斑先录成 Picture：直接铺底，同时供每个液滴 clip 内重放做折射
-    final recorder = ui.PictureRecorder();
-    final layer = Canvas(recorder);
-    _paintLightSpots(layer, size, t);
-    final pic = recorder.endRecording();
-    canvas.drawPicture(pic);
-
-    for (final b in _gblobs) {
-      // 中心缓慢游走（双轴错频利萨茹轨迹）+ 整体轻微胀缩（R25: 收敛幅度，更克制）
-      final cx = (b.c.dx + b.dx * math.sin(t * b.speed + b.phase)) * w;
-      final cy = (b.c.dy + b.dy * math.cos(t * b.speed * 0.83 + b.phase * 1.4)) * h;
-      final radius = b.r * h * (1 + 0.035 * math.sin(t * 0.22 + b.phase * 2));
-      final center = Offset(cx, cy);
-      final path = _blobPath(cx, cy, radius, t, b.phase);
-      final gradRect = Rect.fromCircle(center: center, radius: radius * 1.35);
-
-      // 2) 折射层：clip 进液滴后重放底层图案（轻微放大 + 错位），
-      //    液滴内部的图案与外部错位 → 可辨但不夸张的玻璃折射；再叠白色柔光模拟玻璃厚度
-      canvas.save();
-      canvas.clipPath(path);
-      canvas.transform(
-        (Matrix4.identity()
-              ..translate(radius * 0.14, radius * 0.10)
-              ..scale(1.05))
-            .storage,
-      );
-      canvas.drawPicture(pic);
-      canvas.drawRect(
-        gradRect,
-        Paint()
-          ..shader = RadialGradient(
-            colors: [
-              const Color(0xFFDFF2FF).withValues(alpha: 0.34),
-              const Color(0x00FFFFFF),
-            ],
-            stops: const [0, 1],
-          ).createShader(gradRect),
-      );
-      canvas.restore();
-
-      // 3) 玻璃轮廓：外缘白色细描边（微模糊）+ 内侧淡蓝细边，勾勒厚玻璃的折线
-      canvas.drawPath(
-        path,
-        Paint()
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 1.5
-          ..color = Colors.white.withValues(alpha: 0.55)
-          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2.0),
-      );
-      canvas.drawPath(
-        path,
-        Paint()
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 0.8
-          ..color = const Color(0xFF9CCBF2).withValues(alpha: 0.20),
-      );
-      // 高光点：左上方柔光（玻璃反光的点睛笔，收敛到细腻小光斑）
-      final hl = center + Offset(-radius * 0.30, -radius * 0.36);
-      canvas.drawCircle(
-        hl,
-        radius * 0.20,
-        Paint()
-          ..shader = RadialGradient(
-            colors: [
-              Colors.white.withValues(alpha: 0.55),
-              Colors.white.withValues(alpha: 0),
-            ],
-          ).createShader(Rect.fromCircle(center: hl, radius: radius * 0.20))
-          ..maskFilter = MaskFilter.blur(BlurStyle.normal, radius * 0.05),
+  /// 宽幅斜向柔光带：2 条超宽光束斜穿画面，锚点缓慢摆动；
+  /// 高斯模糊 sigma 达带宽的 60%，视觉只剩明暗过渡（"光"而非"物件"）
+  void _paintSunbeams(Canvas c, Size size) {
+    final h = size.height;
+    final t = m.elapsed;
+    for (final b in _beams) {
+      final pts = <Offset>[];
+      for (var i = 0; i < b.anchors.length; i++) {
+        final a = b.anchors[i];
+        final dx = math.sin(t * b.speed + b.phase + i * 1.3) * b.sway * h;
+        final dy = math.cos(t * b.speed * 0.8 + b.phase + i * 0.9) * b.sway * 0.6 * h;
+        pts.add(Offset(a.dx * size.width + dx, a.dy * h + dy));
+      }
+      final samples = _spline(pts, 24);
+      _paintRibbon(
+        c,
+        samples,
+        b.width * h,
+        widthScale: 1.0,
+        colors: _beamColors(b.colorIndex, b.alpha),
+        sigma: b.width * h * 0.6,
+        blend: BlendMode.srcOver,
       );
     }
   }
 
-  /// 底层多彩柔光斑：蓝/紫/青/粉四色，缓慢漂移，充当玻璃折射的参照物
-  void _paintLightSpots(Canvas c, Size size, double t) {
+  /// 光束色板：极淡乳白天蓝，只做明暗层次，不抢玻璃卡片内容
+  List<Color> _beamColors(int i, double alpha) {
+    const cols = [Color(0xFFA9D0F2), Color(0xFFB9E2F4)];
+    final c = cols[i % cols.length];
+    final a = 0.20 * alpha;
+    return [c.withValues(alpha: 0), c.withValues(alpha: a), c.withValues(alpha: 0)];
+  }
+
+  /// 光尘粒子：固定种子伪随机序列（每帧重复同一序列），位置是时间的纯函数——
+  /// 纵向循环上浮（约 30~60s 一屏）+ 横向轻摆 + 透明度浮潜，像尘埃在光束里
+  void _paintDust(Canvas c, Size size) {
     final w = size.width;
     final h = size.height;
-    const spots = [
-      (Offset(0.24, 0.30), 0.30, Color(0xFF7CC4F8), 0.14, 0.0),
-      (Offset(0.78, 0.24), 0.26, Color(0xFF9D7FF0), 0.11, 1.7),
-      (Offset(0.64, 0.78), 0.28, Color(0xFF6FD8E8), 0.10, 3.2),
-      (Offset(0.18, 0.80), 0.22, Color(0xFFF2A8C8), 0.12, 4.6),
-    ];
-    for (final (c0, r0, col, spd, ph) in spots) {
-      final cx = (c0.dx + 0.03 * math.sin(t * spd + ph)) * w;
-      final cy = (c0.dy + 0.03 * math.cos(t * spd * 0.8 + ph * 1.3)) * h;
-      final r = r0 * h;
-      c.drawCircle(
-        Offset(cx, cy),
-        r,
-        Paint()
-          ..shader = RadialGradient(
-            colors: [
-              col.withValues(alpha: 0.32),
-              col.withValues(alpha: 0.12),
-              const Color(0x00000000),
-            ],
-            stops: const [0, 0.6, 1],
-          ).createShader(Rect.fromCircle(center: Offset(cx, cy), radius: r))
-          ..maskFilter = MaskFilter.blur(BlurStyle.normal, r * 0.25),
-      );
+    final t = m.elapsed;
+    final rng = math.Random(0x5EED);
+    for (var i = 0; i < 64; i++) {
+      final px = rng.nextDouble();
+      final py0 = rng.nextDouble();
+      final sp = 0.018 + rng.nextDouble() * 0.026; // 上浮速度（屏/h）
+      final ph = rng.nextDouble() * 6.2832;
+      final s = 0.6 + rng.nextDouble() * 1.5; // 1~2px
+      final a = 0.10 + rng.nextDouble() * 0.18; // 基础透明度
+      final y = (((py0 - t * sp) % 1.0) + 1.0) % 1.0 * h;
+      final x = (px + 0.018 * math.sin(t * 0.45 + ph)) * w;
+      final alpha = a * (0.55 + 0.45 * math.sin(t * 0.7 + ph * 1.7));
+      final col = Color.lerp(Colors.white, const Color(0xFFCFE6F8), 0.45)!;
+      c.drawCircle(Offset(x, y), s, Paint()..color = col.withValues(alpha: alpha.clamp(0.0, 1.0)));
     }
-  }
-
-  /// 液态形变轮廓：半径受 2 组正弦谐波调制的闭合曲线（R25: 幅度收敛，轮廓更稳定圆润）
-  Path _blobPath(double cx, double cy, double radius, double t, double phase) {
-    final path = Path();
-    const n = 48;
-    for (var k = 0; k <= n; k++) {
-      final th = 2 * math.pi * k / n;
-      final rr = radius *
-          (1 +
-              0.055 * math.sin(3 * th + t * 0.45 + phase) +
-              0.030 * math.sin(5 * th - t * 0.30 + phase * 2));
-      final p = Offset(cx + rr * math.cos(th), cy + rr * math.sin(th));
-      if (k == 0) {
-        path.moveTo(p.dx, p.dy);
-      } else {
-        path.lineTo(p.dx, p.dy);
-      }
-    }
-    path.close();
-    return path;
   }
 
   // ===== 极光光带（经典浅色 / 深色模式） =====

@@ -168,6 +168,27 @@ class AgentService {
         {
           'type': 'function',
           'function': {
+            'name': 'exam_ai_test',
+            'description':
+                '开启或关闭综合模拟套卷的「AI 接入测试」模式。开启后，综合模拟套卷考场页面顶部会显示工具条：'
+                '可选择已配置的预设模型并点击「开始作答」，系统会一道一道题依次派给所选模型作答，'
+                '答案被识别后该题记为已作答并自动进入下一题。'
+                '当用户想让 AI 模型自动做题、测试模型答题效果、说"开启AI接入测试"时调用。',
+            'parameters': {
+              'type': 'object',
+              'properties': {
+                'enabled': {
+                  'type': 'boolean',
+                  'description': 'true=开启（默认），false=关闭',
+                },
+              },
+              'required': [],
+            },
+          },
+        },
+        {
+          'type': 'function',
+          'function': {
             'name': 'lookup_word',
             'description': '查询英文单词的释义、音标、词性、用法。当用户问某个单词什么意思、怎么读、怎么用时调用。',
             'parameters': {
@@ -1138,6 +1159,7 @@ class AgentService {
 | "出题/做题" + "不要题库/AI出题/新题/用AI生成" | generate_questions（useBank=false 强制AI生成） |
 | 需要即时拿到用户自定义题型效果（翻译/选择/阅读/语法/写作/完形/对话/选词/英译汉），或 AI 直接产出多道题 | submit_generated_questions |
 | "全卷/模拟考试/套卷/76题" | generate_full_exam |
+| "开启/关闭 AI 接入测试、让 AI 模型做题、测试模型答题" | exam_ai_test（开启后考场顶部出现工具条，用户选预设模型点「开始作答」即逐题自动作答） |
 | "xx什么意思/怎么读/怎么用"（xx是英文单词） | lookup_word |
 | "剖析/分析单词/标注释义" | analyze_words |
 | "这道题/当前题目是什么/这道题怎么做/考什么内容" | get_current_question（直接工具调用，永远可用）；如果工作区已加载 exam-context / 「当前题目」等相关技能，则 load_skill 按技能指引作答（技能可封装更丰富的应答策略） |

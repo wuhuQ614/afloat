@@ -36,7 +36,6 @@ import 'widgets/code_card.dart';
 import 'widgets/maimemo_wordbook_page.dart';
 import 'widgets/browser_page.dart';
 import 'widgets/snake_game_page.dart';
-import 'widgets/snake_pvp_page.dart';
 import 'widgets/gomoku_page.dart';
 import 'widgets/source_viewer_page.dart';
 import 'widgets/agent_rows.dart';
@@ -54,7 +53,6 @@ const _moreItemsData = [
   (Icons.school_outlined, '语法学习', '从零学会专升本语法', 12),
   (Icons.language_rounded, '浏览器', '轻量网页浏览', 19),
   (Icons.videogame_asset_outlined, '贪吃蛇', '经典小游戏放松', 20),
-  (Icons.groups_outlined, '贪吃蛇双人', '40×40 双蛇对战', 24),
   (Icons.grid_3x3_rounded, '五子棋', '双人对战五子连珠', 23),
 ];
 
@@ -1605,7 +1603,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                       final typeName = s.selectedType.isEmpty ? '综合' : s.selectedType;
                       return _buildChatWelcome(c.isLight, cfg.model, levelName, typeName, localAiIconAsset);
                     }
-                    final scrollCtrl = ScrollController();
+                    final scrollCtrl = _mobileChatScrollCtrl;
                     // R6: 手机端滚动同样节流
                     WidgetsBinding.instance.addPostFrameCallback((_) {
                       if (scrollCtrl.hasClients) {
@@ -1682,8 +1680,6 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
         return const BrowserPage();
       case 20:
         return const SnakeGamePage();
-      case 24:
-        return const SnakePvpPage();
       case 21:
         return const SourceViewerPage();
       case 23:
@@ -2081,16 +2077,9 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
         ),
       );
     }
-    // AI 消息头（参考 WorkBuddy/ChatGPT）：头像(28px) + 模型名一行，位于内容上方
-    String? aiModelName;
-    if (!isUser) {
-      aiModelName = (msg.modelLabel != null && msg.modelLabel!.isNotEmpty)
-          ? msg.modelLabel
-          : _state.effectiveChatConfig.model;
-    }
-    final aiIconAsset = aiModelName == null ? null : _getAiIconAsset(aiModelName);
     // R34: 主流 AI 对话样式——AI 回复不再用气泡包裹（去白底/边框/内边距），
     // 文字与上方头像左缘齐平；用户消息保留气泡
+    // （模型名头行已按需求移除：AI 消息不再显示 logo+模型名，正文直接顶格）
     final bubble = Container(
       margin: const EdgeInsets.only(bottom: 10),
       padding: isUser ? const EdgeInsets.symmetric(horizontal: 14, vertical: 10) : EdgeInsets.zero,
@@ -2127,7 +2116,18 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                 : RepaintBoundary(
                     child: ClipRRect(
                       borderRadius: BorderRadius.circular(10),
-                      child: Image.memory(msg.imageBytes!, width: 168, height: 120, fit: BoxFit.cover),
+                      // imageBytes 可能为 null（base64 损坏/空 data URL）：用灰块兜底，
+                      // 避免 `imageBytes!` 非空断言崩溃 → 整条消息渲染成空白占位
+                      child: msg.imageBytes != null
+                          ? Image.memory(msg.imageBytes!, width: 168, height: 120, fit: BoxFit.cover)
+                          : Container(
+                              width: 168,
+                              height: 120,
+                              color: Colors.grey.shade300,
+                              child: const Center(
+                                child: Icon(Icons.broken_image_outlined, size: 26, color: Colors.grey),
+                              ),
+                            ),
                     ),
                   ),
             const SizedBox(height: 8),
@@ -2159,44 +2159,23 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
     final hasReasoning = msg.showReasoning &&
         ((msg.reasoning?.isNotEmpty ?? false) || msg.reasoningSegs.any((s) => s.text.trim().isNotEmpty));
     final hasSteps = msg.toolSteps.isNotEmpty;
-    // 未配置 AI（无 URL/Key）时不显示模型头像与模型名，避免出现无意义的占位标识
-    final aiConfigured = _state.effectiveChatConfig.ready;
-    // R34: 模型头行：头像(28px) + 模型名，位于内容上方；AI 回复不再套气泡，
-    // 内容与头像左缘齐平（参考 WorkBuddy/ChatGPT 对话流）
-    Widget? modelHeader;
-    if (!isUser && aiModelName != null && aiConfigured) {
-      modelHeader = Padding(
-        padding: const EdgeInsets.only(bottom: 6),
-        child: Row(children: [
-          _aiLogo(aiModelName, size: 28),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Text(
-              aiModelName,
-              style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: c.text),
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-        ]),
-      );
-    }
     final hasStatus = running && !isUser && (msg.statusLabel ?? '').isNotEmpty;
     if (!hasReasoning && !hasSteps) {
-      if (!hasStatus) {
-        if (modelHeader == null) return bubble;
-        return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [modelHeader, bubble]);
+      if (hasStatus) {
+        // 后续轮决策间隙：状态行（"思考下一步（第 N 轮）…"）+ 转圈
+        return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          _statusRow(msg, isLight),
+          bubble,
+        ]);
       }
-      // 仅有状态行（流式决策期间）：状态 + 模型名，不渲染空气泡
-      return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        if (modelHeader != null) modelHeader,
-        _statusRow(msg, isLight),
-        bubble,
-      ]);
+      // 首轮流式决策期间（"正在分析请求"已按需求移除）：
+      // 无思考/步骤/正文时不渲染任何内容，等首个 token 到达正文自然顶格出现
+      if (running && msg.content.isEmpty) return const SizedBox.shrink();
+      return bubble;
     }
     // 内容尚未到达时（纯思考/工具阶段）不渲染空气泡
     final bool showBubble = msg.content.isNotEmpty || !running;
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      if (modelHeader != null) modelHeader,
       // 运行状态行：流式决策期间告诉用户"现在到哪一步了"
       if (hasStatus) _statusRow(msg, isLight),
       if (msg.todoList.isNotEmpty) ...[
@@ -2206,9 +2185,11 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
       // R9: 工作流时间线：思考段（带时长）与工具步骤按轮次穿插（仿 coding-agent 过程流）
       if (msg.showReasoning) ..._buildAgentTimeline(msg, isLight, running),
       if (hasSteps) const SizedBox(height: 2),
-      // dsh-tool-ask-user：弹问题让用户选
-      if (msg.askQuestions.isNotEmpty) ...[
-        AgentAskUserPanel(questions: msg.askQuestions, answers: msg.askAnswers, msgRef: msg, light: isLight),
+      // dsh-tool-ask-user：弹问题让用户选。
+      // 多轮提问按序堆叠展示，每轮独立 ValueKey：新一轮是全新 State，
+      // 不会复用上一轮已折叠（_confirmed）的面板导致第二个问题无法显示
+      for (final round in msg.askRounds) ...[
+        AgentAskUserPanel(key: ValueKey(round.key), questions: round.questions, answers: round.answers, light: isLight),
         const SizedBox(height: 4),
       ],
       // dsh-plan-mode：提交计划让用户审批
@@ -2912,6 +2893,9 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
 
   final TextEditingController _chatCtrl = TextEditingController();
   final ScrollController _chatScrollCtrl = ScrollController();
+  /// 移动端聊天浮层的滚动控制器（与桌面 _chatScrollCtrl 分离，避免跨布局共用）；
+  /// 复用而非每帧新建，防止流式重建时反复换绑/泄漏导致构建异常
+  final ScrollController _mobileChatScrollCtrl = ScrollController();
   /// 待发送的图片（base64 data URL）；null 表示未选择
   String? _chatImageData;
   /// 待发送的非图片附件文件名；null 表示未选择
@@ -3816,7 +3800,6 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                   accent: accent,
                   onTap: () {
                     s.loadSession('${ssn['id']}');
-                    if (pc.mounted) _showChatToast(pc, '已载入历史对话');
                     nav.pop();
                   },
                   onMore: () => _showSessionItemMenu(ctx, c, s, '${ssn['id']}'),

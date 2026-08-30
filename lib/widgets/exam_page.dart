@@ -195,11 +195,16 @@ class ExamRoomPage extends StatelessWidget {
                 children: [
                   // 左侧题号导航（手机端隐藏）
                   _buildLeftNav(paper),
-                  // 中间答题区
+                  // 中间答题区（顶部可显示「AI 接入测试」工具条）
                   Expanded(
                     child: Padding(
                       padding: const EdgeInsets.fromLTRB(20, 18, 20, 8),
-                      child: _buildQuestionArea(paper, resolved, current),
+                      child: Column(
+                        children: [
+                          _ExamAiTestBar(state: state),
+                          Expanded(child: _buildQuestionArea(paper, resolved, current)),
+                        ],
+                      ),
                     ),
                   ),
                   // 右侧答题卡
@@ -245,6 +250,8 @@ class ExamRoomPage extends StatelessWidget {
               _buildMobileTopBar(context, current, answered, total, remaining, danger),
               // 生成状态横幅（内联，不再 Positioned 覆盖）
               _ExamGenBanner(state: state),
+              // 「AI 接入测试」工具条（agent 开启后显示）
+              _ExamAiTestBar(state: state),
               // 答题区（全宽可滚动）
               Expanded(
                 child: SingleChildScrollView(
@@ -1268,6 +1275,135 @@ class _ExamGenBanner extends StatelessWidget {
       );
     }
     return const SizedBox.shrink();
+  }
+}
+
+/// 考场顶部「AI 接入测试」工具条（agent 通过 exam_ai_test 工具开启后显示）：
+/// 选择预设模型 → 点击「开始作答」→ 系统一道一道题依次派给所选模型，
+/// 答案被识别后写入答题卡并自动进入下一题
+class _ExamAiTestBar extends StatelessWidget {
+  final AppState state;
+  const _ExamAiTestBar({required this.state});
+
+  @override
+  Widget build(BuildContext context) {
+    if (!state.examAiTestEnabled) return const SizedBox.shrink();
+    final profiles = state.apiProfiles;
+    final busy = state.examAiAnswering;
+    // 试卷尚未出好（或正在生成）时不允许启动 AI 作答
+    final paperReady = state.examGeneratedCount > 0 && !state.examGeneratingBatch;
+    // 未选预设时默认第一项（与 state.examAiTestConfig 的取值逻辑一致）
+    var selIdx = 0;
+    if (state.examAiTestProfileIdx >= 0 && state.examAiTestProfileIdx < profiles.length) {
+      selIdx = state.examAiTestProfileIdx;
+    }
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF5F3FF),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFDDD6FE)),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.smart_toy_rounded, size: 17, color: Color(0xFF7C3AED)),
+          const SizedBox(width: 8),
+          const Text('AI 接入测试',
+              style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w700, color: Color(0xFF5B21B6))),
+          const SizedBox(width: 12),
+          // 预设模型选择
+          if (profiles.isEmpty)
+            const Text('未配置预设模型',
+                style: TextStyle(fontSize: 12, color: Color(0xFFB91C1C)))
+          else
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(9),
+                border: Border.all(color: const Color(0xFFDDD6FE)),
+              ),
+              child: DropdownButton<int>(
+                value: selIdx,
+                isDense: true,
+                underline: const SizedBox.shrink(),
+                style: const TextStyle(fontSize: 12.5, color: Color(0xFF4C1D95)),
+                icon: const Icon(Icons.expand_more_rounded, size: 16, color: Color(0xFF7C3AED)),
+                items: [
+                  for (var i = 0; i < profiles.length; i++)
+                    DropdownMenuItem(
+                        value: i,
+                        child: Text(profiles[i].label, overflow: TextOverflow.ellipsis)),
+                ],
+                onChanged: busy
+                    ? null
+                    : (v) {
+                        if (v != null) {
+                          state.examAiTestProfileIdx = v;
+                          state.touch();
+                        }
+                      },
+              ),
+            ),
+          const SizedBox(width: 10),
+          if (busy) ...[
+            // 作答中：进度提示 + 停止
+            const SizedBox(
+              width: 14,
+              height: 14,
+              child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF7C3AED)),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                state.examAiAnswerHint,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 12, color: Color(0xFF5B21B6)),
+              ),
+            ),
+            OutlinedButton.icon(
+              onPressed: state.stopExamAiAnswering,
+              icon: const Icon(Icons.stop_rounded, size: 16),
+              label: const Text('停止', style: TextStyle(fontSize: 12)),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: const Color(0xFF9F1239),
+                side: const BorderSide(color: Color(0xFFFECDD3)),
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                minimumSize: const Size(0, 32),
+              ),
+            ),
+          ] else ...[
+            // 空闲：开始作答按钮 + 上次结果提示
+            FilledButton.icon(
+              onPressed: paperReady ? state.startExamAiAnswering : null,
+              icon: const Icon(Icons.play_arrow_rounded, size: 17),
+              label: const Text('开始作答', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+              style: FilledButton.styleFrom(
+                backgroundColor: const Color(0xFF7C3AED),
+                foregroundColor: Colors.white,
+                disabledBackgroundColor: const Color(0xFFE9D5FF),
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                minimumSize: const Size(0, 32),
+              ),
+            ),
+            if (state.examAiAnswerHint.isNotEmpty) ...[
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  state.examAiAnswerHint,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 11.5, color: Color(0xFF6D28D9)),
+                ),
+              ),
+            ] else
+              const Spacer(),
+          ],
+        ],
+      ),
+    );
   }
 }
 

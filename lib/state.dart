@@ -142,6 +142,19 @@ class AskUserOption {
   Map<String, dynamic> toJson() => {'label': label, if (description != null) 'description': description};
 }
 
+/// ask_user_question 的一次提问轮次：一次工具调用产生的问题 + 用户作答。
+/// 同一条 AI 消息里 agent 连续多次提问时，每轮独立保存、按序堆叠渲染，
+/// 后一轮追加而不覆盖前一轮（前一轮面板保持已回答的折叠摘要）。
+class AskRound {
+  /// 唯一 key，供 UI ValueKey 使用：保证新一轮提问是全新 State，
+  /// 不会复用上一轮面板的"已确认折叠"状态（否则第二个问题无法展示）
+  final String key;
+  final List<AskUserQuestion> questions;
+  /// 用户作答（选中 label 列表，key 为题目 id；补充说明挂在 kAskUserNoteKey）
+  final Map<String, List<String>> answers = {};
+  AskRound({required this.key, required this.questions});
+}
+
 /// dsh-plan-mode 计划步骤
 class PlanStep {
   final int step;
@@ -221,13 +234,12 @@ class ChatMessage {
   String? modelLabel;
   /// todo 工具调用产生的任务清单（dsh-tool-todo 风格）
   List<TodoItem> todoList = [];
-  /// ask_user_question 工具产生的问题（dsh-tool-ask-user 风格）
-  List<AskUserQuestion> askQuestions = [];
-  /// 用户对 askQuestions 的实际回答
-  Map<String, List<String>> askAnswers = {};
+  /// ask_user_question 工具产生的提问轮次（dsh-tool-ask-user 风格）。
+  /// 同一消息连续多次提问时每轮各自成面板按序堆叠，新轮次追加不覆盖
+  List<AskRound> askRounds = [];
   /// submit_plan 工具提交的计划（dsh-plan-mode 风格）
   PlanSubmission? plan;
-  /// 运行中的一句话进度（如"思考下一步（第 2 轮）…"），仅在消息生成期间展示；
+  /// 运行中的一句话进度（如"正在暂停（等待当前步骤完成）…"），仅在消息生成期间展示；
   /// 工具步骤卡片出现或正文开始输出后应置 null，避免与步骤卡片重复。
   String? statusLabel;
 
@@ -518,6 +530,33 @@ class AppState extends ChangeNotifier {
       _examFailedBatches.map((b) => b.label).toList();
   /// 考试成绩历史摘要（最近 10 条，新→旧，持久化）
   List<ExamHistoryEntry> examHistory = [];
+
+  // ===== 综合卷「AI 接入测试」：agent 工具开启，考场顶部工具条逐题让 AI 作答 =====
+  /// 模式开关：agent 调 exam_ai_test 工具置位；开启后考场顶部出现工具条
+  /// （选择预设模型 + 开始作答按钮），由用户点击按钮启动逐题作答
+  bool examAiTestEnabled = false;
+  /// AI 正在逐题作答中
+  bool examAiAnswering = false;
+  /// 逐题作答进度提示（"AI 正在作答第 n/N 题…"）
+  String examAiAnswerHint = '';
+  /// AI 作答统计：成功/失败题数
+  int examAiAnsweredCount = 0;
+  int examAiFailedCount = 0;
+  /// AI 作答中止标志（点"停止"或关闭模式时置位）
+  bool _examAiAbort = false;
+  /// 用户在工具条下拉选择的预设索引（-1=未选，默认取第一个预设）
+  int examAiTestProfileIdx = -1;
+
+  /// AI 接入测试使用的预设配置（未选择时取第一个预设；无预设回退全局 apiConfig）
+  ApiConfig? get examAiTestConfig {
+    if (apiProfiles.isNotEmpty) {
+      var idx = examAiTestProfileIdx;
+      if (idx < 0) idx = 0;
+      if (idx > apiProfiles.length - 1) idx = apiProfiles.length - 1;
+      return apiProfiles[idx].config;
+    }
+    return apiConfig.ready ? apiConfig : null;
+  }
 
   // 词汇剖析状态
   bool analysisLoading = false;
@@ -2370,9 +2409,13 @@ class AppState extends ChangeNotifier {
     _notifyChatUpdate();
   }
 
-  void _notifyChatUpdate() {
+  /// 通知聊天 UI 刷新。[force] 为 true 时绕过 50ms 节流**必定**触发一次通知。
+  /// 普通流式调用用节流合并高频增量；但每次"内容落定"（消息写完、发送结束、
+  /// 会话加载/截断）都必须用 force，否则最后一条通知可能落在节流窗口内被吞掉，
+  /// 聊天区停在"只占位不显示内容"的旧帧（切页/重开浮层后最容易出现）。
+  void _notifyChatUpdate([bool force = false]) {
     final now = DateTime.now().millisecondsSinceEpoch;
-    if (now - _chatThrottleTimer < 50) return; // 50ms 节流
+    if (!force && now - _chatThrottleTimer < 50) return; // 50ms 节流
     _chatThrottleTimer = now;
     chatUpdateNotifier.value++;
   }
@@ -2483,7 +2526,7 @@ class AppState extends ChangeNotifier {
       // Agent 成功：占位消息已更新为最终回复，无需再添加
       chatSending = false;
       notifyListeners();
-      _notifyChatUpdate();
+      _notifyChatUpdate(true);
       // 每次对话完成后自动保存会话快照 + 提取长期记忆
       _snapshotCurrentSession();
       _extractAndStoreMemory(trimmed, agentResult.reply);
@@ -2568,7 +2611,7 @@ class AppState extends ChangeNotifier {
         msg.content = hasImage
             ? '抱歉，图片消息请求失败：$e\n当前模型可能不支持图片输入，或图片过大。可切换支持视觉的模型（如 GLM-4.6V / DeepSeek-VL）后重试。'
             : '抱歉，请求失败：$e\n请检查网络或模型配置后重试。';
-        _notifyChatUpdate();
+        _notifyChatUpdate(true);
         chatSending = false;
         notifyListeners();
         return msg.content;
@@ -2590,7 +2633,7 @@ class AppState extends ChangeNotifier {
         debugPrint('[sendChat] 非流式回退异常: $e');
         reply = '抱歉，请求失败：$e\n请检查网络或模型配置后重试。';
         chatHistory.add(ChatMessage(role: 'ai', content: reply, modelLabel: cfg.model));
-        _notifyChatUpdate();
+        _notifyChatUpdate(true);
         chatSending = false;
         notifyListeners();
         return reply;
@@ -2600,7 +2643,7 @@ class AppState extends ChangeNotifier {
     }
     chatSending = false;
     notifyListeners();
-    _notifyChatUpdate();
+    _notifyChatUpdate(true);
     // 每次对话完成后自动保存会话快照 + 提取长期记忆
     _snapshotCurrentSession();
     _extractAndStoreMemory(trimmed, reply);
@@ -2712,7 +2755,7 @@ class AppState extends ChangeNotifier {
     chatHistory = [];
     _activeSessionId = null;
     notifyListeners();
-    _notifyChatUpdate();
+    _notifyChatUpdate(true);
   }
 
   /// 开启新对话：保存当前会话快照后清空聊天区，开始全新会话
@@ -2758,7 +2801,7 @@ class AppState extends ChangeNotifier {
     }).toList();
     _activeSessionId = id;
     notifyListeners();
-    _notifyChatUpdate();
+    _notifyChatUpdate(true);
   }
 
   /// R22: 编辑重答——从第 [index] 条消息起截断会话（含该条），此后消息自动删除。
@@ -2767,7 +2810,7 @@ class AppState extends ChangeNotifier {
     if (chatSending) return; // 流式响应中不允许截断，避免占位消息悬挂
     if (index < 0 || index >= chatHistory.length) return;
     chatHistory.removeRange(index, chatHistory.length);
-    _notifyChatUpdate();
+    _notifyChatUpdate(true);
     notifyListeners();
   }
 
@@ -2991,6 +3034,8 @@ class AppState extends ChangeNotifier {
           return await _toolGenerateQuestions(args);
         case 'generate_full_exam':
           return await _toolGenerateFullExam(args);
+        case 'exam_ai_test':
+          return _toolExamAiTest(args);
         case 'submit_generated_questions':
           return _toolSubmitGeneratedQuestions(args);
         case 'lookup_word':
@@ -3263,6 +3308,293 @@ class AppState extends ChangeNotifier {
       );
     }
     return const ToolExecResult(content: '{"ok":false,"reason":"generate_failed"}', ok: false);
+  }
+
+  /// 综合卷「AI 接入测试」开关：开启后考场顶部显示工具条（选择预设模型 + 开始作答）。
+  /// 逐题作答由用户点击按钮启动，agent 不直接启动
+  ToolExecResult _toolExamAiTest(Map<String, dynamic> args) {
+    final enabled = args['enabled'] != false;
+    examAiTestEnabled = enabled;
+    if (!enabled && examAiAnswering) {
+      // 关闭模式时正在作答则一并中止
+      _examAiAbort = true;
+    }
+    notifyListeners();
+    final hasPaper = currentExamPaper != null;
+    return ToolExecResult(
+      content: jsonEncode({
+        'ok': true,
+        'enabled': enabled,
+        'paperReady': hasPaper,
+        'presets': [for (final p in apiProfiles) p.label],
+        'hint': enabled
+            ? (hasPaper
+                ? '已开启。综合模拟套卷考场顶部工具条已显示：选择预设模型后点击「开始作答」，系统会一道一道题依次派给所选模型，答案识别后自动作答并进入下一题。'
+                : '已开启。当前还没有综合模拟套卷，可先让用户生成全卷（generate_full_exam），生成完成后考场顶部工具条即可使用。')
+            : '已关闭。考场顶部的 AI 接入测试工具条已隐藏。',
+      }),
+      ok: true,
+      actionLabel: enabled ? '已开启考场 AI 接入测试' : '已关闭考场 AI 接入测试',
+    );
+  }
+
+  /// 开始 AI 逐题作答（考场顶部工具条按钮触发）。
+  /// 严格一道题一道题派给所选预设模型：识别答案 → 写入答题卡 → 下一题。
+  /// 已有答案的题跳过（保留用户作答），失败自动重试一次后记失败并继续。
+  Future<void> startExamAiAnswering() async {
+    if (examAiAnswering) return;
+    final paper = currentExamPaper;
+    final sheet = currentExamAnswerSheet;
+    if (paper == null || sheet == null) return;
+    final cfg = examAiTestConfig;
+    if (cfg == null || !cfg.ready) {
+      examAiAnswerHint = '未选择可用的预设模型，请先到「设置 → AI 接口」配置预设';
+      notifyListeners();
+      return;
+    }
+    examAiAnswering = true;
+    _examAiAbort = false;
+    examAiAnsweredCount = 0;
+    examAiFailedCount = 0;
+    examAiAnswerHint = '准备开始…';
+    notifyListeners();
+
+    final total = paper.totalQuestions;
+    // 用固定全卷题号区间遍历（resolveExamQuestion 按标准 76 题布局定位），
+    // 题目不存在（该大题生成失败）或已有答案的题号直接跳过
+    for (var idx1 = ExamSection.vocab.startIndex; idx1 <= ExamSection.writing.endIndex; idx1++) {
+      if (_examAiAbort) break;
+      final r = resolveExamQuestion(idx1);
+      // 该大题未生成/题目不存在：跳过
+      if (!_examQuestionExists(paper, r)) continue;
+      // 该题已有答案：跳过（不覆盖用户/AI 已作答内容）
+      if (_examQuestionAnswered(sheet, r)) continue;
+      // 视角跟随 AI 作答进度
+      examCurrentQuestion = idx1;
+      examAiAnswerHint = 'AI 正在作答第 $idx1/$total 题（${r.section.label}）…';
+      notifyListeners();
+      var ok = false;
+      for (var attempt = 0; attempt < 2 && !ok && !_examAiAbort; attempt++) {
+        try {
+          ok = await _examAiAnswerOne(cfg, paper, sheet, r);
+        } catch (_) {
+          ok = false;
+        }
+      }
+      if (ok) {
+        examAiAnsweredCount++;
+      } else {
+        examAiFailedCount++;
+      }
+      notifyListeners();
+    }
+    examAiAnswering = false;
+    examAiAnswerHint = _examAiAbort
+        ? 'AI 作答已中止（成功 $examAiAnsweredCount 题${examAiFailedCount > 0 ? '，失败 $examAiFailedCount 题' : ''}）'
+        : 'AI 作答完成：成功 $examAiAnsweredCount 题${examAiFailedCount > 0 ? '，失败 $examAiFailedCount 题' : ''}';
+    notifyListeners();
+  }
+
+  /// 用户点击「停止」中止 AI 逐题作答（当前题完成后停下）
+  void stopExamAiAnswering() {
+    if (examAiAnswering) _examAiAbort = true;
+  }
+
+  /// 某题的题目数据是否存在（大题生成失败时不存在，逐题作答应跳过）
+  bool _examQuestionExists(FullExamPaper paper, ({ExamSection section, int relIdx, int passageIdx}) r) {
+    switch (r.section) {
+      case ExamSection.vocab:
+        return r.relIdx < paper.vocab.length;
+      case ExamSection.reading:
+        return r.passageIdx < paper.readings.length && r.relIdx < paper.readings[r.passageIdx].questions.length;
+      case ExamSection.cloze:
+        return r.relIdx < (paper.clozeSubs?.length ?? 0);
+      case ExamSection.dialogue:
+        final d = paper.dialogue;
+        return d != null && r.relIdx < d.answerLetters.length;
+      case ExamSection.bankedCloze:
+        final bc = paper.bankedCloze;
+        return bc != null && r.relIdx < bc.answerWords.length;
+      case ExamSection.en2zh5:
+        final e5 = paper.en2zh5;
+        return e5 != null && r.relIdx < e5.sentences.length;
+      case ExamSection.writing:
+        return paper.writing != null;
+    }
+  }
+
+  /// 某题在答题卡中是否已有答案
+  bool _examQuestionAnswered(ExamAnswerSheet sheet, ({ExamSection section, int relIdx, int passageIdx}) r) {
+    switch (r.section) {
+      case ExamSection.vocab:
+        return r.relIdx < sheet.vocab.length && sheet.vocab[r.relIdx] != null;
+      case ExamSection.reading:
+        return r.passageIdx < sheet.reading.length &&
+            r.relIdx < sheet.reading[r.passageIdx].length &&
+            sheet.reading[r.passageIdx][r.relIdx] != null;
+      case ExamSection.cloze:
+        return r.relIdx < sheet.cloze.length && sheet.cloze[r.relIdx] != null;
+      case ExamSection.dialogue:
+        return r.relIdx < sheet.dialogue.length && sheet.dialogue[r.relIdx] != null;
+      case ExamSection.bankedCloze:
+        return r.relIdx < sheet.bankedCloze.length && sheet.bankedCloze[r.relIdx] != null;
+      case ExamSection.en2zh5:
+        return r.relIdx < sheet.en2zh5.length && sheet.en2zh5[r.relIdx].trim().isNotEmpty;
+      case ExamSection.writing:
+        return sheet.writing.trim().isNotEmpty;
+    }
+  }
+
+  /// 单题作答：组装题干上下文 → 请求所选预设 → 解析答案写入答题卡
+  Future<bool> _examAiAnswerOne(
+    ApiConfig cfg,
+    FullExamPaper paper,
+    ExamAnswerSheet sheet,
+    ({ExamSection section, int relIdx, int passageIdx}) r,
+  ) async {
+    const sys = '你是专升本英语考试答题助手。根据题目作答，只按要求输出答案本身，不要输出解释、推理过程或多余文字。';
+    switch (r.section) {
+      case ExamSection.vocab: {
+        if (r.relIdx >= paper.vocab.length) return false;
+        final q = paper.vocab[r.relIdx];
+        if (q.options.isEmpty) return false;
+        final user = '单项选择题：${q.question.isNotEmpty ? q.question : q.text}\n'
+            '${[for (var i = 0; i < q.options.length; i++) '${String.fromCharCode(65 + i)}. ${q.options[i]}'].join('\n')}\n'
+            '只输出正确选项的字母（如 A）。';
+        final idx = await _examAiAskLetter(cfg, sys, user, q.options.length);
+        if (idx == null) return false;
+        sheet.vocab[r.relIdx] = idx;
+        return true;
+      }
+      case ExamSection.reading: {
+        if (r.passageIdx >= paper.readings.length) return false;
+        final p = paper.readings[r.passageIdx];
+        if (r.relIdx >= p.questions.length) return false;
+        final sub = p.questions[r.relIdx];
+        if (sub.options.isEmpty) return false;
+        final user = '阅读理解单选题。文章：\n${p.passage}\n\n题目：${sub.question}\n'
+            '${[for (var i = 0; i < sub.options.length; i++) '${String.fromCharCode(65 + i)}. ${sub.options[i]}'].join('\n')}\n'
+            '只输出正确选项的字母（如 A）。';
+        final idx = await _examAiAskLetter(cfg, sys, user, sub.options.length);
+        if (idx == null) return false;
+        sheet.reading[r.passageIdx][r.relIdx] = idx;
+        return true;
+      }
+      case ExamSection.cloze: {
+        final subs = paper.clozeSubs ?? const <ClozeSubQ>[];
+        if (r.relIdx >= subs.length) return false;
+        final sub = subs[r.relIdx];
+        if (sub.options.isEmpty) return false;
+        final passage = paper.cloze.isNotEmpty ? paper.cloze.first.passage : '';
+        final user = '完形填空。文章：\n$passage\n\n第 ${sub.blankIdx} 空所在句：${sub.sentence}\n'
+            '${[for (var i = 0; i < sub.options.length; i++) '${String.fromCharCode(65 + i)}. ${sub.options[i]}'].join('\n')}\n'
+            '只输出第 ${sub.blankIdx} 空正确选项的字母（如 A）。';
+        final idx = await _examAiAskLetter(cfg, sys, user, sub.options.length);
+        if (idx == null) return false;
+        sheet.cloze[r.relIdx] = idx;
+        return true;
+      }
+      case ExamSection.dialogue: {
+        final d = paper.dialogue;
+        if (d == null || d.options.isEmpty) return false;
+        if (r.relIdx >= d.answerLetters.length) return false;
+        final user = '补全对话。场景：${d.scenario}\n'
+            '对话（____ 为需要填入的空格，共 ${d.answerLetters.length} 个，现在要填第 ${r.relIdx + 1} 个）：\n'
+            '${d.dialogueLines.join('\n')}\n\n选项：\n'
+            '${[for (var i = 0; i < d.options.length; i++) '${String.fromCharCode(65 + i)}. ${d.options[i]}'].join('\n')}\n'
+            '只输出填入第 ${r.relIdx + 1} 空的正确选项字母（A-${String.fromCharCode(65 + d.options.length - 1)}）。';
+        final idx = await _examAiAskLetter(cfg, sys, user, d.options.length);
+        if (idx == null) return false;
+        sheet.dialogue[r.relIdx] = idx;
+        return true;
+      }
+      case ExamSection.bankedCloze: {
+        final bc = paper.bankedCloze;
+        if (bc == null || bc.wordBank.isEmpty) return false;
+        if (r.relIdx >= bc.answerWords.length) return false;
+        final user = '选词填空。文章（空格用空位标记）：\n${bc.passage}\n\n'
+            '词库：${[for (var i = 0; i < bc.wordBank.length; i++) '${String.fromCharCode(65 + i)}. ${bc.wordBank[i]}'].join('  ')}\n'
+            '只输出填入第 ${r.relIdx + 1} 空的单词本身（不要字母、不要解释）。';
+        final reply = await ApiService.callAI([
+          {'role': 'user', 'content': user},
+        ], sys, config: cfg, maxTokens: 512, temperature: 0, extraParams: ApiService.noThinkingParams(cfg.model));
+        if (reply == null) return false;
+        sheet.bankedCloze[r.relIdx] = _matchWordBankIdx(reply, bc.wordBank);
+        return sheet.bankedCloze[r.relIdx] != null;
+      }
+      case ExamSection.en2zh5: {
+        final e5 = paper.en2zh5;
+        if (e5 == null || r.relIdx >= e5.sentences.length) return false;
+        final user = '将下面的英文句子翻译成中文，只输出中文译文：\n${e5.sentences[r.relIdx]}';
+        final reply = await ApiService.callAI([
+          {'role': 'user', 'content': user},
+        ], sys, config: cfg, maxTokens: 1024, extraParams: ApiService.noThinkingParams(cfg.model));
+        if (reply == null || reply.trim().isEmpty) return false;
+        sheet.en2zh5[r.relIdx] = reply.trim();
+        return true;
+      }
+      case ExamSection.writing: {
+        final w = paper.writing;
+        if (w == null) return false;
+        final user = '英语写作题：${w.topic}\n请写出符合题目要求的完整英语作文，直接输出作文正文。';
+        final reply = await ApiService.callAI([
+          {'role': 'user', 'content': user},
+        ], '你是专升本英语考试写作助手。根据题目要求写一篇英语作文，直接输出作文正文，不要输出解释。',
+            config: cfg, maxTokens: 2048, extraParams: ApiService.noThinkingParams(cfg.model));
+        if (reply == null || reply.trim().isEmpty) return false;
+        sheet.writing = reply.trim();
+        return true;
+      }
+    }
+  }
+
+  /// 选择题单题请求：只让模型输出选项字母，解析为选项索引
+  Future<int?> _examAiAskLetter(ApiConfig cfg, String sys, String user, int optionCount) async {
+    final reply = await ApiService.callAI([
+      {'role': 'user', 'content': user},
+    ], sys, config: cfg, maxTokens: 512, temperature: 0, extraParams: ApiService.noThinkingParams(cfg.model));
+    if (reply == null) return null;
+    return _parseLetterIdx(reply, optionCount);
+  }
+
+  /// 从模型回复解析选项字母为索引（0-based）；无法解析返回 null
+  int? _parseLetterIdx(String reply, int optionCount) {
+    int? toIdx(String? s) {
+      if (s == null || s.isEmpty) return null;
+      final idx = s.toUpperCase().codeUnitAt(0) - 65;
+      return (idx >= 0 && idx < optionCount) ? idx : null;
+    }
+
+    final t = reply.trim();
+    // 1) 整条回复就是（或以）一个字母开头：A / (B) / C. / D、
+    final m1 = RegExp(r'^\(?([A-Za-z])\)?[.、:：）)]?\s').firstMatch('$t ');
+    final i1 = toIdx(m1?.group(1));
+    if (i1 != null) return i1;
+    // 2) "答案：B" / "answer is B" / "选项 C" 等
+    final m2 = RegExp(r'(?:答案|answer|选项|选|option|choice)[^A-Za-z]{0,6}\(?([A-Za-z])\)?', caseSensitive: false).firstMatch(t);
+    final i2 = toIdx(m2?.group(1));
+    if (i2 != null) return i2;
+    // 3) 兜底：首个独立出现的字母
+    for (final m in RegExp(r'(?<![A-Za-z])([A-Za-z])(?![A-Za-z])').allMatches(t)) {
+      final i3 = toIdx(m.group(1));
+      if (i3 != null) return i3;
+    }
+    return null;
+  }
+
+  /// 将模型回复匹配到选词填空词库索引：先剥离可能的字母前缀/标点，精确 → 忽略大小写 → 前缀包含
+  int? _matchWordBankIdx(String reply, List<String> wordBank) {
+    var w = reply.trim();
+    // 剥离 "C. word" / "(B) word" / "word." 等包装
+    w = w.replaceFirst(RegExp(r'^\(?[A-Za-z][.、)）]\s*'), '');
+    w = w.replaceAll(RegExp(r'[^A-Za-z\- ]'), '').trim();
+    if (w.isEmpty) return null;
+    var idx = wordBank.indexWhere((b) => b.toLowerCase() == w.toLowerCase());
+    if (idx >= 0) return idx;
+    idx = wordBank.indexWhere((b) => b.toLowerCase().startsWith(w.toLowerCase()));
+    if (idx >= 0) return idx;
+    idx = wordBank.indexWhere((b) => w.toLowerCase().startsWith(b.toLowerCase()));
+    return idx >= 0 ? idx : null;
   }
 
   /// 将 AI 直接提交的题目内容（可能是 list / JSON 字符串 / 对象）自愈并归一化为 Question 列表。
@@ -4735,10 +5067,13 @@ class AppState extends ChangeNotifier {
     if (qs.isEmpty) {
       return const ToolExecResult(content: '{"ok":false,"reason":"no_valid_questions"}', ok: false, actionLabel: '没有有效问题');
     }
+    // 追加新的提问轮次（不覆盖旧轮次）：
+    // 之前是直接覆盖 askQuestions，导致连续两次提问时第二个问题
+    // 被已折叠的旧面板吞掉（State 复用 _confirmed=true）而不显示
     for (var i = chatHistory.length - 1; i >= 0; i--) {
       if (chatHistory[i].role == 'ai') {
-        chatHistory[i].askQuestions = qs;
-        chatHistory[i].askAnswers = {};
+        final roundKey = 'ask_${_askSeq++}';
+        chatHistory[i].askRounds.add(AskRound(key: roundKey, questions: qs));
         break;
       }
     }
@@ -4746,7 +5081,7 @@ class AppState extends ChangeNotifier {
     // 挂起等待用户在 UI 选择并点"确认"（completeAskAnswers 唤醒），
     // 最多等 10 分钟；超时后不再用空答案继续（之前返回空 answers 会让模型
     // 误以为用户"已回答"而继续推进，体感是"还没答完 agent 就开始下一步"）
-    final key = 'ask_${_askSeq++}';
+    final key = 'pending_${_askSeq++}';
     final completer = Completer<Map<String, List<String>>>();
     _askCompleters[key] = completer;
     Map<String, List<String>> answers = {};
@@ -4803,7 +5138,7 @@ class AppState extends ChangeNotifier {
     final summary = await _summarizeMessages(toCompact, focus: focus);
     final summaryMsg = ChatMessage(role: 'system', content: '【早期对话摘要】$summary');
     chatHistory = [summaryMsg, ...chatHistory.sublist(cut)];
-    _notifyChatUpdate();
+    _notifyChatUpdate(true);
     return ToolExecResult(
       content: jsonEncode({'ok': true, 'compacted': toCompact.length, 'kept_recent': keepRecent, 'summary': summary}),
       ok: true,
@@ -5820,14 +6155,14 @@ class AppState extends ChangeNotifier {
       }
     }
     // 追加当前用户消息
-    // R39: 不再检 cfg.vision——用户传图就是想让模型看，模型真不识别会自己报错。
-    // 历史回传（line 5710）原本就不检 vision；当前消息却检，前后行为不一致。
-    // 视觉/图片理解能力由各模型 API 端自己处理（GLM-4.6V/DeepSeek-VL 等）。
+    // 图片仅在模型具备视觉能力（cfg.vision）时以多模态 base64 发送；无视觉能力的
+    // 模型（如 DeepSeek-V4）无法识别 image_url，塞进去会导致请求 400/图片被忽略，
+    // agent 表现为"收不到图片"。sendChat 侧已同步：无视觉模型的消息 imageData 置空、
+    // UI 显示"当前模型不支持图片"红块，此处保持一致，不再让图片误进请求体。
+    final hasVisionForImage = cfg.vision && imageData != null && imageData.isNotEmpty;
     baseHistory.add({
       'role': 'user',
-      'content': (imageData != null && imageData.isNotEmpty)
-          ? ApiService.buildContent(text, imageData)
-          : text,
+      'content': hasVisionForImage ? ApiService.buildContent(text, imageData!) : text,
     });
   
     final messages = List<Map<String, dynamic>>.from(baseHistory);
@@ -5850,7 +6185,7 @@ class AppState extends ChangeNotifier {
             s.label = '已暂停';
           }
         }
-        _notifyChatUpdate();
+        _notifyChatUpdate(true);
         chatSending = false;
         notifyListeners();
         return (reply: '已暂停', actions: actions);
@@ -5872,8 +6207,9 @@ class AppState extends ChangeNotifier {
         // 只剩一句"的来源。现在不清空，始终在已有正文上继续累加。
         final contentPrefix = placeholder.content;
 
-        // 流式决策期间给出一句话进度（正文/步骤卡片出现后清除）
-        placeholder.statusLabel = round == 0 ? '正在分析请求…' : '思考下一步（第 ${round + 1} 轮）…';
+        // 流式决策期间的一句进度：
+        // "思考下一步（第 N 轮）…"状态行已按需求移除（轮间空档由思考段/步骤卡片自然衔接）
+        placeholder.statusLabel = null;
         _notifyChatUpdate();
   
         // R1: 所有轮次全部用流式调用（streamChatWithTools 现在返回 AIResponse 含 tool_calls）
@@ -6099,7 +6435,7 @@ class AppState extends ChangeNotifier {
           }
           // 重试 2 次仍残缺：如实告知用户，不再谎报"操作已完成"
           placeholder.content = '抱歉，工具调用多次失败（参数不完整），这次没能完成你的请求。请再试一次或换个说法。';
-          _notifyChatUpdate();
+          _notifyChatUpdate(true);
           chatSending = false;
           notifyListeners();
           return (reply: placeholder.content, actions: actions);
@@ -6279,7 +6615,7 @@ class AppState extends ChangeNotifier {
       debugPrint('[AgentLoop] 异常: $e\n$st');
       placeholder.content = '抱歉，处理过程中出现异常：$e\n请重试或换个说法。';
       placeholder.statusLabel = null;
-      _notifyChatUpdate();
+      _notifyChatUpdate(true);
       chatSending = false;
       notifyListeners();
       return (reply: placeholder.content, actions: actions);
@@ -6384,6 +6720,8 @@ class AppState extends ChangeNotifier {
         return n > 0 ? '正在整理并提交 $n 道题' : '正在生成题目';
       case 'generate_full_exam':
         return '正在生成全卷（约1-2分钟）';
+      case 'exam_ai_test':
+        return ((args['enabled'] as bool?) ?? true) ? '正在开启考场 AI 接入测试' : '正在关闭考场 AI 接入测试';
       case 'lookup_word':
         final w = (args['word'] as String?) ?? '';
         return '正在查询 "$w"';
@@ -6543,6 +6881,8 @@ class AppState extends ChangeNotifier {
         return '生成题目';
       case 'generate_full_exam':
         return '生成综合模拟全卷';
+      case 'exam_ai_test':
+        return 'AI 接入测试';
       case 'lookup_word':
         return '查询单词';
       case 'route_words':

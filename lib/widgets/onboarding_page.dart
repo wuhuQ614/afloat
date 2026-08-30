@@ -14,8 +14,9 @@ const Color _kBgDark = Color(0xFF121316);
 const Color _kBgLight = Color(0xFFFAFAFA);
 const Color _kCardDark = Color(0xFF1A1C20);
 const Color _kCardLight = Color(0xFFFFFFFF);
-/// 引导期固定单一低饱和强调色（靛蓝）：选中边框、勾选点、进度线、焦点态、链接
-const Color _kAccent = Color(0xFF6B7CFF);
+/// 引导期固定单一强调色（高级天蓝，与浅蓝玻璃主界面色板同族）：
+/// 选中边框、勾选点、进度线、焦点态、链接
+const Color _kAccent = Color(0xFF2E90FA);
 const Color _kBorderDark = Color(0x14FFFFFF); // rgba(255,255,255,0.08)
 const Color _kBorderLight = Color(0x14000000); // rgba(0,0,0,0.08)
 
@@ -312,11 +313,13 @@ class _OnboardingPageState extends State<OnboardingPage> {
     );
   }
 
-  /// 单页布局：内容列宽固定 560 居中，左右安全边距 48
+  /// 单页布局：内容列宽固定 560 居中；桌面左右边距 48，
+  /// 窄屏（手机竖屏 <560px）收窄到 24，避免卡片过窄导致文字换行撑爆固定高度
   Widget _pageShell(Widget content) {
+    final narrow = MediaQuery.sizeOf(context).width < 560;
     return Center(
       child: SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(48, 24, 48, 48),
+        padding: EdgeInsets.fromLTRB(narrow ? 24 : 48, 24, narrow ? 24 : 48, 48),
         child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 560), child: content),
       ),
     );
@@ -337,37 +340,41 @@ class _OnboardingPageState extends State<OnboardingPage> {
   // ===== 第 0 页：选择应用模式（课程表 / 学习模式）=====
   // 选课程表时"下一步"直接完成引导进入课程表使用页（该模式不依赖 API 配置）
   Widget _buildStepAppMode(_Pal pal) {
+    // 窄屏（手机竖屏）：两张卡纵向全宽排列——横向并排会把卡片挤到 ~140px 宽，
+    // subtitle 换行撑爆固定高度的卡片，底部标签被裁（手机端显示 bug）
+    final narrow = MediaQuery.sizeOf(context).width < 560;
+    final learnCard = SizedBox(
+      height: narrow ? 200 : 220,
+      child: _SelectCard(
+        title: '学习模式',
+        subtitle: 'AI 出题 / 词汇 / 考试 / 对话',
+        selected: s.appMode != 'timetable',
+        pal: pal,
+        preview: _buildModePreview(pal, timetable: false),
+        onTap: () => s.setAppMode('english'),
+      ),
+    );
+    final timetableCard = SizedBox(
+      height: narrow ? 200 : 220,
+      child: _SelectCard(
+        title: '课程表',
+        subtitle: 'JSON 导入课表 · 周视图',
+        selected: s.appMode == 'timetable',
+        pal: pal,
+        preview: _buildModePreview(pal, timetable: true),
+        onTap: () => s.setAppMode('timetable'),
+      ),
+    );
     return _pageShell(_StaggeredFadeIn(active: _step == 0, children: [
       _pageHead(pal, '选择使用模式', '两大独立模式。选课程表可直接进入使用页，之后随时在侧边栏切换。'),
-      Row(children: [
-        Expanded(
-          child: SizedBox(
-            height: 220,
-            child: _SelectCard(
-              title: '学习模式',
-              subtitle: 'AI 出题 / 词汇 / 考试 / 对话',
-              selected: s.appMode != 'timetable',
-              pal: pal,
-              preview: _buildModePreview(pal, timetable: false),
-              onTap: () => s.setAppMode('english'),
-            ),
-          ),
-        ),
-        const SizedBox(width: 16),
-        Expanded(
-          child: SizedBox(
-            height: 220,
-            child: _SelectCard(
-              title: '课程表',
-              subtitle: 'JSON 导入课表 · 周视图',
-              selected: s.appMode == 'timetable',
-              pal: pal,
-              preview: _buildModePreview(pal, timetable: true),
-              onTap: () => s.setAppMode('timetable'),
-            ),
-          ),
-        ),
-      ]),
+      if (narrow)
+        Column(children: [learnCard, const SizedBox(height: 14), timetableCard])
+      else
+        Row(children: [
+          Expanded(child: learnCard),
+          const SizedBox(width: 16),
+          Expanded(child: timetableCard),
+        ]),
     ]));
   }
 
@@ -375,49 +382,45 @@ class _OnboardingPageState extends State<OnboardingPage> {
   // 毛玻璃主题的对外命名统一为"浅蓝"（学习/课程表引导页一致），沿用浅蓝玻璃的视觉隐喻
   Widget _buildStepTheme(_Pal pal) {
     const glassLabel = '浅蓝';
+    // 窄屏（手机竖屏）：三张卡纵向全宽排列，与模式选择页一致（见 _buildStepAppMode 注释）
+    final narrow = MediaQuery.sizeOf(context).width < 560;
+    Widget themeCard(String title, String subtitle, bool selected, String style) => SizedBox(
+          height: narrow ? 190 : 200,
+          child: _SelectCard(
+            title: title,
+            subtitle: subtitle,
+            selected: selected,
+            pal: pal,
+            preview: _buildThemePreview(pal, style: style),
+            onTap: () => s.setThemeStyle(style),
+          ),
+        );
+    final classicCard = themeCard('经典', 'Classic', !s.darkMode && s.uiStyle == 'classic', 'classic');
+    final glassCard = themeCard(glassLabel, 'Glass', !s.darkMode && s.uiStyle == 'glass', 'glass');
+    final darkCard = themeCard('深色模式', 'Dark', s.darkMode, 'dark');
     return _pageShell(_StaggeredFadeIn(active: _step == 1, children: [
       _pageHead(pal, '选择主题'),
-      Row(children: [
-        Expanded(child: SizedBox(
-          height: 200,
-          child: _SelectCard(
-            title: '经典',
-            subtitle: 'Classic',
-            selected: !s.darkMode && s.uiStyle == 'classic',
-            pal: pal,
-            preview: _buildThemePreview(pal, style: 'classic'),
-            onTap: () => s.setThemeStyle('classic'),
-          ),
-        )),
-        const SizedBox(width: 16),
-        Expanded(child: SizedBox(
-          height: 200,
-          child: _SelectCard(
-            title: glassLabel,
-            subtitle: 'Glass',
-            selected: !s.darkMode && s.uiStyle == 'glass',
-            pal: pal,
-            preview: _buildThemePreview(pal, style: 'glass'),
-            onTap: () => s.setThemeStyle('glass'),
-          ),
-        )),
-      ]),
-      const SizedBox(height: 16),
-      Row(children: [
-        Expanded(child: SizedBox(
-          height: 200,
-          child: _SelectCard(
-            title: '深色模式',
-            subtitle: 'Dark',
-            selected: s.darkMode,
-            pal: pal,
-            preview: _buildThemePreview(pal, style: 'dark'),
-            onTap: () => s.setThemeStyle('dark'),
-          ),
-        )),
-        const SizedBox(width: 16),
-        const Expanded(child: SizedBox(height: 200)),
-      ]),
+      if (narrow)
+        Column(children: [
+          classicCard,
+          const SizedBox(height: 14),
+          glassCard,
+          const SizedBox(height: 14),
+          darkCard,
+        ])
+      else ...[
+        Row(children: [
+          Expanded(child: classicCard),
+          const SizedBox(width: 16),
+          Expanded(child: glassCard),
+        ]),
+        const SizedBox(height: 16),
+        Row(children: [
+          Expanded(child: darkCard),
+          const SizedBox(width: 16),
+          const Expanded(child: SizedBox(height: 200)),
+        ]),
+      ],
     ]));
   }
 
@@ -782,7 +785,7 @@ Widget _buildThemePreview(_Pal pal, {required String style}) {
   final sidebarBg = isDark ? const Color(0xFF252538) : const Color(0xFFE8E8F0);
   final lineColor = isDark ? const Color(0xFF3A3A55) : const Color(0xFFD8D8E2);
   final textColor = isDark ? const Color(0xFFC8C8D8) : const Color(0xFF4A4A5A);
-  final accentColor = isDark ? const Color(0xFF7B7BFF) : const Color(0xFF6B6BFF);
+  final accentColor = isDark ? const Color(0xFF7B7BFF) : const Color(0xFF2E90FA);
   return _miniFrame(
     cardBg: cardBg,
     sidebarBg: sidebarBg,
@@ -814,7 +817,7 @@ Widget _buildModePreview(_Pal pal, {required bool timetable}) {
   final cardBg = isDark ? const Color(0xFF1E1E2E) : const Color(0xFFF0F0F5);
   final sidebarBg = isDark ? const Color(0xFF252538) : const Color(0xFFE8E8F0);
   final lineColor = isDark ? const Color(0xFF3A3A55) : const Color(0xFFD8D8E2);
-  final accentColor = isDark ? const Color(0xFF7B7BFF) : const Color(0xFF6B6BFF);
+  final accentColor = isDark ? const Color(0xFF7B7BFF) : const Color(0xFF2E90FA);
   return _miniFrame(
     cardBg: cardBg,
     sidebarBg: sidebarBg,

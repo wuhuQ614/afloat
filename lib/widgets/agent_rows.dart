@@ -26,7 +26,6 @@ import '../state.dart'
         AppScope,
         AppState,
         AskUserQuestion,
-        ChatMessage,
         PlanSubmission,
         TodoItem;
 import 'source_viewer_page.dart';
@@ -346,6 +345,7 @@ IconData _toolIcon(String name) => switch (name) {
       'generate_questions' => Icons.edit_note_rounded,
       'submit_generated_questions' => Icons.playlist_add_check_rounded,
       'generate_full_exam' => Icons.description_rounded,
+      'exam_ai_test' => Icons.smart_toy_rounded,
       'lookup_word' => Icons.search_rounded,
       'route_words' => Icons.shuffle_rounded,
       'analyze_words' => Icons.spellcheck_rounded,
@@ -889,13 +889,14 @@ class _AgentSubagentCardState extends State<AgentSubagentCard> with SingleTicker
 // 命令执行块（TerminalBlock）
 // ---------------------------------------------------------------------------
 
-/// AI 提问卡片（dsh-tool-ask-user）：让用户从 2-4 个选项中选择
+/// AI 提问卡片（dsh-tool-ask-user）：让用户从 2-4 个选项中选择。
+/// 每个提问轮次一个独立实例（外部用 ValueKey(round.key) 保证不复用 State），
+/// 作答直接写入所属轮次的 answers map，不回写消息级字段
 class AgentAskUserPanel extends StatefulWidget {
   final List<AskUserQuestion> questions;
   final Map<String, List<String>> answers;
-  final ChatMessage msgRef;
   final bool light;
-  const AgentAskUserPanel({super.key, required this.questions, required this.answers, required this.msgRef, this.light = false});
+  const AgentAskUserPanel({super.key, required this.questions, required this.answers, this.light = false});
 
   @override
   State<AgentAskUserPanel> createState() => _AgentAskUserPanelState();
@@ -930,7 +931,6 @@ class _AgentAskUserPanelState extends State<AgentAskUserPanel> {
           ..add(label);
       }
       widget.answers[q.id] = current;
-      widget.msgRef.askAnswers = Map<String, List<String>>.from(widget.answers);
     });
   }
 
@@ -951,9 +951,10 @@ class _AgentAskUserPanelState extends State<AgentAskUserPanel> {
   /// 第 2 页点"提交"：答案 + 补充说明一起回传给 Agent
   void _submitAll() {
     final note = _noteCtrl.text.trim();
+    // 补充内容挂在约定的特殊 key 上（state 侧组装时取出，不参与题目计数）；
+    // 同时写入 answers 本体（所属提问轮次的作答 map），折叠摘要才能显示补充内容
+    if (note.isNotEmpty) widget.answers[AppState.kAskUserNoteKey] = [note];
     final payload = Map<String, List<String>>.from(widget.answers);
-    // 补充内容挂在约定的特殊 key 上（state 侧组装时取出，不参与题目计数）
-    if (note.isNotEmpty) payload[AppState.kAskUserNoteKey] = [note];
     final summary = <String>[];
     for (final q in widget.questions) {
       final sel = widget.answers[q.id] ?? const <String>[];
@@ -962,7 +963,6 @@ class _AgentAskUserPanelState extends State<AgentAskUserPanel> {
     // 回传 AppState：唤醒挂起的 ask_user_question 工具调用，
     // 让模型下一轮真正拿到用户选择（此前只弹 SnackBar，答案无回传路径）
     AppScope.of(context).completeAskAnswers(payload);
-    widget.msgRef.askAnswers = payload;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: Text(note.isEmpty ? '已提交：${summary.join(" | ")}' : '已提交（含补充）：${summary.join(" | ")}',
           style: const TextStyle(fontSize: 12)),

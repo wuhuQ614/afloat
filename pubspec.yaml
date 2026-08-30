@@ -1,7 +1,7 @@
 name: smartenglish
 description: SmartEnglish 智能英语学习（Flutter Windows 桌面版，与网页版功能一致）
 publish_to: 'none'
-version: 1.1.1+3
+version: 1.1.2+4
 
 environment:
   sdk: '>=3.4.0 <4.0.0'
