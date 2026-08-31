@@ -1,7 +1,7 @@
 ; AFloat - 安装器
 
 #define MyAppName "AFloat"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.1.2"
 #define MyAppPublisher "SmartEnglish"
 #define MyAppExeName "afloat.exe"
 #define MyAppURL "https://github.com"
@@ -52,7 +52,17 @@ Source: "{#BuildDir}\window_manager_plugin.dll"; DestDir: "{app}"; Flags: ignore
 Source: "{#BuildDir}\audioplayers_windows_plugin.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BuildDir}\flutter_inappwebview_windows_plugin.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BuildDir}\snake_logic.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#BuildDir}\url_launcher_windows_plugin.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BuildDir}\WebView2Loader.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#BuildDir}\llama.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#BuildDir}\ggml.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#BuildDir}\ggml-base.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#BuildDir}\ggml-cpu.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#BuildDir}\libgcc_s_seh-1.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#BuildDir}\libgomp-1.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#BuildDir}\libomp.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#BuildDir}\libstdc++-6.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#BuildDir}\libwinpthread-1.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BuildDir}\data\*"; DestDir: "{app}\data"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
