@@ -9,6 +9,7 @@ import '../services/dict_service.dart';
 import '../services/tts_service.dart';
 import '../state.dart';
 import '../theme_colors.dart' show kPrimary, kPrimaryLight, kSuccess, kDanger, AppColors;
+import 'exam_preset_dialog.dart';
 import 'settings_dialog.dart';
 import 'glass_background.dart';
 
@@ -1888,30 +1889,17 @@ class _LearnPageState extends State<LearnPage> {
     s.selectedType = _selectedType;
     s.selectedLevel = _selectedLevel;
 
-    // 综合模拟套卷：先弹出确认对话框，确认后进入考场并逐批生成
+    // 综合模拟套卷：先选择卷源（某年真题直接作答 / AI 按真题题型生成一套）
     if (_selectedType == 'mixed') {
       final customText = _customReqCtrl.text.trim();
-      // 弹出确认对话框
-      final confirmed = await showDialog<bool>(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          title: const Text('综合模拟套卷'),
-          content: const Text('进入考场后，AI将逐批生成题目（每次约10题），共76题。\n\n是否进入考场？'),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('取消'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('进入考场'),
-            ),
-          ],
-        ),
-      );
-      if (confirmed != true) return;
-      
-      final ok = await s.generateFullExam(customReq: customText);
+      final choice = await showExamPaperSourceDialog(context);
+      if (!mounted || choice == null) return;
+      bool ok;
+      if (choice == 'ai') {
+        ok = await s.generateFullExam(customReq: customText);
+      } else {
+        ok = await s.startRealExamPaper(choice);
+      }
       if (!mounted) return;
       if (!ok) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('进入考场失败，请检查 API 配置后重试'), behavior: SnackBarBehavior.floating));

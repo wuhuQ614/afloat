@@ -61,6 +61,7 @@ const List<String> kBundledSkillFiles = [
   'skill-creator',
   'frontend-design',
   'flutter-ui-ux',
+  'flutter-build',
   'github',
   'api-preset-config',
   'find-skill',

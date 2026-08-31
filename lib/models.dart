@@ -752,6 +752,51 @@ enum ExamSection {
   writing,
 }
 
+/// 综合模拟卷的默认布局（76 题 / 150 分）；试卷未声明自定义布局时使用
+const Map<ExamSection, int> kDefaultExamCounts = {
+  ExamSection.vocab: 20,
+  ExamSection.reading: 20,
+  ExamSection.cloze: 15,
+  ExamSection.dialogue: 5,
+  ExamSection.bankedCloze: 10,
+  ExamSection.en2zh5: 5,
+  ExamSection.writing: 1,
+};
+
+/// 默认布局的每题分值
+const Map<ExamSection, double> kDefaultExamScores = {
+  ExamSection.vocab: 1,
+  ExamSection.reading: 2,
+  ExamSection.cloze: 1,
+  ExamSection.dialogue: 2,
+  ExamSection.bankedCloze: 1,
+  ExamSection.en2zh5: 4,
+  ExamSection.writing: 35,
+};
+
+/// 四川专升本 2024 年起真题标准布局（150 分制 · 77 题）：
+/// 词汇20 / 阅读16(4篇×4) / 完形20 / 补全对话5 / 选词填空10 / 英译汉5 / 写作1
+const Map<ExamSection, int> kZsb2024ExamCounts = {
+  ExamSection.vocab: 20,
+  ExamSection.reading: 16,
+  ExamSection.cloze: 20,
+  ExamSection.dialogue: 5,
+  ExamSection.bankedCloze: 10,
+  ExamSection.en2zh5: 5,
+  ExamSection.writing: 1,
+};
+
+/// 四川专升本 2024 年起真题标准分值：20+40+30+10+10+15+25 = 150 分
+const Map<ExamSection, double> kZsb2024ExamScores = {
+  ExamSection.vocab: 1,
+  ExamSection.reading: 2.5,
+  ExamSection.cloze: 1.5,
+  ExamSection.dialogue: 2,
+  ExamSection.bankedCloze: 1,
+  ExamSection.en2zh5: 3,
+  ExamSection.writing: 25,
+};
+
 extension ExamSectionX on ExamSection {
   String get label {
     switch (this) {
@@ -831,7 +876,7 @@ extension ExamSectionX on ExamSection {
     }
   }
 
-  /// 分区总满分
+  /// 分区总满分（默认布局；真题卷请以 FullExamPaper.sectionTotalScoreOf 为准）
   int get totalScore => scorePerQuestion * questionCount;
 
   /// 分区在全卷中的起始题号（1-based）
@@ -1001,6 +1046,16 @@ class FullExamPaper {
   // 第七部分：写作
   WritingEntry? writing;
 
+  /// 各大题题量布局（null = 用 kDefaultExamCounts；真题卷按当年结构覆盖，
+  /// 例如 2023 年：词汇30/阅读20/完形20/对话0/选词0/英译汉4/写作1）
+  Map<ExamSection, int>? sectionCounts;
+  /// 各大题每题分值（null = 用 kDefaultExamScores；2024 起真题为 1/2.5/1.5/2/1/3/25）
+  Map<ExamSection, double>? perQuestionScores;
+  /// 是否真题卷（真题卷：题号/分值严格按当年真题，缺失部分不做补齐提示的假题）
+  bool isRealPaper;
+  /// 真题卷年份（如 '2023'），AI 生成卷为空
+  String realYear;
+
   FullExamPaper({
     this.totalTimeMin = 120,
     this.title = '专升本综合模拟全卷',
@@ -1012,9 +1067,81 @@ class FullExamPaper {
     this.bankedCloze,
     this.en2zh5,
     this.writing,
+    Map<ExamSection, int>? sectionCounts,
+    Map<ExamSection, double>? perQuestionScores,
+    this.isRealPaper = false,
+    this.realYear = '',
   })  : vocab = vocab ?? [],
         readings = readings ?? [],
-        cloze = cloze ?? [];
+        cloze = cloze ?? [],
+        sectionCounts = sectionCounts == null ? null : Map<ExamSection, int>.from(sectionCounts),
+        perQuestionScores =
+            perQuestionScores == null ? null : Map<ExamSection, double>.from(perQuestionScores);
+
+  // ===== 布局相关：题量 / 分值 / 题号映射（真题卷与生成卷共用一套口径） =====
+
+  /// 该大题题量（卷内声明优先，否则取默认布局）
+  int countOf(ExamSection s) => sectionCounts?[s] ?? kDefaultExamCounts[s] ?? s.questionCount;
+
+  /// 该大题每题分值（卷内声明优先，否则取默认布局）
+  double perQScoreOf(ExamSection s) =>
+      perQuestionScores?[s] ?? kDefaultExamScores[s] ?? s.scorePerQuestion.toDouble();
+
+  /// 该大题满分（题量 × 每题分值）
+  int sectionTotalScoreOf(ExamSection s) => (countOf(s) * perQScoreOf(s)).round();
+
+  /// 全卷题量（按布局口径）
+  int get layoutTotalQuestions =>
+      ExamSection.values.fold<int>(0, (sum, s) => sum + countOf(s));
+
+  /// 全卷满分（按布局口径）
+  int get layoutTotalScore =>
+      ExamSection.values.fold<double>(0, (sum, s) => sum + countOf(s) * perQScoreOf(s)).round();
+
+  /// 该大题起始题号（1-based；题量为 0 的大题不占号）
+  int startIndexOf(ExamSection target) {
+    var n = 1;
+    for (final s in ExamSection.values) {
+      if (s == target) return n;
+      n += countOf(s);
+    }
+    return n;
+  }
+
+  /// 该大题结束题号（1-based；题量为 0 时结束号小于起始号，不含任何题）
+  int endIndexOf(ExamSection target) => startIndexOf(target) + countOf(target) - 1;
+
+  /// 某全局题号是否属于该大题
+  bool layoutContains(ExamSection target, int idx1) =>
+      countOf(target) > 0 && idx1 >= startIndexOf(target) && idx1 <= endIndexOf(target);
+
+  /// 全卷题号 → 大题（未命中任何大题时归到写作）
+  ExamSection sectionOfIndex(int idx1) {
+    for (final s in ExamSection.values) {
+      if (layoutContains(s, idx1)) return s;
+    }
+    return ExamSection.writing;
+  }
+
+  /// 阅读大题内相对题号（0-based）→ （第几篇，篇内第几题）。
+  /// 逐篇累加真实题数，兼容每篇题数不同的真题卷（如 2026 年回忆版某篇仅回忆出 2 题）；
+  /// 短文尚未生成时按每篇均分估算，保证生成期间的导航/作答不越界。
+  ({int passageIdx, int qIdx}) readingPosOf(int rel) {
+    var acc = 0;
+    for (var pi = 0; pi < readings.length; pi++) {
+      final n = readings[pi].questions.length;
+      if (n <= 0) continue;
+      if (rel < acc + n) return (passageIdx: pi, qIdx: rel - acc);
+      acc += n;
+    }
+    final pn = readings.isEmpty ? 4 : readings.length;
+    final per = countOf(ExamSection.reading) ~/ (pn <= 0 ? 1 : pn);
+    if (per > 0) {
+      final pi = (rel ~/ per).clamp(0, pn - 1);
+      return (passageIdx: pi, qIdx: rel - pi * per);
+    }
+    return (passageIdx: 0, qIdx: rel);
+  }
 
   /// 全卷总题量
   int get totalQuestions {
@@ -1041,6 +1168,12 @@ class FullExamPaper {
         'bankedCloze': bankedCloze?.toJson(),
         'en2zh5': en2zh5?.toJson(),
         'writing': writing?.toJson(),
+        if (sectionCounts != null)
+          'sectionCounts': {for (final e in sectionCounts!.entries) e.key.name: e.value},
+        if (perQuestionScores != null)
+          'perQuestionScores': {for (final e in perQuestionScores!.entries) e.key.name: e.value},
+        if (isRealPaper) 'isRealPaper': true,
+        if (realYear.isNotEmpty) 'realYear': realYear,
       };
 
   factory FullExamPaper.fromJson(Map<String, dynamic> j) => FullExamPaper(
@@ -1054,6 +1187,22 @@ class FullExamPaper {
         bankedCloze: j['bankedCloze'] == null ? null : BankedClozeEntry.fromJson(j['bankedCloze'] as Map<String, dynamic>),
         en2zh5: j['en2zh5'] == null ? null : En2zh5Entry.fromJson(j['en2zh5'] as Map<String, dynamic>),
         writing: j['writing'] == null ? null : WritingEntry.fromJson(j['writing'] as Map<String, dynamic>),
+        sectionCounts: j['sectionCounts'] == null
+            ? null
+            : {
+                for (final e in (j['sectionCounts'] as Map<String, dynamic>).entries)
+                  ExamSection.values.firstWhere((s) => s.name == e.key,
+                      orElse: () => ExamSection.vocab): (e.value as num).toInt()
+              },
+        perQuestionScores: j['perQuestionScores'] == null
+            ? null
+            : {
+                for (final e in (j['perQuestionScores'] as Map<String, dynamic>).entries)
+                  ExamSection.values.firstWhere((s) => s.name == e.key,
+                      orElse: () => ExamSection.vocab): (e.value as num).toDouble()
+              },
+        isRealPaper: j['isRealPaper'] == true,
+        realYear: (j['realYear'] ?? '') as String,
       );
 }
 
@@ -1082,6 +1231,42 @@ class ExamAnswerSheet {
         dialogue = dialogue ?? List.filled(5, null),
         bankedCloze = bankedCloze ?? List.filled(10, null),
         en2zh5 = en2zh5 ?? List.filled(5, '');
+
+  /// 按试卷布局建空答题卡（真题卷与生成卷口径一致）：
+  /// 题量取试卷声明的布局，阅读按每篇实际小题数展开（支持每篇题数不同的真题卷）
+  factory ExamAnswerSheet.forPaper(FullExamPaper paper) => ExamAnswerSheet(
+        vocab: List<int?>.filled(paper.countOf(ExamSection.vocab), null),
+        reading: [
+          for (final r in paper.readings) List<int?>.filled(r.questions.length, null),
+        ],
+        cloze: List<int?>.filled(paper.countOf(ExamSection.cloze), null),
+        dialogue: List<int?>.filled(paper.countOf(ExamSection.dialogue), null),
+        bankedCloze: List<int?>.filled(paper.countOf(ExamSection.bankedCloze), null),
+        en2zh5: List<String>.filled(paper.countOf(ExamSection.en2zh5), ''),
+      );
+
+  /// 把答题卡补齐到试卷当前内容（生成过程中短文/题目陆续并入，答题卡同步扩容，
+  /// 已作答内容保持不变；只增不减，避免覆盖用户答案）
+  void syncToPaper(FullExamPaper paper) {
+    void grow<T>(List<T> list, int want, T filler) {
+      while (list.length < want) {
+        list.add(filler);
+      }
+    }
+
+    grow(vocab, paper.vocab.length, null);
+    grow(cloze, paper.clozeSubs?.length ?? 0, null);
+    grow(dialogue, paper.dialogue?.answerLetters.length ?? 0, null);
+    grow(bankedCloze, paper.bankedCloze?.answerWords.length ?? 0, null);
+    grow(en2zh5, paper.en2zh5?.sentences.length ?? 0, '');
+    for (var pi = 0; pi < paper.readings.length; pi++) {
+      if (pi >= reading.length) reading.add(<int?>[]);
+      final want = paper.readings[pi].questions.length;
+      if (want > reading[pi].length) {
+        reading[pi] = [...reading[pi], ...List<int?>.filled(want - reading[pi].length, null)];
+      }
+    }
+  }
 
   Map<String, dynamic> toJson() => {
         'vocab': vocab,

@@ -601,9 +601,21 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
         themeMode: _state.darkMode ? ThemeMode.dark : ThemeMode.light,
         home: Builder(builder: (context) {
           final c = AppColors.of(context);
-          // 全局玻璃背景层（渐变 + 3 光斑）覆盖加载页/引导页/桌面/手机全部分支
+          // 背景层分域：毛玻璃主题的蓝色渐隐背景全场景保留，但分两种形态——
+          // 引导页：动态极光（呼吸漂移）；主界面（桌面/手机/课程表）：同一幅画的
+          // 静态帧（不启动 Ticker、画一次后缓存）。此前主界面每帧全屏重绘 +
+          // 壳层全屏 BackdropFilter 连带重模糊是卡顿根源；静态帧视觉不变、零逐帧开销。
+          // 非 glass 主题（经典/深色/高性能）仍为纯色实底。
           return Stack(children: [
-            Positioned.fill(child: RepaintBoundary(child: _AppGlassBackground(colors: c, isGlass: _state.isGlassUI))),
+            Positioned.fill(
+              child: RepaintBoundary(
+                child: _AppGlassBackground(
+                  colors: c,
+                  isGlass: _state.isGlassUI,
+                  animated: !_state.onboardingDone,
+                ),
+              ),
+            ),
             Positioned.fill(
               child: Focus(
                 autofocus: true,
@@ -695,7 +707,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
     final isLight = brightness == Brightness.light;
     final base = ThemeData(colorScheme: scheme, useMaterial3: true, fontFamilyFallback: const ['Microsoft YaHei', 'Segoe UI']);
     return base.copyWith(
-      // scaffold 透明：由根部全局玻璃背景层（渐变 + 光斑）承接底色
+      // scaffold 透明：由根部全局背景层承接底色（引导页=动态极光；主界面=静态实底）
       scaffoldBackgroundColor: Colors.transparent,
       splashFactory: InkRipple.splashFactory,
       cardTheme: CardThemeData(
@@ -832,28 +844,18 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
       const moreIcon = Icons.grid_view_outlined;
       final isGlass = _state.isGlassUI;
       return RepaintBoundary(
-        child: isGlass
-          ? ClipRRect(
-              child: BackdropFilter(
-                filter: glassBlurFilter(sigma: 30),
-                child: Container(
-                  width: 200,
-                  decoration: BoxDecoration(
-                    gradient: glassTintGradient(c.sidebar, _state.darkMode ? 0.5 : 0.55),
-                    border: Border(right: BorderSide(color: c.divider)),
-                  ),
-                  child: _buildSidebarContent(c, page, mainItems, inMore, inSubFeature, moreTitle, moreIcon, context),
-                ),
-              ),
-            )
-          : Container(
-        width: 200,
-        decoration: BoxDecoration(
-          color: c.sidebar,
-          border: Border(right: BorderSide(color: c.divider)),
+        child: Container(
+          width: 200,
+          decoration: BoxDecoration(
+            // 玻璃模式：半透明染色即可，不再挂 BackdropFilter——背景层已换
+            // 静态实底，对纯色背景做高斯模糊没有视觉意义，侧栏重绘时还要
+            // 全高重跑模糊，纯耗性能
+            color: isGlass ? null : c.sidebar,
+            gradient: isGlass ? glassTintGradient(c.sidebar, _state.darkMode ? 0.5 : 0.55) : null,
+            border: Border(right: BorderSide(color: c.divider)),
+          ),
+          child: _buildSidebarContent(c, page, mainItems, inMore, inSubFeature, moreTitle, moreIcon, context),
         ),
-        child: _buildSidebarContent(c, page, mainItems, inMore, inSubFeature, moreTitle, moreIcon, context),
-      ),
       );
       },
     );
@@ -1123,15 +1125,15 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
           Expanded(
             flex: 7,
             child: isGlass
-              ? ClipRect(child: BackdropFilter(
-                  filter: glassBlurFilter(sigma: 20),
-                  child: Container(
-                    decoration: BoxDecoration(
-                      gradient: glassTintGradient(c.bg, _state.darkMode ? 0.45 : 0.5),
-                    ),
-                    child: _animatedPage(),
+              // 玻璃模式：只做半透明染色，不再挂 BackdropFilter——
+              // 背景层已换静态实底，模糊纯色没有视觉意义，而内容每帧重绘
+              // （滚动/流式输出）时全屏重跑高斯模糊是卡顿大头
+              ? Container(
+                  decoration: BoxDecoration(
+                    gradient: glassTintGradient(c.bg, _state.darkMode ? 0.45 : 0.5),
                   ),
-                ))
+                  child: _animatedPage(),
+                )
               : _animatedPage(),
           ),
           // 右侧 AI 对话助手（30%）— 监听 darkMode + chatUpdate，避免流式输出时全应用重建
@@ -1193,20 +1195,18 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
             child: Stack(children: [
               Positioned.fill(
                 child: isGlass
-                  ? ClipRect(child: BackdropFilter(
-                      filter: glassBlurFilter(sigma: 20),
-                      child: Container(
-                        decoration: BoxDecoration(
-                          gradient: glassTintGradient(c.bg, _state.darkMode ? 0.4 : 0.45),
-                        ),
-                        // extendBody 后 Scaffold 会把导航栏高度注入 body 的 MediaQuery
-                        // padding.bottom，内容避开悬浮导航栏，染色层则连续铺满全屏
-                        child: Builder(builder: (bctx) => Padding(
-                          padding: EdgeInsets.only(bottom: MediaQuery.of(bctx).padding.bottom),
-                          child: _animatedPage(),
-                        )),
+                  // 玻璃模式：半透明染色即可（背景层为静态实底，无需 BackdropFilter）
+                  ? Container(
+                      decoration: BoxDecoration(
+                        gradient: glassTintGradient(c.bg, _state.darkMode ? 0.4 : 0.45),
                       ),
-                    ))
+                      // extendBody 后 Scaffold 会把导航栏高度注入 body 的 MediaQuery
+                      // padding.bottom，内容避开悬浮导航栏，染色层则连续铺满全屏
+                      child: Builder(builder: (bctx) => Padding(
+                        padding: EdgeInsets.only(bottom: MediaQuery.of(bctx).padding.bottom),
+                        child: _animatedPage(),
+                      )),
+                    )
                   : Builder(builder: (bctx) => Padding(
                       padding: EdgeInsets.only(bottom: MediaQuery.of(bctx).padding.bottom),
                       child: _animatedPage(),
@@ -1858,16 +1858,14 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
       child: DropTarget(
       onDragDone: (details) => _setChatImageFromFiles(details.files),
       child: isGlass
-        ? ClipRect(child: BackdropFilter(
-            filter: glassBlurFilter(sigma: 20),
-            child: Container(
-              decoration: BoxDecoration(
-                gradient: glassTintGradient(c.sidebar, s.darkMode ? 0.4 : 0.45),
-                border: fullscreen ? null : Border(left: BorderSide(color: c.divider)),
-              ),
-              child: Builder(builder: (panelCtx) => panelContent(panelCtx)),
+        // 玻璃模式：半透明染色即可（背景层为静态实底，无需 BackdropFilter）
+        ? Container(
+            decoration: BoxDecoration(
+              gradient: glassTintGradient(c.sidebar, s.darkMode ? 0.4 : 0.45),
+              border: fullscreen ? null : Border(left: BorderSide(color: c.divider)),
             ),
-          ))
+            child: Builder(builder: (panelCtx) => panelContent(panelCtx)),
+          )
         : Container(
         decoration: BoxDecoration(
           // 透明：让全局玻璃背景层透出
@@ -5346,16 +5344,23 @@ class _GlassAddButtonState extends State<_GlassAddButton> {
   }
 }
 
-/// 全局背景层：纯色（浅色纯白 / 深色纯深灰，无光斑无渐变旋涡）
+/// 全局背景层：
+/// - isGlass=true：毛玻璃主题的蓝色渐隐背景（渐变底 + 柔光斑 + 光带 + 网格）。
+///   [animated] 仅引导页为 true（呼吸极光）；主界面一律 false——同一幅画的
+///   静态帧，画一次后缓存，不再每帧重绘（每帧全屏重绘叠加壳层 BackdropFilter
+///   连带重模糊是此前主界面卡顿的根源）
+/// - isGlass=false：静态纯色实底（浅色 _lightBgTint / 深色 kDarkBg，无光斑）。
+///   经典主题 / 深色模式 / 高性能模式用它
 class _AppGlassBackground extends StatelessWidget {
   final AppColors colors;
   final bool isGlass;
-  const _AppGlassBackground({required this.colors, this.isGlass = false});
+  final bool animated;
+  const _AppGlassBackground({required this.colors, this.isGlass = false, this.animated = true});
 
   @override
   Widget build(BuildContext context) {
     if (isGlass) {
-      return GlassBackground(isLight: colors.isLight);
+      return GlassBackground(isLight: colors.isLight, animated: animated);
     }
     return DecoratedBox(
       decoration: BoxDecoration(color: colors.appBgGradientTop),

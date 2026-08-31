@@ -36,9 +36,15 @@ LinearGradient glassTintGradient(Color base, double opacity) {
 /// 位置/大小可按玻璃主题调整，整体透明度随呼吸明暗。
 /// Ticker 驱动、每帧仅重绘画布（repaint listenable），不重建 widget 子树；
 /// 外层已有 RepaintBoundary，重绘不扩散到内容树。
+///
+/// [animated] = false 时为**静态帧**模式：不启动 Ticker，整幅画面在固定相位
+/// （elapsed=1.5）一次性画好——渐变底、柔光斑、光带、网格全部保留，只是不再
+/// 呼吸漂移；之后仅在尺寸变化 / 明暗主题切换时重绘。主界面用静态帧：
+/// 蓝色渐隐背景保留，但不再每帧重绘（性能与动画版唯一的差别就是"不动"）。
 class GlassBackground extends StatefulWidget {
   final bool isLight;
-  const GlassBackground({super.key, required this.isLight});
+  final bool animated;
+  const GlassBackground({super.key, required this.isLight, this.animated = true});
 
   @override
   State<GlassBackground> createState() => _GlassBackgroundState();
@@ -57,6 +63,9 @@ class _GlassAnim extends ChangeNotifier {
 
 class _GlassBackgroundState extends State<GlassBackground>
     with SingleTickerProviderStateMixin {
+  /// 静态帧固定相位：让光带/网格停在一个观感自然的时刻（呼吸中值附近）
+  static const double _staticElapsed = 1.5;
+
   late final _GlassAnim _m;
   late final Ticker _ticker;
   double _last = 0;
@@ -65,8 +74,9 @@ class _GlassBackgroundState extends State<GlassBackground>
   void initState() {
     super.initState();
     _m = _GlassAnim(widget.isLight);
+    if (!widget.animated) _m.elapsed = _staticElapsed;
     _ticker = createTicker(_onTick);
-    _ticker.start();
+    if (widget.animated) _ticker.start();
   }
 
   @override
@@ -75,6 +85,17 @@ class _GlassBackgroundState extends State<GlassBackground>
     if (widget.isLight != old.isLight) {
       _m.isLight = widget.isLight;
       _m.step(0); // 立即按新配色重绘一帧
+    }
+    // 动画 <-> 静态切换（引导页 -> 主界面）：停表定格当前相位，
+    // 画面无缝静止，不跳变
+    if (widget.animated != old.animated) {
+      if (widget.animated) {
+        _last = 0;
+        _ticker.start();
+      } else {
+        _ticker.stop();
+        _m.step(0); // 通知画布按当前相位定帧重绘
+      }
     }
   }
 
@@ -361,7 +382,9 @@ class _GlassBasePainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(_GlassBasePainter old) => true; // repaint listenable 已驱动
+  bool shouldRepaint(_GlassBasePainter old) => m.isLight != old.m.isLight;
+  // 动画模式：repaint listenable（_GlassAnim）每帧驱动重绘，不走这里；
+  // 静态模式：仅明暗切换时重绘，父级重建不再连带整幅背景重绘
 }
 
 /// 毛玻璃容器包装器：BackdropFilter（模糊+提饱和）+ 渐变染色 + 受光层 + 顶部高光
