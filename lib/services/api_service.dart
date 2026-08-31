@@ -200,8 +200,12 @@ class ApiService {
       }
       final choice = choices.first as Map<String, dynamic>;
       final msg = choice['message'] as Map<String, dynamic>?;
-      final content = (msg?['content'] as String?) ?? '';
-      final reasoning = (msg?['reasoning_content'] as String?) ?? '';
+      var content = _extractText(msg?['content']);
+      final reasoning = _extractText(
+          msg?['reasoning_content'] ?? msg?['reasoning'] ?? choice['reasoning_content']);
+      // 部分网关/推理模型把正文放在 reasoning_content，content 为空字符串：
+      // 此时回退到思考文本，避免调用方误判为"AI 无响应"
+      if (content.trim().isEmpty) content = reasoning;
       _logNonStream(cfg, systemPrompt, messages, content, reasoning);
       return AIResult(content, choice['finish_reason']?.toString(), reasoning: reasoning);
     } on TimeoutException catch (_) {
@@ -213,6 +217,31 @@ class ApiService {
       devLog('✗ 请求失败: $lastError');
       return const AIResult(null, null);
     }
+  }
+
+  /// 归一化 message.content：兼容三种常见形态——
+  /// 纯字符串、OpenAI 多模态数组（[{'type':'text','text':'...'}]）、以及
+  /// 个别网关返回的 {'text': '...'} 对象。
+  static String _extractText(dynamic raw) {
+    if (raw == null) return '';
+    if (raw is String) return raw;
+    if (raw is List) {
+      final sb = StringBuffer();
+      for (final e in raw) {
+        if (e is String) {
+          sb.write(e);
+        } else if (e is Map) {
+          final t = e['text'];
+          if (t is String) sb.write(t);
+        }
+      }
+      return sb.toString();
+    }
+    if (raw is Map) {
+      final t = raw['text'];
+      if (t is String) return t;
+    }
+    return '';
   }
 
   /// 带 tools 的非流式调用（Function Calling）。
@@ -273,9 +302,10 @@ class ApiService {
       }
       final choice = choices.first as Map<String, dynamic>;
       final msg = choice['message'] as Map<String, dynamic>? ?? {};
-      final content = (msg['content'] as String?) ?? '';
+      var content = _extractText(msg['content']);
       // 提取思考过程（reasoning_content 字段，部分模型在 message 中返回）
-      final reasoning = (msg['reasoning_content'] as String?) ?? '';
+      final reasoning = _extractText(msg['reasoning_content'] ?? msg['reasoning']);
+      if (content.trim().isEmpty) content = reasoning;
       final toolCallsRaw = msg['tool_calls'] as List?;
       final toolCalls = <ToolCall>[];
       if (toolCallsRaw != null) {

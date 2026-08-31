@@ -13,6 +13,7 @@ import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:excel/excel.dart';
 import 'models.dart';
+import 'exam_real_papers.dart';
 import 'timetable_models.dart';
 import 'theme_colors.dart' show AppColors;
 import 'services/api_service.dart';
@@ -518,7 +519,9 @@ class AppState extends ChangeNotifier {
   /// 考场内AI逐批生成状态
   bool examGeneratingBatch = false;
   int examGeneratedCount = 0; // 已生成的题目数
-  int examTotalQuestions = 76; // 总题数
+  /// 本卷总题量：按当前试卷布局口径（真题卷按当年结构，如 2023=75/2024起=77），
+  /// 试卷未建立时回退默认布局 76 题
+  int get examTotalQuestions => currentExamPaper?.layoutTotalQuestions ?? 76;
   String examGeneratingHint = ''; // 当前生成提示
   /// 本轮全卷生成是否已结束（供 UI 展示完成/失败横幅）
   bool examGenerationDone = false;
@@ -526,6 +529,9 @@ class AppState extends ChangeNotifier {
   final List<ExamBatchSpec> _examFailedBatches = [];
   /// 本轮卷的用户自定义出题要求（重发缺失大题时透传，避免丢失）
   String _examCustomReq = '';
+  /// 本轮卷的「分大题出题提示」（key = 大题类型名）：真题卷载入时按缺失大题注入
+  /// 回忆版主题线索，让 AI 补全尽量贴合原卷；AI 生成卷为空（改走真题风格总纲）。
+  final Map<String, String> _examSectionHints = {};
   List<String> get examFailedSectionLabels =>
       _examFailedBatches.map((b) => b.label).toList();
   /// 考试成绩历史摘要（最近 10 条，新→旧，持久化）
@@ -542,6 +548,8 @@ class AppState extends ChangeNotifier {
   /// AI 作答统计：成功/失败题数
   int examAiAnsweredCount = 0;
   int examAiFailedCount = 0;
+  /// 失败题的具体原因（最多保留最近 8 条，供 UI 展开排查）
+  final List<String> examAiFailedHints = [];
   /// AI 作答中止标志（点"停止"或关闭模式时置位）
   bool _examAiAbort = false;
   /// 用户在工具条下拉选择的预设索引（-1=未选，默认取第一个预设）
@@ -3356,13 +3364,16 @@ class AppState extends ChangeNotifier {
     _examAiAbort = false;
     examAiAnsweredCount = 0;
     examAiFailedCount = 0;
+    examAiFailedHints.clear();
     examAiAnswerHint = '准备开始…';
     notifyListeners();
 
-    final total = paper.totalQuestions;
-    // 用固定全卷题号区间遍历（resolveExamQuestion 按标准 76 题布局定位），
-    // 题目不存在（该大题生成失败）或已有答案的题号直接跳过
-    for (var idx1 = ExamSection.vocab.startIndex; idx1 <= ExamSection.writing.endIndex; idx1++) {
+    final total = paper.layoutTotalQuestions;
+    // 按试卷布局遍历全卷题号（真题卷与生成卷口径一致：题量/顺序由卷内声明决定），
+    // 题目不存在（该大题未生成/回忆缺失）或已有答案的题号直接跳过
+    final lastIdx = paper.endIndexOf(ExamSection.writing);
+    var lastErr = '';
+    for (var idx1 = 1; idx1 <= lastIdx && idx1 <= total; idx1++) {
       if (_examAiAbort) break;
       final r = resolveExamQuestion(idx1);
       // 该大题未生成/题目不存在：跳过
@@ -3374,25 +3385,48 @@ class AppState extends ChangeNotifier {
       examAiAnswerHint = 'AI 正在作答第 $idx1/$total 题（${r.section.label}）…';
       notifyListeners();
       var ok = false;
-      for (var attempt = 0; attempt < 2 && !ok && !_examAiAbort; attempt++) {
+      // 3 次机会 + 递增退避：逐题串行请求本身就容易触发网关限流（429），
+      // 立即重试只会雪上加霜，故每次失败后等待更久再试
+      for (var attempt = 0; attempt < 3 && !ok && !_examAiAbort; attempt++) {
+        if (attempt > 0) {
+          await Future.delayed(Duration(milliseconds: 800 * attempt * attempt));
+        }
         try {
           ok = await _examAiAnswerOne(cfg, paper, sheet, r);
-        } catch (_) {
+        } catch (e) {
           ok = false;
+          lastErr = e.toString();
         }
+        if (!ok) lastErr = ApiService.lastError ?? lastErr;
       }
       if (ok) {
         examAiAnsweredCount++;
       } else {
         examAiFailedCount++;
+        examAiFailedHints.add('第$idx1题（${r.section.label}）：${_briefApiError(lastErr)}');
+        if (examAiFailedHints.length > 8) examAiFailedHints.removeAt(0);
       }
+      // 题间小间隔：削峰避免连续请求被限流（429）
+      if (!_examAiAbort) await Future.delayed(const Duration(milliseconds: 350));
       notifyListeners();
     }
     examAiAnswering = false;
     examAiAnswerHint = _examAiAbort
         ? 'AI 作答已中止（成功 $examAiAnsweredCount 题${examAiFailedCount > 0 ? '，失败 $examAiFailedCount 题' : ''}）'
         : 'AI 作答完成：成功 $examAiAnsweredCount 题${examAiFailedCount > 0 ? '，失败 $examAiFailedCount 题' : ''}';
+    if (examAiFailedCount > 0) {
+      final e = _briefApiError(ApiService.lastError ?? lastErr);
+      examAiAnswerHint += '。最近失败原因：$e';
+    }
     notifyListeners();
+  }
+
+  /// 把 API 层错误压缩成一句可展示的短提示（超长 body 截断，避免刷屏）
+  String _briefApiError(String raw) {
+    var s = raw.trim();
+    if (s.isEmpty) return 'AI 无响应';
+    if (s.length > 120) s = '${s.substring(0, 120)}…';
+    return s;
   }
 
   /// 用户点击「停止」中止 AI 逐题作答（当前题完成后停下）
@@ -3461,8 +3495,8 @@ class AppState extends ChangeNotifier {
         final user = '单项选择题：${q.question.isNotEmpty ? q.question : q.text}\n'
             '${[for (var i = 0; i < q.options.length; i++) '${String.fromCharCode(65 + i)}. ${q.options[i]}'].join('\n')}\n'
             '只输出正确选项的字母（如 A）。';
-        final idx = await _examAiAskLetter(cfg, sys, user, q.options.length);
-        if (idx == null) return false;
+        final idx = await _examAiAskLetter(cfg, sys, user, q.options.length, q.options);
+        if (idx == null || idx >= sheet.vocab.length) return false;
         sheet.vocab[r.relIdx] = idx;
         return true;
       }
@@ -3475,8 +3509,10 @@ class AppState extends ChangeNotifier {
         final user = '阅读理解单选题。文章：\n${p.passage}\n\n题目：${sub.question}\n'
             '${[for (var i = 0; i < sub.options.length; i++) '${String.fromCharCode(65 + i)}. ${sub.options[i]}'].join('\n')}\n'
             '只输出正确选项的字母（如 A）。';
-        final idx = await _examAiAskLetter(cfg, sys, user, sub.options.length);
-        if (idx == null) return false;
+        final idx = await _examAiAskLetter(cfg, sys, user, sub.options.length, sub.options);
+        if (idx == null ||
+            r.passageIdx >= sheet.reading.length ||
+            r.relIdx >= sheet.reading[r.passageIdx].length) return false;
         sheet.reading[r.passageIdx][r.relIdx] = idx;
         return true;
       }
@@ -3489,8 +3525,8 @@ class AppState extends ChangeNotifier {
         final user = '完形填空。文章：\n$passage\n\n第 ${sub.blankIdx} 空所在句：${sub.sentence}\n'
             '${[for (var i = 0; i < sub.options.length; i++) '${String.fromCharCode(65 + i)}. ${sub.options[i]}'].join('\n')}\n'
             '只输出第 ${sub.blankIdx} 空正确选项的字母（如 A）。';
-        final idx = await _examAiAskLetter(cfg, sys, user, sub.options.length);
-        if (idx == null) return false;
+        final idx = await _examAiAskLetter(cfg, sys, user, sub.options.length, sub.options);
+        if (idx == null || r.relIdx >= sheet.cloze.length) return false;
         sheet.cloze[r.relIdx] = idx;
         return true;
       }
@@ -3503,8 +3539,8 @@ class AppState extends ChangeNotifier {
             '${d.dialogueLines.join('\n')}\n\n选项：\n'
             '${[for (var i = 0; i < d.options.length; i++) '${String.fromCharCode(65 + i)}. ${d.options[i]}'].join('\n')}\n'
             '只输出填入第 ${r.relIdx + 1} 空的正确选项字母（A-${String.fromCharCode(65 + d.options.length - 1)}）。';
-        final idx = await _examAiAskLetter(cfg, sys, user, d.options.length);
-        if (idx == null) return false;
+        final idx = await _examAiAskLetter(cfg, sys, user, d.options.length, d.options);
+        if (idx == null || r.relIdx >= sheet.dialogue.length) return false;
         sheet.dialogue[r.relIdx] = idx;
         return true;
       }
@@ -3515,10 +3551,8 @@ class AppState extends ChangeNotifier {
         final user = '选词填空。文章（空格用空位标记）：\n${bc.passage}\n\n'
             '词库：${[for (var i = 0; i < bc.wordBank.length; i++) '${String.fromCharCode(65 + i)}. ${bc.wordBank[i]}'].join('  ')}\n'
             '只输出填入第 ${r.relIdx + 1} 空的单词本身（不要字母、不要解释）。';
-        final reply = await ApiService.callAI([
-          {'role': 'user', 'content': user},
-        ], sys, config: cfg, maxTokens: 512, temperature: 0, extraParams: ApiService.noThinkingParams(cfg.model));
-        if (reply == null) return false;
+        final reply = await _examAiAsk(cfg, sys, user, 512);
+        if (reply == null || r.relIdx >= sheet.bankedCloze.length) return false;
         sheet.bankedCloze[r.relIdx] = _matchWordBankIdx(reply, bc.wordBank);
         return sheet.bankedCloze[r.relIdx] != null;
       }
@@ -3526,10 +3560,8 @@ class AppState extends ChangeNotifier {
         final e5 = paper.en2zh5;
         if (e5 == null || r.relIdx >= e5.sentences.length) return false;
         final user = '将下面的英文句子翻译成中文，只输出中文译文：\n${e5.sentences[r.relIdx]}';
-        final reply = await ApiService.callAI([
-          {'role': 'user', 'content': user},
-        ], sys, config: cfg, maxTokens: 1024, extraParams: ApiService.noThinkingParams(cfg.model));
-        if (reply == null || reply.trim().isEmpty) return false;
+        final reply = await _examAiAsk(cfg, sys, user, 1024);
+        if (reply == null || reply.trim().isEmpty || r.relIdx >= sheet.en2zh5.length) return false;
         sheet.en2zh5[r.relIdx] = reply.trim();
         return true;
       }
@@ -3537,10 +3569,11 @@ class AppState extends ChangeNotifier {
         final w = paper.writing;
         if (w == null) return false;
         final user = '英语写作题：${w.topic}\n请写出符合题目要求的完整英语作文，直接输出作文正文。';
-        final reply = await ApiService.callAI([
-          {'role': 'user', 'content': user},
-        ], '你是专升本英语考试写作助手。根据题目要求写一篇英语作文，直接输出作文正文，不要输出解释。',
-            config: cfg, maxTokens: 2048, extraParams: ApiService.noThinkingParams(cfg.model));
+        final reply = await _examAiAsk(
+            cfg,
+            '你是专升本英语考试写作助手。根据题目要求写一篇英语作文，直接输出作文正文，不要输出解释。',
+            user,
+            2048);
         if (reply == null || reply.trim().isEmpty) return false;
         sheet.writing = reply.trim();
         return true;
@@ -3548,17 +3581,57 @@ class AppState extends ChangeNotifier {
     }
   }
 
+  /// 单题文本请求（带网关兼容降级）：
+  /// 1) 先按模型名带上"关闭思考"的额外参数（推理模型否则会把正文写进 reasoning_content）；
+  /// 2) 若网关拒绝这些私有参数（HTTP 400/415/422）或直接无内容，
+  ///    去掉额外参数再请求一次——这是"AI 答卷全部失败"最常见的原因。
+  /// ApiService 侧已把数组型 content 与 reasoning_content 归一化为字符串。
+  Future<String?> _examAiAsk(ApiConfig cfg, String sys, String user, int maxTokens) async {
+    for (var strip = 0; strip < 2; strip++) {
+      final res = await ApiService.callAIResult(
+        [
+          {'role': 'user', 'content': user},
+        ],
+        sys,
+        config: cfg,
+        maxTokens: maxTokens,
+        temperature: 0,
+        extraParams: strip == 0 ? ApiService.noThinkingParams(cfg.model) : null,
+      );
+      final raw = res.content;
+      // 部分模型（尤其本地/开源部署）把推理过程以 <think>…</think> 混在正文里，
+      // 剥离后再取有效文本，避免解析到思考块中的字母
+      final cleaned = raw == null ? null : _stripThinkTags(raw).trim();
+      final txt = cleaned;
+      if (txt != null && txt.isNotEmpty) return txt;
+      if (strip == 1) return null;
+      // 仅在这两类情况下才降级重试：网关拒绝私有参数，或返回了空 choices
+      final err = ApiService.lastError ?? '';
+      final rejected = RegExp(r'HTTP 4\d\d').hasMatch(err) ||
+          err.contains('unknown') ||
+          err.contains('Unrecognized') ||
+          err.contains('extra');
+      final empty = res.content != null && txt != null && txt.isEmpty;
+      if (!rejected && !empty) return null;
+    }
+    return null;
+  }
+
+  /// 剥离回复中的 <think>…</think> / <thinking>…</thinking> 推理块
+  static String _stripThinkTags(String s) =>
+      s.replaceAll(RegExp(r'<think(?:ing)?>[\s\S]*?</think(?:ing)?>', caseSensitive: false), '')
+          .trim();
+
   /// 选择题单题请求：只让模型输出选项字母，解析为选项索引
-  Future<int?> _examAiAskLetter(ApiConfig cfg, String sys, String user, int optionCount) async {
-    final reply = await ApiService.callAI([
-      {'role': 'user', 'content': user},
-    ], sys, config: cfg, maxTokens: 512, temperature: 0, extraParams: ApiService.noThinkingParams(cfg.model));
+  Future<int?> _examAiAskLetter(ApiConfig cfg, String sys, String user, int optionCount,
+      [List<String> options = const <String>[]]) async {
+    final reply = await _examAiAsk(cfg, sys, user, 512);
     if (reply == null) return null;
-    return _parseLetterIdx(reply, optionCount);
+    return _parseLetterIdx(reply, optionCount, options);
   }
 
   /// 从模型回复解析选项字母为索引（0-based）；无法解析返回 null
-  int? _parseLetterIdx(String reply, int optionCount) {
+  int? _parseLetterIdx(String reply, int optionCount, [List<String> options = const <String>[]]) {
     int? toIdx(String? s) {
       if (s == null || s.isEmpty) return null;
       final idx = s.toUpperCase().codeUnitAt(0) - 65;
@@ -3566,6 +3639,14 @@ class AppState extends ChangeNotifier {
     }
 
     final t = reply.trim();
+    // 0) 模型直接输出了选项原文（如 "the; a"）：按原文精确/包含匹配
+    if (options.isNotEmpty) {
+      final low = t.toLowerCase();
+      for (var i = 0; i < options.length && i < optionCount; i++) {
+        final o = options[i].trim().toLowerCase();
+        if (o.isNotEmpty && (low == o || low.endsWith(o))) return i;
+      }
+    }
     // 1) 整条回复就是（或以）一个字母开头：A / (B) / C. / D、
     final m1 = RegExp(r'^\(?([A-Za-z])\)?[.、:：）)]?\s').firstMatch('$t ');
     final i1 = toIdx(m1?.group(1));
@@ -3582,19 +3663,48 @@ class AppState extends ChangeNotifier {
     return null;
   }
 
-  /// 将模型回复匹配到选词填空词库索引：先剥离可能的字母前缀/标点，精确 → 忽略大小写 → 前缀包含
+  /// 将模型回复匹配到选词填空词库索引：取首条非空内容，先剥离
+  /// "B. word" / "(B) word" / "B、word" 这类字母+标点前缀，再去除标点得到纯字母数字串，
+  /// 按"精确 → 忽略大小写 → 前缀包含"在词库中匹配。
+  /// 取首行可避免模型把答案写在多行回复的第二行导致剥离字母包装后与词库匹配不上；
+  /// 若首行只是单字母（A-G 这类纯选项标识），向后查含真实单词的行，避免把字母包装当成答案。
   int? _matchWordBankIdx(String reply, List<String> wordBank) {
-    var w = reply.trim();
-    // 剥离 "C. word" / "(B) word" / "word." 等包装
-    w = w.replaceFirst(RegExp(r'^\(?[A-Za-z][.、)）]\s*'), '');
-    w = w.replaceAll(RegExp(r'[^A-Za-z\- ]'), '').trim();
-    if (w.isEmpty) return null;
-    var idx = wordBank.indexWhere((b) => b.toLowerCase() == w.toLowerCase());
-    if (idx >= 0) return idx;
-    idx = wordBank.indexWhere((b) => b.toLowerCase().startsWith(w.toLowerCase()));
-    if (idx >= 0) return idx;
-    idx = wordBank.indexWhere((b) => w.toLowerCase().startsWith(b.toLowerCase()));
-    return idx >= 0 ? idx : null;
+    if (wordBank.isEmpty) return null;
+    final rawLines = reply
+        .split(RegExp(r'[\r\n]+'))
+        .map((l) => l.trim())
+        .where((l) => l.isNotEmpty)
+        .toList();
+    if (rawLines.isEmpty) return null;
+
+    /// 把一行剥前缀包装+标点，取首个单词；不是有效单词返回 null
+    String? firstWord(String line) {
+      var w = line.replaceFirst(RegExp(r'^\(?[A-Za-z][.、)）：:]\s*'), '');
+      w = w.replaceAll(RegExp(r'[^A-Za-z\- ]'), '').trim();
+      if (w.isEmpty) return null;
+      final head = w.split(RegExp(r'\s+')).first;
+      return head.isEmpty ? null : head;
+    }
+
+    /// 在词库中按精确/前缀/反向前缀查
+    int? lookup(String head) {
+      var idx = wordBank.indexWhere((b) => b.toLowerCase() == head.toLowerCase());
+      if (idx >= 0) return idx;
+      idx = wordBank.indexWhere((b) => b.toLowerCase().startsWith(head.toLowerCase()));
+      if (idx >= 0) return idx;
+      idx = wordBank.indexWhere((b) => head.toLowerCase().startsWith(b.toLowerCase()));
+      return idx >= 0 ? idx : null;
+    }
+
+    for (var i = 0; i < rawLines.length; i++) {
+      final head = firstWord(rawLines[i]);
+      if (head == null) continue;
+      if (head.length == 1 && RegExp(r'^[A-Za-z]$').hasMatch(head) && i < rawLines.length - 1) {
+        continue; // 单字母包装，跳过继续看后续行
+      }
+      return lookup(head);
+    }
+    return null;
   }
 
   /// 将 AI 直接提交的题目内容（可能是 list / JSON 字符串 / 对象）自愈并归一化为 Question 列表。
@@ -8341,6 +8451,7 @@ class AppState extends ChangeNotifier {
     // 防止 300ms 内二次点击覆盖 currentExamPaper 产生双份生成竞态
     examGeneratingBatch = true;
     _examCustomReq = customReq;
+    _examSectionHints.clear(); // AI 生成卷：走真题风格总纲，不注入单卷补全线索
     generatingFullExam = true;
     notifyListeners();
 
@@ -8348,6 +8459,9 @@ class AppState extends ChangeNotifier {
     final paper = FullExamPaper(
       title: '2025年专升本综合模拟全卷',
       totalTimeMin: 120,
+      // 显式对齐四川专升本 2024 起真题结构（77题/150分），与真题卷同构
+      sectionCounts: kZsb2024ExamCounts,
+      perQuestionScores: kZsb2024ExamScores,
       vocab: [],
       readings: [],
       cloze: [],
@@ -8358,7 +8472,7 @@ class AppState extends ChangeNotifier {
       writing: null,
     );
     currentExamPaper = paper;
-    currentExamAnswerSheet = ExamAnswerSheet();
+    currentExamAnswerSheet = ExamAnswerSheet.forPaper(paper);
     currentExamResult = null;
     examRemainingSec = paper.totalTimeMin * 60;
     examStartTs = DateTime.now().millisecondsSinceEpoch;
@@ -8387,12 +8501,363 @@ class AppState extends ChangeNotifier {
     return true;
   }
 
+  /// AI 生成综合卷时的「真题锚定」说明：题型结构、话题偏好与语法考点均取自
+  /// 2023—2026 四川专升本大学英语真题汇编，保证生成卷与原卷同构、同难度。
+  static const String _zsbStyleGuide = r'''
+【真题锚定 · 必读】出题须对齐四川省普通高校专升本《大学英语》近四年真题（2023—2026）：
+1. 题型结构（2024 起七大板块，150分/120分钟）：词汇语法20题×1分；阅读4篇×4题×2.5分；完形20空×1.5分；补全对话5空×2分（7选5）；选词填空10空×1分（15选10）；英译汉5句×3分；写作1题×25分。
+2. 词汇语法高频考点：冠词/零冠词、情态动词表推测、反义疑问、主谓一致（along with / the number of）、时态语态、虚拟语气（order that / wish / if）、非谓语（appreciate doing、having been done）、定语从句（which / as / that）、名词性从句（news comes that）、连词副词辨析（while / though / therefore）、固定搭配（can't...too、What's the point of）。
+3. 话题偏好：成都与大熊猫、都江堰与三星堆、川西风土与非遗、志愿服务与环保、人工智能与航天（神舟飞船）、校园生活与兼职成长、健康与心理、跨文化交流。
+4. 写作常考文体：邀请信（邀请外教参加活动）、建议信（给大一新生的建议）、告知信与通知、申请信；100—120词，开头常已给出。
+5. 难度：严格使用专升本词汇表内单词，超纲词必须加中文注释；选项≤8词，干扰项须有明确语法或语义干扰点。''';
+
+  /// 载入某一年四川专升本真题：建卷 → 缺失大题按预设主题用 AI 补全 →
+  /// 汇编无官方答案，客观题由 AI 补参考答案（写回试卷，交卷方可判分）。
+  /// 全程在考场内完成，与 generateFullExam 的交互保持一致。
+  Future<bool> startRealExamPaper(String year) async {
+    if (examGeneratingBatch) return false;
+    final preset = presetOfYear(year);
+    if (preset == null) return false;
+
+    examGeneratingBatch = true;
+    _examCustomReq = '';
+    _examSectionHints
+      ..clear()
+      ..addEntries(preset.fillHints.entries.map((e) => MapEntry(e.key.name, e.value)));
+    generatingFullExam = true;
+    notifyListeners();
+
+    final paper = preset.build();
+    currentExamPaper = paper;
+    currentExamAnswerSheet = ExamAnswerSheet.forPaper(paper);
+    currentExamResult = null;
+    examRemainingSec = paper.totalTimeMin * 60;
+    examStartTs = DateTime.now().millisecondsSinceEpoch;
+    examCurrentQuestion = 1;
+    examGeneratedCount = paper.totalQuestions;
+    examGenerationDone = false;
+    _examFailedBatches.clear();
+    examGeneratingHint = '已载入 ${preset.title}，正在校验题目完整性…';
+
+    page = 10;
+    generatingFullExam = false;
+    notifyListeners();
+
+    Future.delayed(const Duration(milliseconds: 300), () async {
+      if (currentExamPaper != paper || page != 10) {
+        examGeneratingBatch = false;
+        notifyListeners();
+        return;
+      }
+      final plan = _missingSectionsPlan(paper);
+      if (plan.isNotEmpty) {
+        if (!apiConfig.ready) {
+          examGeneratingHint = '该卷有 ${plan.length} 个大题在回忆版中缺失，且未配置 AI，无法补全（可先到「设置 → AI 接口」配置）';
+        } else {
+          examGeneratingHint = '正在按真题主题补全 ${plan.map((p) => p.label).join('、')}…';
+          notifyListeners();
+          await _runExamGeneration(plan, '');
+        }
+      }
+      if (currentExamPaper != paper || page != 10) {
+        examGeneratingBatch = false;
+        notifyListeners();
+        return;
+      }
+      _recomputeExamCount(paper);
+      // 真题汇编无官方答案：补参考答案，否则交卷客观题一律 0 分
+      await _fillRealExamAnswerKey(paper);
+      examGeneratingBatch = false;
+      examGenerationDone = true;
+      notifyListeners();
+    });
+    return true;
+  }
+
+  /// 真题卷中「内容缺失」的大题清单：已完整的大题不再请求 AI，
+  /// 避免用 AI 题目覆盖真题原文（如 2023 卷完整，2024 卷缺阅读/完形等）。
+  List<ExamBatchSpec> _missingSectionsPlan(FullExamPaper paper) {
+    final plan = <ExamBatchSpec>[];
+    var id = 0;
+
+    // 词汇：已有 n 题，补到布局题量（追加到末尾）
+    final wantVocab = paper.countOf(ExamSection.vocab);
+    if (paper.vocab.length < wantVocab) {
+      plan.add(ExamBatchSpec(id++, 'vocab', wantVocab - paper.vocab.length,
+          paper.vocab.length, '词汇与语法结构（补${wantVocab - paper.vocab.length}题）'));
+    }
+    // 阅读：按篇数补齐（2023 每篇5题，其余每篇4题）
+    final wantPassages = _wantReadingPassages(paper);
+    if (paper.readings.length < wantPassages) {
+      plan.add(ExamBatchSpec(id++, 'reading', wantPassages - paper.readings.length,
+          paper.readings.length, '阅读理解（补${wantPassages - paper.readings.length}篇）'));
+    }
+    // 完形：空位不足则整篇重出（提示里带真题原文）
+    final wantCloze = paper.countOf(ExamSection.cloze);
+    if ((paper.clozeSubs?.length ?? 0) < wantCloze) {
+      plan.add(ExamBatchSpec(id++, 'cloze', wantCloze, 0, '完形填空'));
+    }
+    final wantDialogue = paper.countOf(ExamSection.dialogue);
+    if (wantDialogue > 0 &&
+        (paper.dialogue == null || paper.dialogue!.answerLetters.isEmpty)) {
+      plan.add(ExamBatchSpec(id++, 'dialogue', wantDialogue, 0, '补全对话'));
+    }
+    final wantBanked = paper.countOf(ExamSection.bankedCloze);
+    if (wantBanked > 0 &&
+        (paper.bankedCloze == null || paper.bankedCloze!.wordBank.isEmpty)) {
+      plan.add(ExamBatchSpec(id++, 'bankedCloze', wantBanked, 0, '选词填空'));
+    }
+    final wantEn2zh = paper.countOf(ExamSection.en2zh5);
+    if (wantEn2zh > 0 &&
+        (paper.en2zh5 == null || paper.en2zh5!.sentences.length < wantEn2zh)) {
+      plan.add(ExamBatchSpec(id++, 'en2zh5', wantEn2zh, 0, '英译汉'));
+    }
+    if (paper.countOf(ExamSection.writing) > 0 && paper.writing == null) {
+      plan.add(ExamBatchSpec(id++, 'writing', 1, 0, '写作'));
+    }
+    return plan;
+  }
+
+  /// 真题卷应有多少篇阅读：2023 年每篇 5 题，2024 起每篇 4 题
+  int _wantReadingPassages(FullExamPaper paper) {
+    final per = (paper.isRealPaper && paper.realYear == '2023') ? 5 : 4;
+    final byCount = (paper.countOf(ExamSection.reading) / per).ceil();
+    return max(paper.readings.length, byCount);
+  }
+
+  /// 真题汇编未收录官方答案：逐大题让 AI 给出参考答案并写回试卷
+  /// （只填空缺，已有答案的大题不动；单个大题失败不影响其余大题）。
+  Future<void> _fillRealExamAnswerKey(FullExamPaper paper) async {
+    if (!apiConfig.ready) {
+      examGeneratingHint = '真题汇编无官方答案，且未配置 AI：客观题交卷后记 0 分。'
+          '配置后重新载入本卷即可自动补参考答案。';
+      notifyListeners();
+      return;
+    }
+    const sys = '你是专升本英语阅卷老师。请为下面的题目给出标准答案，'
+        '只返回要求的 JSON，不要输出解释或多余文字。';
+
+    /// 需要补答案的大题：题目存在但答案为空
+    final jobs = <Future<void>>[];
+
+    // 词汇
+    final needVocab = min(paper.vocab.length, paper.countOf(ExamSection.vocab));
+    if (needVocab > 0 && paper.vocab.take(needVocab).any((q) => q.answerIdx < 0)) {
+      jobs.add(() async {
+        final user = StringBuffer('以下是词汇与语法结构单选题，请按顺序给出每题正确选项的字母。\n');
+        for (var i = 0; i < needVocab; i++) {
+          final q = paper.vocab[i];
+          user.writeln('${i + 1}. ${q.question}');
+          for (var k = 0; k < q.options.length; k++) {
+            user.writeln('   ${String.fromCharCode(65 + k)}. ${q.options[k]}');
+          }
+        }
+        user.writeln('\n返回：{"answers":["A","B",...共$needVocab个字母]}');
+        final obj = await _askJsonObject(sys, user.toString(), 2048);
+        final list = (obj?['answers'] as List?) ?? const [];
+        for (var i = 0; i < needVocab && i < list.length; i++) {
+          final idx = parseAnswerIdx(list[i]);
+          if (idx >= 0 && idx < paper.vocab[i].options.length) {
+            paper.vocab[i].answerIdx = idx;
+            paper.vocab[i].answerLetter = String.fromCharCode(65 + idx);
+          }
+        }
+      }());
+    }
+
+    // 阅读（逐篇）
+    for (var pi = 0; pi < paper.readings.length; pi++) {
+      final p = paper.readings[pi];
+      if (p.questions.isEmpty || p.questions.every((q) => q.answerIdx >= 0)) continue;
+      jobs.add(() async {
+        final user = StringBuffer('以下是阅读理解第 ${pi + 1} 篇，请按顺序给出每题正确选项的字母。\n');
+        user.writeln(p.passage);
+        for (var i = 0; i < p.questions.length; i++) {
+          final q = p.questions[i];
+          user.writeln('\n${i + 1}. ${q.question}');
+          for (var k = 0; k < q.options.length; k++) {
+            user.writeln('   ${String.fromCharCode(65 + k)}. ${q.options[k]}');
+          }
+        }
+        user.writeln('\n返回：{"answers":["A","B",...共${p.questions.length}个字母]}');
+        final obj = await _askJsonObject(sys, user.toString(), 2048);
+        final list = (obj?['answers'] as List?) ?? const [];
+        for (var i = 0; i < p.questions.length && i < list.length; i++) {
+          final idx = parseAnswerIdx(list[i]);
+          if (idx >= 0 && idx < p.questions[i].options.length) {
+            p.questions[i].answerIdx = idx;
+            p.questions[i].answerLetter = String.fromCharCode(65 + idx);
+          }
+        }
+      }());
+    }
+
+    // 完形
+    final subs = paper.clozeSubs ?? const <ClozeSubQ>[];
+    if (subs.isNotEmpty && subs.any((s) => s.answerIdx < 0)) {
+      jobs.add(() async {
+        final user = StringBuffer('以下是完形填空，短文中的空格用 ____N____ 标记，请按顺序给出每个空的正确选项字母。\n');
+        user.writeln(paper.cloze.isNotEmpty ? paper.cloze.first.passage : '');
+        for (final s in subs) {
+          user.writeln('\n第 ${s.blankIdx} 空：${s.sentence}');
+          for (var k = 0; k < s.options.length; k++) {
+            user.writeln('   ${String.fromCharCode(65 + k)}. ${s.options[k]}');
+          }
+        }
+        user.writeln('\n返回：{"answers":["A","B",...共${subs.length}个字母]}');
+        final obj = await _askJsonObject(sys, user.toString(), 4096);
+        final list = (obj?['answers'] as List?) ?? const [];
+        for (var i = 0; i < subs.length && i < list.length; i++) {
+          final idx = parseAnswerIdx(list[i]);
+          if (idx >= 0 && idx < subs[i].options.length) {
+            subs[i].answerIdx = idx;
+            subs[i].answerLetter = String.fromCharCode(65 + idx);
+          }
+        }
+      }());
+    }
+
+    // 补全对话
+    final dl = paper.dialogue;
+    if (dl != null &&
+        dl.options.isNotEmpty &&
+        dl.answerLetters.any((a) => a == '?' || a.isEmpty)) {
+      jobs.add(() async {
+        final user = StringBuffer('以下是补全对话（7选5），对话中的 ____N____ 为空格，请按顺序给出每个空应填入的选项字母。\n');
+        user.writeln('场景：${dl.scenario}');
+        user.writeln(dl.dialogueLines.join('\n'));
+        user.writeln('\n选项：');
+        for (var k = 0; k < dl.options.length; k++) {
+          user.writeln('${String.fromCharCode(65 + k)}. ${dl.options[k]}');
+        }
+        user.writeln('\n返回：{"answers":["C","A","G","D","F"]}（字母数=${dl.answerLetters.length}）');
+        final obj = await _askJsonObject(sys, user.toString(), 2048);
+        final list = (obj?['answers'] as List?) ?? const [];
+        final out = <String>[];
+        for (var i = 0; i < dl.answerLetters.length; i++) {
+          final cur = dl.answerLetters[i];
+          out.add((cur != '?' && cur.isNotEmpty) ? cur : (i < list.length ? list[i].toString().trim().toUpperCase() : '?'));
+        }
+        dl.answerLetters = out;
+      }());
+    }
+
+    // 选词填空
+    final bc = paper.bankedCloze;
+    if (bc != null && bc.wordBank.isNotEmpty && bc.answerWords.isEmpty) {
+      jobs.add(() async {
+        final user = StringBuffer('以下是选词填空（${bc.wordBank.length}选${paper.countOf(ExamSection.bankedCloze)}），请按顺序给出每个空应填入的单词本身。\n');
+        user.writeln(bc.passage);
+        user.writeln('\n词库：${bc.wordBank.join(' / ')}');
+        user.writeln('\n返回：{"answers":["单词1","单词2",...共${paper.countOf(ExamSection.bankedCloze)}个]}');
+        final obj = await _askJsonObject(sys, user.toString(), 2048);
+        final list = (obj?['answers'] as List?) ?? const [];
+        bc.answerWords = [
+          for (var i = 0; i < paper.countOf(ExamSection.bankedCloze) && i < list.length; i++)
+            _matchWordBankWord(list[i].toString(), bc.wordBank),
+        ];
+      }());
+    }
+
+    // 英译汉（补中文参考译文，用于交卷判分）
+    final e5 = paper.en2zh5;
+    if (e5 != null && e5.sentences.isNotEmpty && e5.answers.isEmpty) {
+      jobs.add(() async {
+        final user = StringBuffer('请将下列句子译成中文，按顺序给出译文。\n');
+        for (var i = 0; i < e5.sentences.length; i++) {
+          user.writeln('${i + 1}. ${e5.sentences[i]}');
+        }
+        user.writeln('\n返回：{"answers":["中文译文1", ...共${e5.sentences.length}条]}');
+        final obj = await _askJsonObject(sys, user.toString(), 4096);
+        final list = (obj?['answers'] as List?) ?? const [];
+        e5.answers = [
+          for (var i = 0; i < e5.sentences.length; i++)
+            i < list.length ? list[i].toString().trim() : '',
+        ];
+      }());
+    }
+
+    // 写作（补英文参考范文，用于交卷启发式评分的基准）
+    final w = paper.writing;
+    if (w != null && w.topic.isNotEmpty && w.reference.isEmpty) {
+      jobs.add(() async {
+        final user = '请按下面的写作题目要求写一篇英文参考范文（不少于120词）。\n${w.topic}\n\n返回：{"reference":"英文范文"}';
+        final obj = await _askJsonObject(
+            '你是专升本英语写作教师。请按要求写出英文参考范文，只返回指定 JSON。',
+            user,
+            2048);
+        final ref = obj?['reference']?.toString().trim() ?? '';
+        if (ref.isNotEmpty) w.reference = ref;
+      }());
+    }
+
+    if (jobs.isEmpty) return;
+    examGeneratingHint = '题目已就绪，正在补全本卷参考答案（共 ${jobs.length} 个大题）…';
+    notifyListeners();
+    // 串行执行：补答案是一次性动作，串行更稳（避免触发网关限流）
+    for (final j in jobs) {
+      try {
+        await j;
+      } catch (_) {}
+      await Future.delayed(const Duration(milliseconds: 300));
+    }
+    final stillMissing = _countMissingAnswers(paper);
+    examGeneratingHint = stillMissing == 0
+        ? '本卷已就绪，参考答案已补全，可以开始作答。'
+        : '本卷已就绪，但有 $stillMissing 道题未能补到参考答案（交卷时该题记 0 分）。';
+    notifyListeners();
+  }
+
+  /// 统计仍缺参考答案的客观题数量（用于提示文案）
+  int _countMissingAnswers(FullExamPaper paper) {
+    var n = 0;
+    for (final q in paper.vocab) {
+      if (q.answerIdx < 0) n++;
+    }
+    for (final r in paper.readings) {
+      for (final q in r.questions) {
+        if (q.answerIdx < 0) n++;
+      }
+    }
+    for (final s in paper.clozeSubs ?? const <ClozeSubQ>[]) {
+      if (s.answerIdx < 0) n++;
+    }
+    return n;
+  }
+
+  /// 请求一个 JSON 对象（带一次降级重试）；失败返回 null
+  Future<Map<String, dynamic>?> _askJsonObject(String sys, String user, int maxTokens) async {
+    for (var attempt = 0; attempt < 2; attempt++) {
+      final reply = await _examAiAsk(apiConfig, sys, user, maxTokens);
+      if (reply == null) continue;
+      final obj = ApiService.extractJsonObject(reply);
+      if (obj != null) return obj;
+      if (attempt == 0) await Future.delayed(const Duration(milliseconds: 800));
+    }
+    return null;
+  }
+
+  /// 把模型给出的选词答案匹配到词库原词（精确 → 忽略大小写 → 包含）
+  String _matchWordBankWord(String raw, List<String> bank) {
+    final w = raw.trim().replaceAll(RegExp(r'^\(?[A-Za-z][.、)）]\s*'), '').trim();
+    for (final b in bank) {
+      if (b.toLowerCase() == w.toLowerCase()) return b;
+    }
+    for (final b in bank) {
+      if (b.toLowerCase().startsWith(w.toLowerCase()) ||
+          w.toLowerCase().startsWith(b.toLowerCase())) return b;
+    }
+    return w;
+  }
+
   /// 全卷七大部分计划：每个大部分一次 AI 请求整段生成（不再按 10 题小批次拆分），
   /// 七个请求受控并行，完成后按大题顺序合并进试卷。
+  /// 题量对齐四川专升本 2024 起真题结构：词汇20 / 阅读4篇(每篇4题) / 完形20 /
+  /// 补全对话5 / 选词填空10 / 英译汉5 / 写作1 = 77题150分。
   List<ExamBatchSpec> _fullExamBatchPlan() => const [
         ExamBatchSpec(0, 'vocab', 20, 0, '词汇与语法结构'),
         ExamBatchSpec(1, 'reading', 4, 0, '阅读理解'),
-        ExamBatchSpec(2, 'cloze', 15, 0, '完形填空'),
+        ExamBatchSpec(2, 'cloze', 20, 0, '完形填空'),
         ExamBatchSpec(3, 'dialogue', 5, 0, '补全对话'),
         ExamBatchSpec(4, 'bankedCloze', 10, 0, '选词填空'),
         ExamBatchSpec(5, 'en2zh5', 5, 0, '英译汉'),
@@ -8744,18 +9209,12 @@ class AppState extends ChangeNotifier {
     }
   }
 
-  /// 按试卷实际内容重算进度计数（进度条随各批完成推进）
+  /// 按试卷实际内容重算进度计数（进度条随各批完成推进）。
+  /// 真题卷题量与生成卷不同（如 2023 词汇 30 题），故一律按卷内真实内容统计，
+  /// 不再按默认布局截断；答题卡同步扩容，保证作答不越界。
   void _recomputeExamCount(FullExamPaper paper) {
-    var n = paper.vocab.length;
-    for (final r in paper.readings) {
-      n += r.questions.length;
-    }
-    n += paper.clozeSubs?.length ?? 0;
-    n += paper.dialogue == null ? 0 : min(5, paper.dialogue!.answerLetters.length);
-    n += paper.bankedCloze == null ? 0 : min(10, paper.bankedCloze!.answerWords.length);
-    n += paper.en2zh5 == null ? 0 : min(5, paper.en2zh5!.sentences.length);
-    n += paper.writing == null ? 0 : 1;
-    examGeneratedCount = n;
+    examGeneratedCount = paper.totalQuestions;
+    currentExamAnswerSheet?.syncToPaper(paper);
   }
 
   /// “重新生成缺失部分”：仅重新调度仍失败的批次，成功后按原分区位置合并；
@@ -8778,6 +9237,16 @@ class AppState extends ChangeNotifier {
     sb.writeln('你是专升本英语专业出题专家。请严格按照以下要求生成题目。难度对标各省专升本英语真题。');
     if (customReq.isNotEmpty) sb.writeln('额外要求：$customReq');
     sb.writeln('');
+    // 分大题提示（真题卷补全缺失大题时注入回忆版主题线索）；
+    // 无专项提示时注入真题风格总纲，保证生成卷与 2023—2026 川专升真题同构同难度
+    final hint = _examSectionHints[spec.type] ?? '';
+    if (hint.isNotEmpty) {
+      sb.writeln('【本卷真题线索】$hint');
+      sb.writeln('');
+    } else if (_examSectionHints.isEmpty) {
+      sb.writeln(_zsbStyleGuide);
+      sb.writeln('');
+    }
     // 从专升本词库（zsb-dict.json）随机抽词作为考点词约束样本：大输出题型多抽一些
     final zsbWords = DictService.zsbWords();
     if (zsbWords.isNotEmpty) {
@@ -8805,29 +9274,29 @@ class AppState extends ChangeNotifier {
       sb.writeln('返回 JSON 数组：');
       sb.writeln('[{"question":"英文题干(含____空格)","options":["选项1","选项2","选项3","选项4"],"answer":"A","analysis":"不超20字","knowledge":["知识点"]}, ...共${spec.count}条]');
     } else if (spec.type == 'reading') {
-      final wordRange = shorter ? '约120-160词' : '约150-220词';
-      sb.writeln('【本次生成：阅读理解】共 ${spec.count} 篇短文，每篇5小题（2分/题）');
+      final wordRange = shorter ? '约160-200词' : '约200-260词';
+      sb.writeln('【本次生成：阅读理解】共 ${spec.count} 篇短文，每篇4小题（2.5分/题，对齐四川专升本真题）');
       sb.writeln('返回 JSON 数组：');
-      sb.writeln('[{"passage":"英文短文($wordRange)","questions":[{"question":"问题","options":["选项1","选项2","选项3","选项4"],"answer":"A","analysis":"不超20字"}, ...共5条]}, ...共${spec.count}条]');
+      sb.writeln('[{"passage":"英文短文($wordRange)","questions":[{"question":"问题","options":["选项1","选项2","选项3","选项4"],"answer":"A","analysis":"不超20字"}, ...共4条]}, ...共${spec.count}条]');
     } else if (spec.type == 'cloze') {
-      final passageLen = shorter ? '不超过150词' : '约180-220词';
-      sb.writeln('【本次生成：完形填空】共 ${spec.count} 空（1分/空）');
+      final passageLen = shorter ? '不超过180词' : '约220-260词';
+      sb.writeln('【本次生成：完形填空】共 ${spec.count} 空（1.5分/空）');
       sb.writeln('返回 JSON 对象：');
       sb.writeln('{"passage":"英文短文($passageLen，空格用____1____至____${spec.count}____标记)","blanks":[{"blankIdx":1,"sentence":"含该空的上下文句子","options":["选项1","选项2","选项3","选项4"],"answer":"A","analysis":"不超20字"}, ...共${spec.count}条]}');
     } else if (spec.type == 'dialogue') {
-      sb.writeln('【本次生成：补全对话】共 5 空（2分/空，从A-G共7个句子选项中选5个填入）');
+      sb.writeln('【本次生成：补全对话】共 ${spec.count} 空（2分/空，从A-G共7个句子选项中选${spec.count}个填入）');
       sb.writeln('返回 JSON 对象：');
-      sb.writeln('{"scenario":"场景说明","dialogueLines":["A: Hello, ___1___","B: ... ___2___", ...共8行],"options":["A. 句子1","B. 句子2","C. 句子3","D. 句子4","E. 句子5","F. 句子6(多余)","G. 句子7(多余)"],"answerLetters":["C","A","G","D","F"],"analyses":["不超20字", ...共5条]}');
+      sb.writeln('{"scenario":"场景说明","dialogueLines":["A: Hello, ___1___","B: ... ___2___", ...共8行],"options":["A. 句子1","B. 句子2","C. 句子3","D. 句子4","E. 句子5","F. 句子6(多余)","G. 句子7(多余)"],"answerLetters":["C","A","G","D","F"],"analyses":["不超20字", ...共${spec.count}条]}');
     } else if (spec.type == 'bankedCloze') {
-      sb.writeln('【本次生成：选词填空（15选10）】共 10 空（2分/空）');
+      sb.writeln('【本次生成：选词填空（15选10）】共 ${spec.count} 空（1分/空）');
       sb.writeln('返回 JSON 对象：');
-      sb.writeln('{"passage":"英文短文(${shorter ? '约120词' : '约150-200词'}，空格用____1____到____10____标记)","wordBank":["单词1","单词2", ...共15个],"answerWords":["对应第1空的单词", ...共10个],"analyses":["不超20字", ...共10条]}');
+      sb.writeln('{"passage":"英文短文(${shorter ? '约120词' : '约150-200词'}，空格用____1____到____${spec.count}____标记)","wordBank":["单词1","单词2", ...共15个],"answerWords":["对应第1空的单词", ...共${spec.count}个],"analyses":["不超20字", ...共${spec.count}条]}');
     } else if (spec.type == 'en2zh5') {
-      sb.writeln('【本次生成：英译汉】共 5 个英文句子翻译成中文（4分/句）');
+      sb.writeln('【本次生成：英译汉】共 ${spec.count} 个英文句子翻译成中文（3分/句）');
       sb.writeln('返回 JSON 对象：');
-      sb.writeln('{"sentences":["英文句子1", ...共5条],"answers":["中文参考翻译1", ...共5条]}');
+      sb.writeln('{"sentences":["英文句子1", ...共${spec.count}条],"answers":["中文参考翻译1", ...共${spec.count}条]}');
     } else if (spec.type == 'writing') {
-      sb.writeln('【本次生成：写作】共 1 篇英文写作（20分，不少于120词）');
+      sb.writeln('【本次生成：写作】共 1 篇英文写作（25分，不少于120词，应用文为主：邀请信/建议信/告知信/通知）');
       sb.writeln('返回 JSON 对象：');
       sb.writeln('{"topic":"中文写作题目要求（含文体、字数、提纲）","reference":"英文参考范文(${shorter ? '约120-150词' : '约150-200词'})"}');
     }
@@ -9196,88 +9665,97 @@ class AppState extends ChangeNotifier {
     final sectionCorrect = <ExamSection, int>{};
     final sectionTotal = <ExamSection, int>{};
 
-    // 一、词汇与语法（20单选）
+    // 判分口径全部取自卷内声明的布局（真题卷与生成卷可能不同）：
+    // 题量 = paper.countOf(sec)，每题分值 = paper.perQScoreOf(sec)（支持 0.5/1.5/2.5 分制）
+    // 一、词汇与语法
     {
+      final n = paper.countOf(ExamSection.vocab);
+      final per = paper.perQScoreOf(ExamSection.vocab);
       var correct = 0;
       var total = 0;
-      for (var i = 0; i < 20; i++) {
-        if (i < paper.vocab.length) {
+      for (var i = 0; i < n; i++) {
+        if (i < paper.vocab.length && i < ans.vocab.length) {
           total++;
           final q = paper.vocab[i];
           final user = ans.vocab[i];
-          if (user != null && user == q.answerIdx) correct++;
+          if (user != null && user >= 0 && user == q.answerIdx) correct++;
         }
       }
-      final sc = correct * ExamSection.vocab.scorePerQuestion;
-      sectionScores[ExamSection.vocab] = sc;
-      sectionMax[ExamSection.vocab] = 20 * ExamSection.vocab.scorePerQuestion;
+      sectionScores[ExamSection.vocab] = (correct * per).round();
+      sectionMax[ExamSection.vocab] = paper.sectionTotalScoreOf(ExamSection.vocab);
       sectionCorrect[ExamSection.vocab] = correct;
       sectionTotal[ExamSection.vocab] = total;
     }
-    // 二、阅读理解 4篇 x 5
+    // 二、阅读理解（逐篇按各篇真实小题数）
     {
+      final per = paper.perQScoreOf(ExamSection.reading);
       var correct = 0;
       var total = 0;
-      for (var pi = 0; pi < 4; pi++) {
-        if (pi >= paper.readings.length) continue;
+      for (var pi = 0; pi < paper.readings.length; pi++) {
         final r = paper.readings[pi];
+        if (pi >= ans.reading.length) break;
         final userSheet = ans.reading[pi];
-        for (var qi = 0; qi < 5; qi++) {
-          if (qi >= r.questions.length) continue;
+        for (var qi = 0; qi < r.questions.length; qi++) {
+          if (qi >= userSheet.length) break;
           total++;
-          if (userSheet[qi] == r.questions[qi].answerIdx) correct++;
+          final user = userSheet[qi];
+          if (user != null && user >= 0 && user == r.questions[qi].answerIdx) correct++;
         }
       }
-      final sc = correct * ExamSection.reading.scorePerQuestion;
-      sectionScores[ExamSection.reading] = sc;
-      sectionMax[ExamSection.reading] = 20 * ExamSection.reading.scorePerQuestion;
+      sectionScores[ExamSection.reading] = (correct * per).round();
+      sectionMax[ExamSection.reading] = paper.sectionTotalScoreOf(ExamSection.reading);
       sectionCorrect[ExamSection.reading] = correct;
       sectionTotal[ExamSection.reading] = total;
     }
-    // 三、完形填空 15
+    // 三、完形填空
     {
+      final n = paper.countOf(ExamSection.cloze);
+      final per = paper.perQScoreOf(ExamSection.cloze);
       var correct = 0;
       var total = 0;
       final subs = paper.clozeSubs ?? [];
-      for (var i = 0; i < 15; i++) {
-        if (i >= subs.length) continue;
+      for (var i = 0; i < n; i++) {
+        if (i >= subs.length || i >= ans.cloze.length) continue;
         total++;
-        if (ans.cloze[i] == subs[i].answerIdx) correct++;
+        final user = ans.cloze[i];
+        if (user != null && user >= 0 && user == subs[i].answerIdx) correct++;
       }
-      final sc = correct * ExamSection.cloze.scorePerQuestion;
-      sectionScores[ExamSection.cloze] = sc;
-      sectionMax[ExamSection.cloze] = 15 * ExamSection.cloze.scorePerQuestion;
+      sectionScores[ExamSection.cloze] = (correct * per).round();
+      sectionMax[ExamSection.cloze] = paper.sectionTotalScoreOf(ExamSection.cloze);
       sectionCorrect[ExamSection.cloze] = correct;
       sectionTotal[ExamSection.cloze] = total;
     }
-    // 四、补全对话 5
+    // 四、补全对话
     {
+      final n = paper.countOf(ExamSection.dialogue);
+      final per = paper.perQScoreOf(ExamSection.dialogue);
       var correct = 0;
       var total = 0;
       final dl = paper.dialogue;
       if (dl != null) {
-        for (var i = 0; i < 5; i++) {
-          if (i >= dl.answerLetters.length) continue;
+        for (var i = 0; i < n; i++) {
+          if (i >= dl.answerLetters.length || i >= ans.dialogue.length) continue;
           total++;
           final letter = dl.answerLetters[i].toUpperCase();
           final correctIdx = letter.isEmpty ? -1 : letter.codeUnitAt(0) - 65;
           if (ans.dialogue[i] == correctIdx && correctIdx >= 0) correct++;
         }
       }
-      final sc = correct * ExamSection.dialogue.scorePerQuestion;
-      sectionScores[ExamSection.dialogue] = sc;
-      sectionMax[ExamSection.dialogue] = 5 * ExamSection.dialogue.scorePerQuestion;
+      sectionScores[ExamSection.dialogue] = (correct * per).round();
+      sectionMax[ExamSection.dialogue] = paper.sectionTotalScoreOf(ExamSection.dialogue);
       sectionCorrect[ExamSection.dialogue] = correct;
       sectionTotal[ExamSection.dialogue] = total;
     }
-    // 五、选词填空 10
+    // 五、选词填空
     {
+      final n = paper.countOf(ExamSection.bankedCloze);
+      final per = paper.perQScoreOf(ExamSection.bankedCloze);
       var correct = 0;
       var total = 0;
       final bc = paper.bankedCloze;
       if (bc != null) {
-        for (var i = 0; i < 10; i++) {
-          if (i >= bc.answerWords.length) continue;
+        for (var i = 0; i < n; i++) {
+          if (i >= bc.answerWords.length || i >= ans.bankedCloze.length) continue;
           total++;
           final userIdx = ans.bankedCloze[i];
           if (userIdx != null &&
@@ -9288,19 +9766,20 @@ class AppState extends ChangeNotifier {
           }
         }
       }
-      final sc = correct * ExamSection.bankedCloze.scorePerQuestion;
-      sectionScores[ExamSection.bankedCloze] = sc;
-      sectionMax[ExamSection.bankedCloze] = 10 * ExamSection.bankedCloze.scorePerQuestion;
+      sectionScores[ExamSection.bankedCloze] = (correct * per).round();
+      sectionMax[ExamSection.bankedCloze] = paper.sectionTotalScoreOf(ExamSection.bankedCloze);
       sectionCorrect[ExamSection.bankedCloze] = correct;
       sectionTotal[ExamSection.bankedCloze] = total;
     }
-    // 六、英译汉 5（关键词命中比例打分）
+    // 六、英译汉（关键词命中比例打分）
     {
-      var sc = 0;
+      final n = paper.countOf(ExamSection.en2zh5);
+      final per = paper.perQScoreOf(ExamSection.en2zh5);
+      var sc = 0.0;
       var total = 0;
       final e5 = paper.en2zh5;
       if (e5 != null) {
-        for (var i = 0; i < 5; i++) {
+        for (var i = 0; i < n; i++) {
           if (i >= e5.answers.length || i >= ans.en2zh5.length) continue;
           total++;
           final ref = e5.answers[i];
@@ -9309,17 +9788,16 @@ class AppState extends ChangeNotifier {
           final tokens = ref.replaceAll(RegExp(r'[，。；：、\s]'), '').split('').where((c) => c.isNotEmpty).toList();
           final hit = tokens.where((t) => user.contains(t)).length;
           final pct = tokens.isEmpty ? 0.0 : hit / tokens.length;
-          final one = min(ExamSection.en2zh5.scorePerQuestion, (pct * ExamSection.en2zh5.scorePerQuestion).round());
-          sc += one;
+          sc += min(per, pct * per);
         }
       }
-      sectionScores[ExamSection.en2zh5] = sc;
-      sectionMax[ExamSection.en2zh5] = 5 * ExamSection.en2zh5.scorePerQuestion;
-      sectionCorrect[ExamSection.en2zh5] = sectionMax[ExamSection.en2zh5] == 0 ? 0 : (sc ~/ ExamSection.en2zh5.scorePerQuestion);
+      sectionScores[ExamSection.en2zh5] = sc.round();
+      sectionMax[ExamSection.en2zh5] = paper.sectionTotalScoreOf(ExamSection.en2zh5);
+      sectionCorrect[ExamSection.en2zh5] = per <= 0 ? 0 : (sc ~/ per);
       sectionTotal[ExamSection.en2zh5] = total;
     }
-    // 七、写作（字数 + 关键词启发式，满分 35，依据四川专升本 2024/2025 真题给分）
-    const _wMax = 35;
+    // 七、写作（字数 + 关键词启发式；满分取卷内写作大题分值：生成卷35 / 真题卷25 或 15）
+    final _wMax = paper.sectionTotalScoreOf(ExamSection.writing);
     int wScoreNum = 0;
     String wScore = '';
     final w = paper.writing;
@@ -9336,19 +9814,22 @@ class AppState extends ChangeNotifier {
       }
       final kwRatio = kw.isEmpty ? 0.0 : kwHit / kw.length;
       final wordRatio = refWords == 0 ? 0.0 : words / refWords;
-      // 基础分：字数达标 120 词给 17；关键词覆盖比例 * 11；书写表达 7（合计 35）
-      final baseWords = words >= 120 ? 17 : (words / 120 * 17).round();
-      final kwPart = (kwRatio * 11).round();
-      final exprPart = (wordRatio * 7).clamp(0, 7).round();
-      final totalW = (baseWords + kwPart + exprPart).clamp(0, _wMax);
+      // 基础分：字数达标 120 词给 17；关键词覆盖比例 * 11；书写表达 7（合计 35 的标准卷）。
+      // 真题卷写作满分不同（2023 年 15 分、2024 起 25 分），按 35 分制等比缩放后取整。
+      final baseWords = words >= 120 ? 17.0 : (words / 120 * 17);
+      final kwPart = kwRatio * 11;
+      final exprPart = (wordRatio * 7).clamp(0, 7);
+      final totalW = ((baseWords + kwPart + exprPart) * _wMax / 35).round().clamp(0, _wMax);
       wScoreNum = totalW;
-      if (totalW >= 30) {
+      // 等级阈值同样按满分比例换算（30/35、23/35、16/35、9/35）
+      final r = _wMax == 0 ? 0.0 : totalW / _wMax;
+      if (r >= 30 / 35) {
         wScore = '优秀（$totalW/$_wMax）：文章结构完整，用词准确，句式多样，符合要求。';
-      } else if (totalW >= 23) {
+      } else if (r >= 23 / 35) {
         wScore = '良好（$totalW/$_wMax）：内容切题，表达较清晰，有少量语法错误但不影响理解。';
-      } else if (totalW >= 16) {
+      } else if (r >= 16 / 35) {
         wScore = '中等（$totalW/$_wMax）：内容基本切题，可使用更多高级词汇和复杂句型。';
-      } else if (totalW >= 9) {
+      } else if (r >= 9 / 35) {
         wScore = '及格（$totalW/$_wMax）：字数或内容有缺失，句子错误较多，建议加强练习。';
       } else {
         wScore = '较低（$totalW/$_wMax）：内容薄弱，建议从写作模板和高频词汇入手练习。';
@@ -9679,26 +10160,38 @@ class AppState extends ChangeNotifier {
   /// 把 1-based 题号映射到对应分区内的相对位置，
   /// 返回 (section, relativeIdx 0-based, reading passageIdx or -1)
   ({ExamSection section, int relIdx, int passageIdx}) resolveExamQuestion(int idx1) {
-    if (ExamSection.vocab.containsQuestion(idx1)) {
-      return (section: ExamSection.vocab, relIdx: idx1 - ExamSection.vocab.startIndex, passageIdx: -1);
+    final paper = currentExamPaper;
+    // 无试卷（预览/异常）时回退固定 76 题布局，保持旧行为
+    if (paper == null) {
+      if (ExamSection.vocab.containsQuestion(idx1)) {
+        return (section: ExamSection.vocab, relIdx: idx1 - ExamSection.vocab.startIndex, passageIdx: -1);
+      }
+      if (ExamSection.reading.containsQuestion(idx1)) {
+        final rel = idx1 - ExamSection.reading.startIndex;
+        return (section: ExamSection.reading, relIdx: rel % 5, passageIdx: rel ~/ 5);
+      }
+      if (ExamSection.cloze.containsQuestion(idx1)) {
+        return (section: ExamSection.cloze, relIdx: idx1 - ExamSection.cloze.startIndex, passageIdx: -1);
+      }
+      if (ExamSection.dialogue.containsQuestion(idx1)) {
+        return (section: ExamSection.dialogue, relIdx: idx1 - ExamSection.dialogue.startIndex, passageIdx: -1);
+      }
+      if (ExamSection.bankedCloze.containsQuestion(idx1)) {
+        return (section: ExamSection.bankedCloze, relIdx: idx1 - ExamSection.bankedCloze.startIndex, passageIdx: -1);
+      }
+      if (ExamSection.en2zh5.containsQuestion(idx1)) {
+        return (section: ExamSection.en2zh5, relIdx: idx1 - ExamSection.en2zh5.startIndex, passageIdx: -1);
+      }
+      return (section: ExamSection.writing, relIdx: 0, passageIdx: -1);
     }
-    if (ExamSection.reading.containsQuestion(idx1)) {
-      final rel = idx1 - ExamSection.reading.startIndex; // 0..19
-      return (section: ExamSection.reading, relIdx: rel % 5, passageIdx: rel ~/ 5);
+    // 按卷内声明的布局定位（真题卷题量/顺序与生成卷不同）
+    final sec = paper.sectionOfIndex(idx1);
+    final rel = idx1 - paper.startIndexOf(sec);
+    if (sec == ExamSection.reading) {
+      final pos = paper.readingPosOf(rel);
+      return (section: sec, relIdx: pos.qIdx, passageIdx: pos.passageIdx);
     }
-    if (ExamSection.cloze.containsQuestion(idx1)) {
-      return (section: ExamSection.cloze, relIdx: idx1 - ExamSection.cloze.startIndex, passageIdx: -1);
-    }
-    if (ExamSection.dialogue.containsQuestion(idx1)) {
-      return (section: ExamSection.dialogue, relIdx: idx1 - ExamSection.dialogue.startIndex, passageIdx: -1);
-    }
-    if (ExamSection.bankedCloze.containsQuestion(idx1)) {
-      return (section: ExamSection.bankedCloze, relIdx: idx1 - ExamSection.bankedCloze.startIndex, passageIdx: -1);
-    }
-    if (ExamSection.en2zh5.containsQuestion(idx1)) {
-      return (section: ExamSection.en2zh5, relIdx: idx1 - ExamSection.en2zh5.startIndex, passageIdx: -1);
-    }
-    return (section: ExamSection.writing, relIdx: 0, passageIdx: -1);
+    return (section: sec, relIdx: rel, passageIdx: -1);
   }
 
   /// 考试倒计时心跳（UI 层每 1 秒调用一次）
