@@ -69,8 +69,14 @@ class McpStdioClient {
   String get name => config.name;
 
   Future<void> connect() async {
+    // Windows 下 Process.start 必须带 .cmd 后缀才能找到 npx/npm 等；
+    // 自动补全，兼容用户旧配置里只写了 npx 的情况。
+    var cmd = config.command;
+    if (Platform.isWindows && !cmd.contains('.') && !cmd.contains(Platform.pathSeparator)) {
+      cmd = '$cmd.cmd';
+    }
     _process = await Process.start(
-      config.command,
+      cmd,
       config.args,
       environment: {...Platform.environment, ...config.env},
     );
@@ -79,7 +85,8 @@ class McpStdioClient {
     // 子进程退出：立即失败所有挂起 RPC，避免调用方空等 60s 超时
     _process!.exitCode.then((_) => _failAllPending());
 
-    // initialize 握手
+    // initialize 握手。npx -y 首次运行要先下载安装包（可能超过 20s），
+    // 故超时放宽到 45s，避免首次使用被误判为连接失败。
     final initResp = await _send(
       {
         'jsonrpc': '2.0',
@@ -91,7 +98,7 @@ class McpStdioClient {
           'clientInfo': {'name': 'afloat', 'version': '1.0'},
         },
       },
-      timeout: const Duration(seconds: 20),
+      timeout: const Duration(seconds: 45),
     );
     // 握手失败（超时/写失败/协议错误）必须抛异常，
     // 否则客户端会带空工具列表"假连接"，UI 显示已连接但所有工具不可用
@@ -245,6 +252,9 @@ class McpRegistry {
   /// 避免早到的调用方拿到陈旧/空工具列表
   Future<List<McpTool>>? _connectFuture;
 
+  /// 最近一次连接结果：server 名 → 失败原因（成功即无该项），供 UI/Agent 展示诊断
+  final Map<String, String> connectErrors = {};
+
   List<McpStdioClient> get clients => List.unmodifiable(_clients);
 
   /// 给定配置列表，启动所有 server。
@@ -262,15 +272,20 @@ class McpRegistry {
   Future<List<McpTool>> _doConnectAll(List<McpServerConfig> configs) async {
     // 先断开旧的
     await disconnectAll();
+    connectErrors.clear();
     for (final cfg in configs) {
-      if (cfg.name.isEmpty || cfg.command.isEmpty) continue;
+      if (cfg.name.isEmpty || cfg.command.isEmpty) {
+        connectErrors[cfg.name.isEmpty ? '(未命名)' : cfg.name] = '缺少命令配置';
+        continue;
+      }
       final client = McpStdioClient(cfg);
       try {
         await client.connect();
         _clients.add(client);
       } catch (e) {
-        // 失败的 server 不进 _clients（不"假连接"），但留日志供排查
+        // 失败的 server 不进 _clients（不"假连接"），记录原因供排查/展示
         debugPrint('[MCP] server "${cfg.name}" 连接失败: $e');
+        connectErrors[cfg.name] = e.toString();
         await client.dispose();
       }
     }

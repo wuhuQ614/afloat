@@ -9,9 +9,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:path_provider/path_provider.dart';
 import '../models.dart';
+import '../services/mcp_client.dart';
 import '../services/wechat_service.dart';
 import '../state.dart';
 import '../theme_colors.dart' show kPrimary, AppColors;
+import '../theme_diy.dart';
+import 'diy_backdrop.dart';
 import 'learn_page.dart' show AppScope;
 import 'update_dialog.dart';
 
@@ -54,8 +57,21 @@ class _SettingsDialogState extends State<SettingsDialog> {
   bool _searchObscure = true;
 
   /// 设置分组：手机 'home'=入口列表页；桌面与手机子页：
-  /// 'model' 模型设置 | 'interface' 界面设置 | 'account' 账户安全 | 'advanced' 高级功能
+  /// 'model' 模型设置 | 'interface' 界面设置 | 'account' 账户安全 | 'advanced' 高级功能 | 'diy' 页面 DIY
   String _section = 'home';
+
+  // ---- 页面 DIY 编辑器状态 ----
+  /// 正在编辑的主题（经典/毛玻璃/深色各自独立，互不影响）
+  DiyThemeTarget _diyTarget = DiyThemeTarget.classic;
+  /// 背景工作副本：null = 该主题背景未开始编辑（显示并沿用当前生效值）。
+  /// 一旦有修改即非空，并随 onChangeEnd / 点击类操作提交到 AppState（同步持久化）。
+  DiyBackdrop? _diyWorkBd;
+  /// 按钮样式工作副本，语义同上
+  DiyButtonStyle? _diyWorkBtn;
+  /// 滑块拖动中产生、尚未提交到 AppState 的改动
+  bool _diyDirty = false;
+  /// 展开编辑的图层索引（null = 全部收起）
+  int? _diyExpandedLayer;
 
   @override
   void initState() {
@@ -203,6 +219,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
         'model' => '模型设置',
         'interface' => '界面设置',
         'account' => '账户安全',
+        'diy' => '页面 DIY',
         _ => '高级功能',
       };
       return Scaffold(
@@ -214,7 +231,12 @@ class _SettingsDialogState extends State<SettingsDialog> {
           title: Text(title, style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700, color: c.text)),
           leading: IconButton(
             icon: Icon(Icons.arrow_back_ios_new_rounded, size: 20, color: c.text),
-            onPressed: () => setState(() => _section = 'home'),
+            // DIY 页从"高级功能"进入，返回也回到高级功能；其余子页回首页。
+            // 返回前先把拖动中未落盘的改动提交，避免丢最后一次滑块调整
+            onPressed: () => setState(() {
+              if (_section == 'diy') _diyCommit(s);
+              _section = _section == 'diy' ? 'advanced' : 'home';
+            }),
           ),
         ),
         body: SingleChildScrollView(
@@ -279,7 +301,10 @@ class _SettingsDialogState extends State<SettingsDialog> {
                   Expanded(child: Text('设置', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: c.text))),
                   IconButton(
                     icon: Icon(Icons.close_rounded, size: 20, color: c.textSecondary),
-                    onPressed: () => Navigator.of(context).pop(),
+                    onPressed: () {
+                      _diyCommit(s); // DIY 页拖动中直接关窗也先落盘
+                      Navigator.of(context).pop();
+                    },
                   ),
                 ]),
               ),
@@ -407,7 +432,8 @@ class _SettingsDialogState extends State<SettingsDialog> {
 
   // ---- 左侧导航条目（参考图二：选中为灰底圆角 + 深色文字） ----
   Widget _navItem(Widget icon, String label, String key, AppColors c) {
-    final selected = _section == key;
+    // DIY 编辑器从高级功能进入，属于其子页：编辑中仍高亮「高级功能」
+    final selected = _section == key || (_section == 'diy' && key == 'advanced');
     return Padding(
       padding: const EdgeInsets.only(bottom: 4),
       child: Material(
@@ -440,6 +466,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
       case 'interface': return _sectionInterfaceContent(s, c);
       case 'account':   return _sectionAccountContent(s, c);
       case 'advanced':  return _sectionAdvanced(s, c);
+      case 'diy':       return _sectionDiy(s, c);
       default:          return _sectionModelContent(s, c);
     }
   }
@@ -1029,6 +1056,9 @@ class _SettingsDialogState extends State<SettingsDialog> {
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       _sectionTitle('高级功能', c),
       const SizedBox(height: 14),
+      // 页面 DIY：三个主题（经典/毛玻璃/深色）的背景与按钮样式自定义
+      _diyEntryCard(s, c),
+      const SizedBox(height: 10),
       // 开发者模式开关已按需求从学习模式设置中隐藏（用户要求）。
       // 若要恢复：取消下面注释即可（devMode 状态与持久化逻辑仍在 state.dart / storage.dart 中保留）。
       // _SwitchRow(
@@ -1118,30 +1148,1314 @@ class _SettingsDialogState extends State<SettingsDialog> {
         ]),
       ),
       const SizedBox(height: 10),
-      Container(
-        padding: const EdgeInsets.all(14),
-        decoration: BoxDecoration(
-          color: c.isLight ? const Color(0xFFF7F8FA) : const Color(0xFF26262C),
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: c.border),
-        ),
-        child: Row(children: [
-          Icon(Icons.system_update_alt_rounded, size: 18, color: c.textSecondary),
+      // MCP 服务管理与「在线更新」入口已按用户要求从界面隐藏（底层调用能力不受影响）。
+      // 需要恢复时，在下方 children 中加回 _mcpManagerCard(s, c) / _updateEntryCard(c)。
+    ]);
+  }
+
+  // ignore: unused_element
+  /// MCP 服务（连接器）管理卡：预置模板一键添加 + 已配置列表（按用户要求隐藏，恢复时在 _sectionAdvanced 调用）
+  Widget _mcpManagerCard(AppState s, AppColors c) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: c.isLight ? const Color(0xFFF7F8FA) : const Color(0xFF26262C),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: c.border),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Icon(Icons.hub_outlined, size: 18, color: c.textSecondary),
           const SizedBox(width: 10),
           Expanded(
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text('在线更新', style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w700, color: c.text)),
+              Text('MCP 服务（连接器）', style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w700, color: c.text)),
               const SizedBox(height: 2),
-              Text('从 GitHub Releases 检查新版本', style: TextStyle(fontSize: 11.5, color: c.textTertiary)),
+              Text('配置后 Agent 可调用外部工具（需本机 Node.js，npx 启动）', style: TextStyle(fontSize: 11.5, color: c.textTertiary)),
             ]),
           ),
-          OutlinedButton(
-            onPressed: () => UpdateDialog.checkAndShow(context, quiet: false, manual: true),
-            child: const Text('检查更新', style: TextStyle(fontSize: 12.5)),
+          if (s.mcpRegistry.clients.isNotEmpty)
+            Text('已连 ${s.mcpRegistry.clients.length} 个', style: TextStyle(fontSize: 11.5, color: const Color(0xFF10B981))),
+        ]),
+        const SizedBox(height: 12),
+        // 预置模板一键添加
+        Text('预置模板', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: c.textSecondary)),
+        const SizedBox(height: 8),
+        Wrap(spacing: 8, runSpacing: 8, children: [
+          for (final e in AppState.mcpTemplates.entries)
+            ActionChip(
+              avatar: const Icon(Icons.add_rounded, size: 16),
+              label: Text(e.key.split(' ').first, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+              backgroundColor: c.isLight ? Colors.white : const Color(0xFF33333A),
+              side: BorderSide(color: c.border),
+              onPressed: () async {
+                // 需要 API Key 的模板：空 env 占位 → 弹窗补填后再添加
+                final emptyEnv = e.value.env.entries.where((kv) => kv.value.isEmpty).toList();
+                var cfg = e.value;
+                if (emptyEnv.isNotEmpty) {
+                  final controllers = <String, TextEditingController>{
+                    for (final kv in emptyEnv) kv.key: TextEditingController(),
+                  };
+                  final filled = await showDialog<Map<String, String>>(
+                    context: context,
+                    builder: (ctx) => AlertDialog(
+                      title: Text('配置 ${e.key.split(' ').first}', style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
+                      content: SizedBox(
+                        width: 320,
+                        child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+                          const Text('该服务需密钥才能调用（可前往服务官网免费申请）', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                          const SizedBox(height: 12),
+                          for (final kv in emptyEnv) ...[
+                            Text(kv.key, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700)),
+                            const SizedBox(height: 4),
+                            TextField(
+                              controller: controllers[kv.key],
+                              obscureText: true,
+                              style: const TextStyle(fontSize: 13),
+                              decoration: InputDecoration(
+                                hintText: '请输入 ${kv.key}',
+                                isDense: true,
+                                border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                              ),
+                            ),
+                            const SizedBox(height: 12),
+                          ],
+                        ]),
+                      ),
+                      actions: [
+                        TextButton(
+                          onPressed: () => Navigator.pop(ctx),
+                          child: const Text('取消'),
+                        ),
+                        FilledButton(
+                          onPressed: () {
+                            final filled = <String, String>{
+                              for (final kv in emptyEnv) kv.key: controllers[kv.key]!.text.trim(),
+                            };
+                            if (filled.values.any((v) => v.isEmpty)) {
+                              ScaffoldMessenger.of(ctx).showSnackBar(const SnackBar(
+                                content: Text('请填完所有密钥字段', style: TextStyle(fontSize: 12.5)),
+                                behavior: SnackBarBehavior.floating,
+                              ));
+                              return;
+                            }
+                            Navigator.pop(ctx, filled);
+                          },
+                          child: const Text('添加'),
+                        ),
+                      ],
+                    ),
+                  );
+                  if (filled == null || !mounted) return;
+                  cfg = McpServerConfig(
+                    name: e.value.name,
+                    command: e.value.command,
+                    args: e.value.args,
+                    env: {...e.value.env, ...filled},
+                  );
+                }
+                final added = await s.addMcpServer(cfg);
+                if (!mounted) return;
+                if (!added) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('「${e.key.split(' ').first}」已存在', style: const TextStyle(fontSize: 12.5)), behavior: SnackBarBehavior.floating),
+                  );
+                } else {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('已添加 ${e.key.split(' ').first}，正在连接…', style: const TextStyle(fontSize: 12.5)), behavior: SnackBarBehavior.floating),
+                  );
+                }
+                if (mounted) setState(() {});
+              },
+            ),
+        ]),
+        // 已配置列表
+        const SizedBox(height: 12),
+        Text('已配置', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: c.textSecondary)),
+        const SizedBox(height: 8),
+        if (s.parseMcpConfigs().isEmpty)
+          Text('未配置任何 MCP server', style: TextStyle(fontSize: 12, color: c.textTertiary))
+        else
+          for (final cfg in s.parseMcpConfigs()) ...[
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              margin: const EdgeInsets.only(bottom: 8),
+              decoration: BoxDecoration(
+                color: c.isLight ? Colors.white : const Color(0xFF2C2C33),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: c.border),
+              ),
+              child: Row(children: [
+                Icon(Icons.hub_rounded, size: 16, color: c.textSecondary),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Text(cfg.name, style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w700, color: c.text)),
+                    const SizedBox(height: 2),
+                    Text('${cfg.command} ${cfg.args.join(' ')}', style: TextStyle(fontSize: 10.5, color: c.textTertiary), maxLines: 1, overflow: TextOverflow.ellipsis),
+                  ]),
+                ),
+                const SizedBox(width: 8),
+                IconButton(
+                  icon: const Icon(Icons.close_rounded, size: 16),
+                  color: c.textTertiary,
+                  tooltip: '移除',
+                  onPressed: () async {
+                    await s.removeMcpServer(cfg.name);
+                    if (mounted) setState(() {});
+                  },
+                ),
+              ]),
+            ),
+          ],
+        if (s.mcpRegistry.connectErrors.isNotEmpty) ...[
+          const SizedBox(height: 4),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            decoration: BoxDecoration(
+              color: Colors.red.withOpacity(0.08),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: Colors.red.withOpacity(0.25)),
+            ),
+            child: Row(children: [
+              const Expanded(
+                child: Text(
+                  '部分 server 连接失败（检查本机 Node.js/npx 或 uvx 是否安装）',
+                  style: TextStyle(fontSize: 11, color: Colors.redAccent),
+                ),
+              ),
+              TextButton(
+                onPressed: () async {
+                  await s.setMcpConfigJson(s.mcpConfigJson);
+                  if (mounted) setState(() {});
+                },
+                style: TextButton.styleFrom(minimumSize: const Size(0, 28), padding: const EdgeInsets.symmetric(horizontal: 8)),
+                child: const Text('重连', style: TextStyle(fontSize: 12)),
+              ),
+            ]),
+          ),
+        ],
+        const SizedBox(height: 4),
+        Text(
+          '提示：添加后需在对话中执行 list_mcp_tools 即可看到工具；快递100 等商业服务需填 API Key（模板点击后会弹窗），其余（deepwiki/12306 等）零配置直接用。',
+          style: TextStyle(fontSize: 10.5, height: 1.5, color: c.textTertiary),
+        ),
+      ]),
+    );
+  }
+
+  // ignore: unused_element
+  /// 在线更新入口卡（按用户要求隐藏，恢复时在 _sectionAdvanced 调用）
+  Widget _updateEntryCard(AppColors c) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: c.isLight ? const Color(0xFFF7F8FA) : const Color(0xFF26262C),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: c.border),
+      ),
+      child: Row(children: [
+        Icon(Icons.system_update_alt_rounded, size: 18, color: c.textSecondary),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text('在线更新', style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w700, color: c.text)),
+            const SizedBox(height: 2),
+            Text('从 GitHub Releases 检查新版本', style: TextStyle(fontSize: 11.5, color: c.textTertiary)),
+          ]),
+        ),
+        OutlinedButton(
+          onPressed: () => UpdateDialog.checkAndShow(context, quiet: false, manual: true),
+          child: const Text('检查更新', style: TextStyle(fontSize: 12.5)),
+        ),
+      ]),
+    );
+  }
+
+  // ============== Section: 页面 DIY ==============
+
+  /// 高级功能里的「页面 DIY」入口卡：显示已自定义的主题数，点击进入编辑器
+  Widget _diyEntryCard(AppState s, AppColors c) {
+    final customized = DiyThemeTarget.values.where((t) => s.diyThemes.isCustomized(t)).length;
+    final isLight = c.isLight;
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: () {
+          _diyCommit(s);
+          setState(() {
+            _diyTarget = s.diyCurrentTarget;
+            _diyWorkBd = null;
+            _diyWorkBtn = null;
+            _diyDirty = false;
+            _diyExpandedLayer = null;
+            _section = 'diy';
+          });
+        },
+        child: Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: isLight ? const Color(0xFFF7F8FA) : const Color(0xFF26262C),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: c.border),
+          ),
+          child: Row(children: [
+            Icon(Icons.palette_outlined, size: 18, color: isLight ? kPrimary : const Color(0xFFA78BFA)),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text('页面 DIY', style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w700, color: c.text)),
+                const SizedBox(height: 2),
+                Text('自定义经典、毛玻璃、深色主题的背景与按钮样式',
+                    style: TextStyle(fontSize: 11.5, color: c.textTertiary)),
+              ]),
+            ),
+            const SizedBox(width: 8),
+            Text(
+              customized > 0 ? '已自定义 $customized/3' : '未自定义',
+              style: TextStyle(
+                fontSize: 11.5,
+                color: customized > 0 ? (isLight ? kPrimary : const Color(0xFFA78BFA)) : c.textTertiary,
+              ),
+            ),
+            Icon(Icons.chevron_right_rounded, size: 20, color: c.textSecondary),
+          ]),
+        ),
+      ),
+    );
+  }
+
+  /// 当前编辑中的背景（工作副本优先，否则取该主题当前生效值）
+  DiyBackdrop _diyBd(AppState s) => _diyWorkBd ?? s.effectiveBackdropOf(_diyTarget);
+
+  /// 当前编辑中的按钮样式（工作副本优先，否则取该主题当前生效值）
+  DiyButtonStyle _diyBtn(AppState s) => _diyWorkBtn ?? s.effectiveButtonStyleOf(_diyTarget);
+
+  /// 点击类修改：本地更新 + 立即提交（AppState 内部同步持久化）
+  void _diyUpdateBd(AppState s, DiyBackdrop bd) {
+    setState(() {
+      _diyWorkBd = bd;
+      _diyDirty = false;
+    });
+    s.setDiyBackdrop(_diyTarget, bd);
+  }
+
+  /// 滑块拖动中：只更新本地工作副本保证预览跟手，onChangeEnd 时才提交
+  void _diyDragBd(DiyBackdrop bd) {
+    setState(() {
+      _diyWorkBd = bd;
+      _diyDirty = true;
+    });
+  }
+
+  void _diyUpdateBtn(AppState s, DiyButtonStyle st) {
+    setState(() {
+      _diyWorkBtn = st;
+      _diyDirty = false;
+    });
+    s.setDiyButtonStyle(_diyTarget, st);
+  }
+
+  void _diyDragBtn(DiyButtonStyle st) {
+    setState(() {
+      _diyWorkBtn = st;
+      _diyDirty = true;
+    });
+  }
+
+  /// 提交所有未落盘的滑块改动（切换主题 / 离开编辑器前调用，避免丢最后一次拖动）
+  void _diyCommit(AppState s) {
+    if (!_diyDirty) return;
+    if (_diyWorkBd != null) s.setDiyBackdrop(_diyTarget, _diyWorkBd);
+    if (_diyWorkBtn != null) s.setDiyButtonStyle(_diyTarget, _diyWorkBtn);
+    _diyDirty = false;
+  }
+
+  /// 切换编辑目标主题
+  void _diySwitchTarget(AppState s, DiyThemeTarget t) {
+    if (t == _diyTarget) return;
+    _diyCommit(s);
+    setState(() {
+      _diyTarget = t;
+      _diyWorkBd = null;
+      _diyWorkBtn = null;
+      _diyExpandedLayer = null;
+    });
+  }
+
+  /// DIY 编辑器主体（桌面端内容区与手机端子页共用）
+  Widget _sectionDiy(AppState s, AppColors c) {
+    final isLight = c.isLight;
+    final bd = _diyBd(s);
+    final btn = _diyBtn(s);
+    final customized = s.diyThemes.isCustomized(_diyTarget);
+    final accent = isLight ? kPrimary : const Color(0xFFA78BFA);
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      // 桌面端没有系统返回键，给一个返回高级功能的文字入口；手机端由 AppBar 返回
+      LayoutBuilder(builder: (context, box) {
+        if (box.maxWidth < 600) return const SizedBox.shrink();
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 10),
+          child: TextButton.icon(
+            onPressed: () {
+              _diyCommit(s);
+              setState(() => _section = 'advanced');
+            },
+            icon: Icon(Icons.arrow_back_ios_new_rounded, size: 14, color: c.textSecondary),
+            label: Text('返回高级功能', style: TextStyle(fontSize: 12.5, color: c.textSecondary)),
+            style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 8), minimumSize: const Size(0, 30)),
+          ),
+        );
+      }),
+      Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Expanded(
+          child: Text(
+            '三个主题相互独立，改动即时生效并自动保存；未调整的部分保持原样。',
+            style: TextStyle(fontSize: 12.5, height: 1.5, color: c.textSecondary),
+          ),
+        ),
+        if (customized) ...[
+          const SizedBox(width: 10),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+            decoration: BoxDecoration(color: accent.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(20)),
+            child: Text('已自定义', style: TextStyle(fontSize: 11, color: accent)),
+          ),
+        ],
+      ]),
+      const SizedBox(height: 14),
+      // 主题切换（三个主题 tab，自带"已自定义"圆点）
+      _diyThemeTabs(s, c),
+      const SizedBox(height: 14),
+      // 实时预览：背景 + 按钮一起看，所见即所得
+      _diyPreviewCard(s, c, bd, btn),
+      const SizedBox(height: 22),
+
+      _diyGroupTitle(c, '风格预设', '套用后可继续逐项微调'),
+      const SizedBox(height: 10),
+      _diyPresetStrip(s, c),
+      const SizedBox(height: 22),
+
+      _diyGroupTitle(c, '背景基座', null),
+      const SizedBox(height: 10),
+      _diyBaseEditor(s, c, bd),
+      const SizedBox(height: 22),
+
+      _diyGroupTitle(c, '背景图层', '自下而上叠加，最多 6 层'),
+      const SizedBox(height: 10),
+      _diyLayerList(s, c, bd),
+      const SizedBox(height: 22),
+
+      _diyGroupTitle(c, '观感', null),
+      const SizedBox(height: 10),
+      _diyFeelEditor(s, c, bd),
+      const SizedBox(height: 22),
+
+      _diyGroupTitle(c, '按钮', '作用于全局主按钮、次按钮与链接样式'),
+      const SizedBox(height: 10),
+      _diyButtonEditor(s, c, btn),
+      const SizedBox(height: 24),
+
+      // 恢复默认
+      Row(children: [
+        OutlinedButton.icon(
+          // 未自定义时禁用：没有可恢复的内容，避免"已恢复默认"的误导提示
+          onPressed: customized
+              ? () {
+                  s.resetDiyTheme(_diyTarget);
+                  setState(() {
+                    _diyWorkBd = null;
+                    _diyWorkBtn = null;
+                    _diyDirty = false;
+                    _diyExpandedLayer = null;
+                  });
+                  ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                    content: Text('已恢复「${_diyTarget.label}」的默认外观', style: const TextStyle(fontSize: 12.5)),
+                    behavior: SnackBarBehavior.floating,
+                  ));
+                }
+              : null,
+          icon: const Icon(Icons.restart_alt_rounded, size: 16),
+          label: const Text('恢复此主题默认', style: TextStyle(fontSize: 12.5)),
+        ),
+        const SizedBox(width: 12),
+        OutlinedButton.icon(
+          onPressed: s.diyThemes.isEmpty
+              ? null
+              : () {
+                  s.resetAllDiyThemes();
+                  setState(() {
+                    _diyWorkBd = null;
+                    _diyWorkBtn = null;
+                    _diyDirty = false;
+                    _diyExpandedLayer = null;
+                  });
+                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                    content: Text('已恢复全部主题默认外观', style: TextStyle(fontSize: 12.5)),
+                    behavior: SnackBarBehavior.floating,
+                  ));
+                },
+          icon: const Icon(Icons.undo_rounded, size: 16),
+          label: const Text('全部恢复默认', style: TextStyle(fontSize: 12.5)),
+        ),
+      ]),
+    ]);
+  }
+
+  /// 小节标题：主标题 + 可选的灰色说明
+  Widget _diyGroupTitle(AppColors c, String title, String? hint) {
+    return Row(crossAxisAlignment: CrossAxisAlignment.baseline, textBaseline: TextBaseline.alphabetic, children: [
+      Text(title, style: TextStyle(fontSize: 14.5, fontWeight: FontWeight.w700, color: c.text)),
+      if (hint != null) ...[
+        const SizedBox(width: 8),
+        Expanded(child: Text(hint, style: TextStyle(fontSize: 11.5, color: c.textTertiary), overflow: TextOverflow.ellipsis)),
+      ],
+    ]);
+  }
+
+  /// 主题 tab 行：三个主题等宽分段，已自定义的主题名前带小圆点
+  Widget _diyThemeTabs(AppState s, AppColors c) {
+    final isLight = c.isLight;
+    final accent = isLight ? kPrimary : const Color(0xFFA78BFA);
+    return Container(
+      padding: const EdgeInsets.all(3),
+      decoration: BoxDecoration(
+        color: isLight ? const Color(0xFFEDEEF3) : const Color(0xFF1B1B20),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Row(children: [
+        for (final t in DiyThemeTarget.values)
+          Expanded(
+            child: GestureDetector(
+              onTap: () => _diySwitchTarget(s, t),
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 160),
+                height: 34,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: t == _diyTarget ? (isLight ? Colors.white : const Color(0xFF33333A)) : Colors.transparent,
+                  borderRadius: BorderRadius.circular(8),
+                  boxShadow: t == _diyTarget && isLight
+                      ? [BoxShadow(color: Colors.black.withValues(alpha: 0.05), blurRadius: 4, offset: const Offset(0, 1))]
+                      : null,
+                ),
+                child: Row(mainAxisSize: MainAxisSize.min, children: [
+                  if (s.diyThemes.isCustomized(t)) ...[
+                    Container(width: 5, height: 5, decoration: BoxDecoration(color: accent, shape: BoxShape.circle)),
+                    const SizedBox(width: 5),
+                  ],
+                  Text(
+                    t.label,
+                    style: TextStyle(
+                      fontSize: 12.5,
+                      fontWeight: t == _diyTarget ? FontWeight.w700 : FontWeight.w500,
+                      color: t == _diyTarget ? c.text : c.textSecondary,
+                    ),
+                  ),
+                ]),
+              ),
+            ),
+          ),
+      ]),
+    );
+  }
+
+  /// 预览卡：当前编辑主题的背景 + 一组示例按钮，所见即所得
+  Widget _diyPreviewCard(AppState s, AppColors c, DiyBackdrop bd, DiyButtonStyle btn) {
+    final isLight = c.isLight;
+    final isMobile = MediaQuery.of(context).size.width < 600;
+    final onPrimary = (btn.fill == DiyButtonFill.glass || btn.fill == DiyButtonFill.outline || btn.fill == DiyButtonFill.ghost)
+        ? (btn.color ?? (isLight ? kPrimary : const Color(0xFFA78BFA)))
+        : Colors.white;
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(14),
+      child: SizedBox(
+        height: isMobile ? 130 : 150,
+        child: Stack(fit: StackFit.expand, children: [
+          DiyBackdropPreview(config: bd, isLight: _diyTarget != DiyThemeTarget.dark, blur: _diyTarget == DiyThemeTarget.glass ? bd.blur : 0),
+          Positioned(
+            left: 16,
+            bottom: 14,
+            right: 16,
+            child: Row(children: [
+              // 用工作副本样式绘制示例按钮（不走全局主题：编辑中的可能不是当前主题）
+              ElevatedButton(
+                onPressed: () {},
+                style: diyToButtonStyle(btn, primary: isLight ? kPrimary : const Color(0xFFA78BFA), onPrimary: onPrimary, foreground: isLight ? kPrimary : const Color(0xFFA78BFA), isLight: isLight),
+                child: const Text('开始学习'),
+              ),
+              const SizedBox(width: 10),
+              OutlinedButton(
+                onPressed: () {},
+                style: diyToButtonStyle(btn.copyWith(fill: DiyButtonFill.outline), primary: btn.color ?? (isLight ? kPrimary : const Color(0xFFA78BFA)), onPrimary: Colors.white, foreground: isLight ? kPrimary : const Color(0xFFA78BFA), isLight: isLight),
+                child: const Text('换个说法'),
+              ),
+              const Spacer(),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: (isLight ? Colors.black : Colors.white).withValues(alpha: 0.32),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Text('${_diyTarget.label} · 预览', style: TextStyle(fontSize: 10.5, color: isLight ? Colors.white : Colors.black.withValues(alpha: 0.85))),
+              ),
+            ]),
           ),
         ]),
       ),
+    );
+  }
+
+  /// 风格预设横滚条：小预览图 + 名称，点击套用（保留按钮样式与毛玻璃模糊）
+  Widget _diyPresetStrip(AppState s, AppColors c) {
+    final forLight = _diyTarget != DiyThemeTarget.dark;
+    return SizedBox(
+      height: 96,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        itemCount: kDiyPresets.length,
+        separatorBuilder: (_, __) => const SizedBox(width: 10),
+        itemBuilder: (context, i) {
+          final p = kDiyPresets[i];
+          final preview = p.build(forLight);
+          return Material(
+            color: Colors.transparent,
+            child: InkWell(
+              borderRadius: BorderRadius.circular(10),
+              onTap: () {
+                s.applyDiyPreset(_diyTarget, p.key);
+                setState(() {
+                  _diyWorkBd = null; // 回到"跟随已保存值"
+                  _diyDirty = false;
+                  _diyExpandedLayer = null;
+                });
+              },
+              child: Container(
+                width: 128,
+                padding: const EdgeInsets.all(6),
+                decoration: BoxDecoration(
+                  color: c.isLight ? Colors.white : const Color(0xFF2C2C33),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: c.border),
+                ),
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Expanded(
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(6),
+                      child: DiyBackdropPreview(config: preview, isLight: forLight),
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Padding(
+                    padding: const EdgeInsets.only(left: 2),
+                    child: Text(p.label, style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600, color: c.text)),
+                  ),
+                ]),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  /// 背景基座：填充方式 + 颜色序列 + 渐变角度
+  Widget _diyBaseEditor(AppState s, AppColors c, DiyBackdrop bd) {
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      _diySegmented<DiyBaseKind>(
+        c,
+        [for (final k in DiyBaseKind.values) (k, k.label)],
+        bd.base,
+        (v) => _diyUpdateBd(s, bd.copyWith(base: v)),
+      ),
+      const SizedBox(height: 12),
+      // 颜色序列：1-4 个色块，可增删；点击色块弹色板
+      Row(children: [
+        Text('颜色', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: c.textSecondary)),
+        const SizedBox(width: 12),
+        for (var i = 0; i < bd.colors.length; i++) ...[
+          _diyColorChip(c, bd.colors[i], onTap: () => _pickDiyColor(c, bd.colors[i], allowFollow: false,
+              onPicked: (col) {
+                if (col == null) return;
+                final cs = List<Color>.of(bd.colors)..[i] = col;
+                _diyUpdateBd(s, bd.copyWith(colors: cs));
+              }),
+            onRemove: bd.colors.length > 1
+                ? () {
+                    final cs = List<Color>.of(bd.colors)..removeAt(i);
+                    _diyUpdateBd(s, bd.copyWith(colors: cs));
+                  }
+                : null,
+          ),
+          const SizedBox(width: 8),
+        ],
+        if (bd.colors.length < 4)
+          GestureDetector(
+            onTap: () {
+              // 新增色取当前末位的邻近色（同色加深），避免突兀；用户可再改
+              final last = bd.colors.last;
+              _diyUpdateBd(s, bd.copyWith(colors: [...bd.colors, Color.lerp(last, Colors.black, 0.12)!]));
+            },
+            child: Container(
+              width: 28,
+              height: 28,
+              decoration: BoxDecoration(
+                color: c.isLight ? Colors.white : const Color(0xFF33333A),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: c.border),
+              ),
+              child: Icon(Icons.add_rounded, size: 15, color: c.textSecondary),
+            ),
+          ),
+      ]),
+      // 渐变角度：纯色不需要
+      if (bd.base == DiyBaseKind.linear || bd.base == DiyBaseKind.sweep) ...[
+        const SizedBox(height: 4),
+        _diySlider(
+          c,
+          label: '渐变角度',
+          value: bd.angle,
+          min: 0,
+          max: 360,
+          fmt: (v) => '${v.round()}°',
+          onChanged: (v) => _diyDragBd(bd.copyWith(angle: v)),
+          onChangeEnd: (v) => _diyUpdateBd(s, bd.copyWith(angle: v)),
+        ),
+      ],
     ]);
+  }
+
+  /// 观感：动效开关、内容蒙层、毛玻璃模糊（仅毛玻璃主题）
+  Widget _diyFeelEditor(AppState s, AppColors c, DiyBackdrop bd) {
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      _diySwitchLine(c, '背景动效', '光带漂移与光斑呼吸；低电量时建议关闭', bd.animated,
+          (v) => _diyUpdateBd(s, bd.copyWith(animated: v))),
+      const SizedBox(height: 2),
+      _diySlider(
+        c,
+        label: '内容蒙层',
+        hint: '背景较花时压一层底色保证正文可读',
+        value: bd.scrim,
+        min: 0,
+        max: 0.85,
+        fmt: (v) => v <= 0.005 ? '关' : '${(v * 100).round()}%',
+        onChanged: (v) => _diyDragBd(bd.copyWith(scrim: v)),
+        onChangeEnd: (v) => _diyUpdateBd(s, bd.copyWith(scrim: v)),
+      ),
+      if (_diyTarget == DiyThemeTarget.glass)
+        _diySlider(
+          c,
+          label: '毛玻璃模糊',
+          value: bd.blur,
+          min: 0,
+          max: 60,
+          fmt: (v) => v.round().toString(),
+          onChanged: (v) => _diyDragBd(bd.copyWith(blur: v)),
+          onChangeEnd: (v) => _diyUpdateBd(s, bd.copyWith(blur: v)),
+        ),
+    ]);
+  }
+
+  /// 按钮编辑器：填充方式 + 颜色 + 形状 + 描边 + 阴影 + 字重
+  Widget _diyButtonEditor(AppState s, AppColors c, DiyButtonStyle btn) {
+    final accent = c.isLight ? kPrimary : const Color(0xFFA78BFA);
+    final showBorder = btn.fill == DiyButtonFill.glass || btn.fill == DiyButtonFill.outline;
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      _diySegmented<DiyButtonFill>(
+        c,
+        [for (final f in DiyButtonFill.values) (f, f.label)],
+        btn.fill,
+        (v) => _diyUpdateBtn(s, btn.copyWith(fill: v)),
+      ),
+      const SizedBox(height: 12),
+      // 主色：可"跟随主题主色"
+      Row(children: [
+        Text('主色', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: c.textSecondary)),
+        const SizedBox(width: 12),
+        GestureDetector(
+          onTap: () => _pickDiyColor(c, btn.color ?? accent, allowFollow: true,
+              onPicked: (col) => _diyUpdateBtn(s, col == null ? btn.copyWith(clearColor: true) : btn.copyWith(color: col))),
+          child: _followThemeChip(c, btn.color == null, btn.color ?? accent, '跟随主题'),
+        ),
+        const SizedBox(width: 8),
+        _diyColorChip(c, btn.color ?? accent, onTap: () => _pickDiyColor(c, btn.color ?? accent, allowFollow: true,
+            onPicked: (col) => _diyUpdateBtn(s, col == null ? btn.copyWith(clearColor: true) : btn.copyWith(color: col))),
+          onRemove: null,
+        ),
+      ]),
+      // 渐变次色：仅渐变填充时出现
+      if (btn.fill == DiyButtonFill.gradient) ...[
+        const SizedBox(height: 10),
+        Row(children: [
+          Text('次色', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: c.textSecondary)),
+          const SizedBox(width: 12),
+          GestureDetector(
+            onTap: () => _pickDiyColor(c, btn.color2 ?? Color.lerp(btn.color ?? accent, c.isLight ? Colors.white : Colors.black, 0.28)!,
+                allowFollow: true,
+                onPicked: (col) => _diyUpdateBtn(s, col == null ? btn.copyWith(clearColor2: true) : btn.copyWith(color2: col))),
+            child: _followThemeChip(c, btn.color2 == null,
+                btn.color2 ?? Color.lerp(btn.color ?? accent, c.isLight ? Colors.white : Colors.black, 0.28)!, '自动派生'),
+          ),
+          const SizedBox(width: 8),
+          _diyColorChip(c, btn.color2 ?? Color.lerp(btn.color ?? accent, c.isLight ? Colors.white : Colors.black, 0.28)!,
+              onTap: () => _pickDiyColor(c, btn.color2 ?? Color.lerp(btn.color ?? accent, c.isLight ? Colors.white : Colors.black, 0.28)!,
+                  allowFollow: true,
+                  onPicked: (col) => _diyUpdateBtn(s, col == null ? btn.copyWith(clearColor2: true) : btn.copyWith(color2: col))),
+            onRemove: null,
+          ),
+        ]),
+      ],
+      const SizedBox(height: 4),
+      _diySlider(c, label: '圆角', value: btn.radius, min: 0, max: 32,
+        fmt: (v) => '${v.round()}',
+        onChanged: (v) => _diyDragBtn(btn.copyWith(radius: v)),
+        onChangeEnd: (v) => _diyUpdateBtn(s, btn.copyWith(radius: v))),
+      _diySlider(c, label: '高度', value: btn.height, min: 32, max: 64,
+        fmt: (v) => '${v.round()}',
+        onChanged: (v) => _diyDragBtn(btn.copyWith(height: v)),
+        onChangeEnd: (v) => _diyUpdateBtn(s, btn.copyWith(height: v))),
+      if (showBorder) ...[
+        _diySlider(c, label: '描边宽度', value: btn.borderWidth, min: 0, max: 4,
+          fmt: (v) => '${v.toStringAsFixed(1)}',
+          onChanged: (v) => _diyDragBtn(btn.copyWith(borderWidth: v)),
+          onChangeEnd: (v) => _diyUpdateBtn(s, btn.copyWith(borderWidth: v))),
+        _diySlider(c, label: '描边深浅', value: btn.borderOpacity, min: 0.05, max: 1,
+          fmt: (v) => '${(v * 100).round()}%',
+          onChanged: (v) => _diyDragBtn(btn.copyWith(borderOpacity: v)),
+          onChangeEnd: (v) => _diyUpdateBtn(s, btn.copyWith(borderOpacity: v))),
+      ],
+      _diySlider(c, label: '阴影模糊', value: btn.shadowBlur, min: 0, max: 40,
+        fmt: (v) => v.round().toString(),
+        onChanged: (v) => _diyDragBtn(btn.copyWith(shadowBlur: v)),
+        onChangeEnd: (v) => _diyUpdateBtn(s, btn.copyWith(shadowBlur: v))),
+      _diySlider(c, label: '阴影浓度', value: btn.shadowOpacity, min: 0, max: 0.6,
+        fmt: (v) => '${(v * 100).round()}%',
+        onChanged: (v) => _diyDragBtn(btn.copyWith(shadowOpacity: v)),
+        onChangeEnd: (v) => _diyUpdateBtn(s, btn.copyWith(shadowOpacity: v))),
+      const SizedBox(height: 8),
+      _diySegmented<double>(
+        c,
+        const [(400, '常规'), (500, '中等'), (600, '半粗'), (700, '加粗')],
+        btn.fontWeight,
+        (v) => _diyUpdateBtn(s, btn.copyWith(fontWeight: v)),
+      ),
+    ]);
+  }
+
+  /// 图层列表：每层一行（种类 / 上下移 / 显隐 / 删除），点行展开逐项调节
+  Widget _diyLayerList(AppState s, AppColors c, DiyBackdrop bd) {
+    final layers = bd.layers;
+    if (layers.isEmpty) {
+      return Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(vertical: 18),
+        decoration: BoxDecoration(
+          color: c.isLight ? const Color(0xFFF7F8FA) : const Color(0xFF26262C),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: c.border.withValues(alpha: 0.6)),
+        ),
+        child: Column(children: [
+          Text('还没有图层', style: TextStyle(fontSize: 12.5, color: c.textSecondary)),
+          const SizedBox(height: 8),
+          _diyAddLayerButton(s, c, bd),
+        ]),
+      );
+    }
+    return Column(children: [
+      for (var i = 0; i < layers.length; i++) _diyLayerRow(s, c, bd, i),
+      const SizedBox(height: 10),
+      if (layers.length < kDiyMaxLayers) _diyAddLayerButton(s, c, bd),
+    ]);
+  }
+
+  Widget _diyAddLayerButton(AppState s, AppColors c, DiyBackdrop bd) {
+    return OutlinedButton.icon(
+      onPressed: () => _showLayerKindPicker(s, c, bd),
+      icon: const Icon(Icons.add_rounded, size: 16),
+      label: const Text('添加图层', style: TextStyle(fontSize: 12.5)),
+      style: OutlinedButton.styleFrom(minimumSize: const Size(0, 34), padding: const EdgeInsets.symmetric(horizontal: 14)),
+    );
+  }
+
+  Widget _diyLayerRow(AppState s, AppColors c, DiyBackdrop bd, int i) {
+    final l = bd.layers[i];
+    final expanded = _diyExpandedLayer == i;
+    final isLight = c.isLight;
+    final first = i == 0;
+    final last = i == bd.layers.length - 1;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      decoration: BoxDecoration(
+        color: isLight ? Colors.white : const Color(0xFF2C2C33),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: expanded ? (isLight ? kPrimary.withValues(alpha: 0.35) : const Color(0xFFA78BFA).withValues(alpha: 0.4)) : c.border),
+      ),
+      child: Column(children: [
+        // 摘要行
+        InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: () => setState(() => _diyExpandedLayer = expanded ? null : i),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            child: Row(children: [
+              Icon(_diyLayerIcon(l.kind), size: 17, color: isLight ? kPrimary : const Color(0xFFA78BFA)),
+              const SizedBox(width: 9),
+              Text(l.kind.label, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: c.text)),
+              const SizedBox(width: 8),
+              // 双色小预览点
+              Container(width: 10, height: 10, decoration: BoxDecoration(color: l.color, shape: BoxShape.circle)),
+              const SizedBox(width: 3),
+              Container(width: 10, height: 10, decoration: BoxDecoration(color: l.color2, shape: BoxShape.circle)),
+              const Spacer(),
+              if (!l.enabled)
+                Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: Text('已隐藏', style: TextStyle(fontSize: 10.5, color: c.textTertiary)),
+                ),
+              _diyIconBtn(c, Icons.keyboard_arrow_up_rounded, first ? null : () =>
+                  _diyUpdateBd(s, bd.withLayerSwapped(i, i - 1))),
+              _diyIconBtn(c, Icons.keyboard_arrow_down_rounded, last ? null : () =>
+                  _diyUpdateBd(s, bd.withLayerSwapped(i, i + 1))),
+              _diyIconBtn(c, l.enabled ? Icons.visibility_outlined : Icons.visibility_off_outlined,
+                  () => _diyUpdateBd(s, bd.withLayerAt(i, l.copyWith(enabled: !l.enabled)))),
+              _diyIconBtn(c, Icons.close_rounded, () => _diyUpdateBd(s, bd.withoutLayerAt(i))),
+            ]),
+          ),
+        ),
+        // 展开的参数面板
+        if (expanded)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(14, 2, 14, 12),
+            child: _diyLayerParams(s, c, bd, i),
+          ),
+      ]),
+    );
+  }
+
+  /// 单个图层的参数面板：颜色 + 按 kind 出现的数值项
+  Widget _diyLayerParams(AppState s, AppColors c, DiyBackdrop bd, int i) {
+    final l = bd.layers[i];
+    final kind = l.kind;
+
+    void update(DiyLayer nl) => _diyUpdateBd(s, bd.withLayerAt(i, nl));
+
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Row(children: [
+        Text('颜色', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: c.textSecondary)),
+        const SizedBox(width: 12),
+        _diyColorChip(c, l.color, onTap: () => _pickDiyColor(c, l.color, allowFollow: false,
+            onPicked: (col) { if (col != null) update(l.copyWith(color: col)); }), onRemove: null),
+        const SizedBox(width: 8),
+        _diyColorChip(c, l.color2, onTap: () => _pickDiyColor(c, l.color2, allowFollow: false,
+            onPicked: (col) { if (col != null) update(l.copyWith(color2: col)); }), onRemove: null),
+        const SizedBox(width: 8),
+        Text('主色 · 次色', style: TextStyle(fontSize: 10.5, color: c.textTertiary)),
+      ]),
+      // 位置：网格/圆点为偏移，其余为锚点（允许略出屏幕，与光束/光带"画外照入"的预设一致）
+      if (kind != DiyLayerKind.noise && kind != DiyLayerKind.stripe && kind != DiyLayerKind.vignette) ...[
+        _diySlider(c, label: '横向位置', value: l.x, min: -0.2, max: 1.2,
+          fmt: (v) => '${(v * 100).round()}%',
+          onChanged: (v) => _diyDragBd(bd.withLayerAt(i, l.copyWith(x: v))),
+          onChangeEnd: (v) => _diyUpdateBd(s, bd.withLayerAt(i, l.copyWith(x: v)))),
+        _diySlider(c, label: '纵向位置', value: l.y, min: -0.2, max: 1.2,
+          fmt: (v) => '${(v * 100).round()}%',
+          onChanged: (v) => _diyDragBd(bd.withLayerAt(i, l.copyWith(y: v))),
+          onChangeEnd: (v) => _diyUpdateBd(s, bd.withLayerAt(i, l.copyWith(y: v)))),
+      ],
+      _diySlider(c, label: _layerSizeLabel(kind), value: l.size, min: _layerSizeRange(kind).$1, max: _layerSizeRange(kind).$2,
+        fmt: (v) => _layerSizeFmt(kind, v),
+        onChanged: (v) => _diyDragBd(bd.withLayerAt(i, l.copyWith(size: v))),
+        onChangeEnd: (v) => _diyUpdateBd(s, bd.withLayerAt(i, l.copyWith(size: v)))),
+      if (kind == DiyLayerKind.grid || kind == DiyLayerKind.stripe || kind == DiyLayerKind.beam)
+        _diySlider(c, label: '角度', value: l.angle, min: 0, max: 360,
+          fmt: (v) => '${v.round()}°',
+          onChanged: (v) => _diyDragBd(bd.withLayerAt(i, l.copyWith(angle: v))),
+          onChangeEnd: (v) => _diyUpdateBd(s, bd.withLayerAt(i, l.copyWith(angle: v)))),
+      _diySlider(c, label: '强度', value: l.intensity, min: 0, max: 1,
+        fmt: (v) => '${(v * 100).round()}%',
+        onChanged: (v) => _diyDragBd(bd.withLayerAt(i, l.copyWith(intensity: v))),
+        onChangeEnd: (v) => _diyUpdateBd(s, bd.withLayerAt(i, l.copyWith(intensity: v)))),
+      _diySlider(c, label: _layerDensityLabel(kind), value: l.density, min: _layerDensityRange(kind).$1, max: _layerDensityRange(kind).$2,
+        fmt: (v) => _layerDensityFmt(kind, v),
+        onChanged: (v) => _diyDragBd(bd.withLayerAt(i, l.copyWith(density: v))),
+        onChangeEnd: (v) => _diyUpdateBd(s, bd.withLayerAt(i, l.copyWith(density: v)))),
+    ]);
+  }
+
+  IconData _diyLayerIcon(DiyLayerKind k) => switch (k) {
+        DiyLayerKind.glow => Icons.blur_on_rounded,
+        DiyLayerKind.grid => Icons.grid_on_rounded,
+        DiyLayerKind.ribbon => Icons.waves_rounded,
+        DiyLayerKind.noise => Icons.grain,
+        DiyLayerKind.stripe => Icons.texture_rounded,
+        DiyLayerKind.beam => Icons.highlight,
+        DiyLayerKind.dots => Icons.circle,
+        DiyLayerKind.vignette => Icons.vignette,
+      };
+
+  /// size 滑块的量程与文案（按图层种类的真实语义）
+  (double, double) _layerSizeRange(DiyLayerKind k) => switch (k) {
+        DiyLayerKind.glow => (0.1, 1.2),
+        DiyLayerKind.grid => (8, 96),
+        DiyLayerKind.ribbon => (0.04, 0.4),
+        DiyLayerKind.noise => (0.5, 6),
+        DiyLayerKind.stripe => (4, 90),
+        DiyLayerKind.beam => (0.05, 0.6),
+        DiyLayerKind.dots => (8, 120),
+        DiyLayerKind.vignette => (0.2, 0.95),
+      };
+
+  String _layerSizeLabel(DiyLayerKind k) => switch (k) {
+        DiyLayerKind.glow => '半径占比',
+        DiyLayerKind.grid => '格间距',
+        DiyLayerKind.ribbon => '带宽占比',
+        DiyLayerKind.noise => '颗粒大小',
+        DiyLayerKind.stripe => '条宽',
+        DiyLayerKind.beam => '束宽占比',
+        DiyLayerKind.dots => '点间距',
+        DiyLayerKind.vignette => '内缩占比',
+      };
+
+  String _layerSizeFmt(DiyLayerKind k, double v) => switch (k) {
+        DiyLayerKind.grid || DiyLayerKind.noise || DiyLayerKind.stripe || DiyLayerKind.dots => '${v.toStringAsFixed(v < 10 ? 1 : 0)}',
+        _ => '${(v * 100).round()}%',
+      };
+
+  /// density 滑块的量程与文案（各 kind 的 density 含义不同）
+  (double, double) _layerDensityRange(DiyLayerKind k) => switch (k) {
+        DiyLayerKind.glow => (0, 1),
+        DiyLayerKind.grid => (0.2, 4),
+        DiyLayerKind.ribbon => (0, 1),
+        DiyLayerKind.noise => (0.05, 1),
+        DiyLayerKind.stripe => (0.05, 0.95),
+        DiyLayerKind.beam => (0, 1),
+        DiyLayerKind.dots => (0.3, 12),
+        DiyLayerKind.vignette => (0.05, 1),
+      };
+
+  String _layerDensityLabel(DiyLayerKind k) => switch (k) {
+        DiyLayerKind.glow => '边缘柔和',
+        DiyLayerKind.grid => '线宽',
+        DiyLayerKind.ribbon => '摆动幅度',
+        DiyLayerKind.noise => '颗粒密度',
+        DiyLayerKind.stripe => '占空比',
+        DiyLayerKind.beam => '边缘衰减',
+        DiyLayerKind.dots => '点半径',
+        DiyLayerKind.vignette => '过渡柔和',
+      };
+
+  String _layerDensityFmt(DiyLayerKind k, double v) => switch (k) {
+        DiyLayerKind.grid || DiyLayerKind.dots => v.toStringAsFixed(v < 10 ? 1 : 0),
+        _ => '${(v * 100).round()}%',
+      };
+
+  /// 添加图层：选择种类
+  Future<void> _showLayerKindPicker(AppState s, AppColors c, DiyBackdrop bd) async {
+    final isLight = c.isLight;
+    final picked = await showDialog<DiyLayerKind>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        backgroundColor: isLight ? Colors.white : const Color(0xFF2B2B32),
+        title: Text('选择图层种类', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: c.text)),
+        children: [
+          for (final k in DiyLayerKind.values)
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(ctx, k),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 6),
+                child: Row(children: [
+                  Icon(_diyLayerIcon(k), size: 18, color: isLight ? kPrimary : const Color(0xFFA78BFA)),
+                  const SizedBox(width: 12),
+                  Expanded(child: Text(k.label, style: TextStyle(fontSize: 13.5, color: c.text))),
+                ]),
+              ),
+            ),
+        ],
+      ),
+    );
+    if (picked == null) return;
+    _diyUpdateBd(s, bd.withLayerAt(bd.layers.length, DiyLayer.defaultOf(picked)));
+    setState(() => _diyExpandedLayer = bd.layers.length); // 展开新图层方便继续调
+  }
+
+  // ============== DIY 通用小组件 ==============
+
+  Widget _diyIconBtn(AppColors c, IconData icon, VoidCallback? onTap) => InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(8),
+        child: Padding(
+          padding: const EdgeInsets.all(4),
+          child: Icon(icon, size: 17, color: onTap == null ? c.textTertiary.withValues(alpha: 0.4) : c.textSecondary),
+        ),
+      );
+
+  /// 自绘分段选择（比 SegmentedButton 更紧凑，项目设置页风格一致）
+  Widget _diySegmented<T>(AppColors c, List<(T, String)> items, T current, ValueChanged<T> onTap) {
+    final isLight = c.isLight;
+    return Container(
+      padding: const EdgeInsets.all(3),
+      decoration: BoxDecoration(
+        color: isLight ? const Color(0xFFEDEEF3) : const Color(0xFF1B1B20),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Row(children: [
+        for (final (v, label) in items)
+          Expanded(
+            child: GestureDetector(
+              onTap: () => onTap(v),
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 160),
+                height: 32,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: identical(v, current) || v == current ? (isLight ? Colors.white : const Color(0xFF33333A)) : Colors.transparent,
+                  borderRadius: BorderRadius.circular(8),
+                  boxShadow: identical(v, current) && isLight
+                      ? [BoxShadow(color: Colors.black.withValues(alpha: 0.05), blurRadius: 4, offset: const Offset(0, 1))]
+                      : null,
+                ),
+                child: Text(label, style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: identical(v, current) || v == current ? FontWeight.w700 : FontWeight.w500,
+                    color: identical(v, current) || v == current ? c.text : c.textSecondary)),
+              ),
+            ),
+          ),
+      ]),
+    );
+  }
+
+  /// 统一滑块行：标签 + 当前值 + 滑块；hint 为次要说明
+  Widget _diySlider(
+    AppColors c, {
+    required String label,
+    required double value,
+    required double min,
+    required double max,
+    required String Function(double) fmt,
+    required ValueChanged<double> onChanged,
+    required ValueChanged<double> onChangeEnd,
+    String? hint,
+  }) {
+    final accent = c.isLight ? kPrimary : const Color(0xFFA78BFA);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 2),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Text(label, style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: c.textSecondary)),
+          const Spacer(),
+          Text(fmt(value.clamp(min, max)), style: TextStyle(fontSize: 11.5, color: c.textTertiary, fontFeatures: const [FontFeature.tabularFigures()])),
+        ]),
+        if (hint != null)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 2),
+            child: Text(hint, style: TextStyle(fontSize: 10.5, color: c.textTertiary)),
+          ),
+        SizedBox(
+          height: 26,
+          child: SliderTheme(
+            data: SliderThemeData(
+              trackHeight: 3,
+              activeTrackColor: accent.withValues(alpha: 0.55),
+              inactiveTrackColor: c.sliderInactive.withValues(alpha: 0.5),
+              thumbColor: accent,
+              overlayColor: accent.withValues(alpha: 0.12),
+              thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
+              overlayShape: const RoundSliderOverlayShape(overlayRadius: 13),
+            ),
+            child: Slider(
+              value: value.clamp(min, max),
+              min: min,
+              max: max,
+              onChanged: onChanged,
+              onChangeEnd: onChangeEnd,
+            ),
+          ),
+        ),
+      ]),
+    );
+  }
+
+  /// 开关行
+  Widget _diySwitchLine(AppColors c, String label, String hint, bool value, ValueChanged<bool> onChanged) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(children: [
+        Expanded(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(label, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: c.text)),
+            const SizedBox(height: 2),
+            Text(hint, style: TextStyle(fontSize: 10.5, color: c.textTertiary)),
+          ]),
+        ),
+        const SizedBox(width: 12),
+        SizedBox(
+          height: 28,
+          child: Switch(
+            value: value,
+            onChanged: onChanged,
+            activeColor: c.isLight ? kPrimary : const Color(0xFFA78BFA),
+            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          ),
+        ),
+      ]),
+    );
+  }
+
+  /// 单个色块：圆角方块 + 当前色描边环，可选右上角删除
+  Widget _diyColorChip(AppColors c, Color color, {required VoidCallback onTap, required VoidCallback? onRemove}) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: 28,
+        height: 28,
+        decoration: BoxDecoration(
+          color: color,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: c.isLight ? Colors.black.withValues(alpha: 0.12) : Colors.white.withValues(alpha: 0.2), width: 1),
+          boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.08), blurRadius: 3, offset: const Offset(0, 1))],
+        ),
+        child: onRemove == null
+            ? null
+            : GestureDetector(
+                onTap: onRemove,
+                child: Align(
+                  alignment: Alignment.topRight,
+                  child: Container(
+                    width: 13,
+                    height: 13,
+                    decoration: BoxDecoration(
+                      color: c.isLight ? Colors.white : const Color(0xFF33333A),
+                      shape: BoxShape.circle,
+                      border: Border.all(color: c.border, width: 0.8),
+                    ),
+                    child: Icon(Icons.close_rounded, size: 9, color: c.textSecondary),
+                  ),
+                ),
+              ),
+      ),
+    );
+  }
+
+  /// "跟随主题"胶囊：展示当前生效色 + 说明状态；已跟随时整颗高亮
+  Widget _followThemeChip(AppColors c, bool following, Color color, String label) {
+    final isLight = c.isLight;
+    return Container(
+      height: 28,
+      padding: const EdgeInsets.symmetric(horizontal: 9),
+      decoration: BoxDecoration(
+        color: following
+            ? (isLight ? kPrimary.withValues(alpha: 0.1) : const Color(0xFFA78BFA).withValues(alpha: 0.16))
+            : (isLight ? Colors.white : const Color(0xFF33333A)),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(
+          color: following
+              ? (isLight ? kPrimary.withValues(alpha: 0.5) : const Color(0xFFA78BFA).withValues(alpha: 0.55))
+              : (isLight ? Colors.black.withValues(alpha: 0.12) : Colors.white.withValues(alpha: 0.2)),
+        ),
+      ),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        Container(width: 10, height: 10, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
+        const SizedBox(width: 5),
+        Text(label, style: TextStyle(fontSize: 10.5, fontWeight: following ? FontWeight.w700 : FontWeight.w500, color: following ? (isLight ? kPrimary : const Color(0xFFA78BFA)) : c.textSecondary)),
+      ]),
+    );
+  }
+
+  /// 取色弹窗：12 色板 + 自定义 hex；allowFollow 时提供"跟随主题"（返回 null）
+  Future<void> _pickDiyColor(AppColors c, Color current,
+      {required bool allowFollow, required ValueChanged<Color?> onPicked}) async {
+    final isLight = c.isLight;
+    final accent = isLight ? kPrimary : const Color(0xFFA78BFA);
+    final hexCtrl = TextEditingController(text: diyColorToHex(current));
+    Color? picked = current;
+    final result = await showDialog<Color?>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(builder: (ctx, setDlg) {
+        return AlertDialog(
+          backgroundColor: isLight ? Colors.white : const Color(0xFF2B2B32),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          title: Text('选择颜色', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: c.text)),
+          content: SizedBox(
+            width: 300,
+            child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Wrap(
+                spacing: 10,
+                runSpacing: 10,
+                children: [
+                  for (final col in kDiyPalette)
+                    GestureDetector(
+                      onTap: () => setDlg(() => picked = col),
+                      child: Container(
+                        width: 30,
+                        height: 30,
+                        decoration: BoxDecoration(
+                          color: col,
+                          shape: BoxShape.circle,
+                          border: Border.all(
+                            color: picked == col ? accent : (isLight ? Colors.black.withValues(alpha: 0.1) : Colors.white.withValues(alpha: 0.18)),
+                            width: picked == col ? 2.4 : 1,
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 14),
+              Row(children: [
+                Expanded(
+                  child: TextField(
+                    controller: hexCtrl,
+                    style: TextStyle(fontSize: 13, color: c.text),
+                    decoration: InputDecoration(
+                      isDense: true,
+                      hintText: '#RRGGBB',
+                      hintStyle: TextStyle(fontSize: 12, color: c.textTertiary),
+                      filled: true,
+                      fillColor: isLight ? const Color(0xFFF4F4F8) : const Color(0xFF33333A),
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
+                    ),
+                    onChanged: (v) {
+                      final col = diyParseColor(v);
+                      if (col != null) setDlg(() => picked = col);
+                    },
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Container(
+                  width: 34,
+                  height: 34,
+                  decoration: BoxDecoration(
+                    color: picked ?? current,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: c.border),
+                  ),
+                ),
+              ]),
+              if (allowFollow) ...[
+                const SizedBox(height: 10),
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx, null),
+                  child: Text('恢复跟随主题主色', style: TextStyle(fontSize: 12.5, color: accent)),
+                ),
+              ],
+            ]),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, current), child: Text('取消', style: TextStyle(fontSize: 13, color: c.textSecondary))),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, picked),
+              style: FilledButton.styleFrom(backgroundColor: accent, foregroundColor: Colors.white, minimumSize: const Size(0, 36)),
+              child: const Text('确定', style: TextStyle(fontSize: 13)),
+            ),
+          ],
+        );
+      }),
+    );
+    if (result != null) onPicked(result);
   }
 
   // ============== 小组件 ==============

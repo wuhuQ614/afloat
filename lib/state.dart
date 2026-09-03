@@ -14,6 +14,7 @@ import 'package:pdf/widgets.dart' as pw;
 import 'package:excel/excel.dart';
 import 'models.dart';
 import 'exam_real_papers.dart';
+import 'theme_diy.dart';
 import 'timetable_models.dart';
 import 'theme_colors.dart' show AppColors;
 import 'services/api_service.dart';
@@ -457,6 +458,24 @@ class AppState extends ChangeNotifier {
   bool get isGlassUI =>
       uiStyle == 'glass' && !darkMode && !highPerformanceMode;
 
+  /// 页面 DIY：三个主题各自的外观自定义配置。
+  /// 未配置的主题走内置默认（等价于改造前的观感），配置过的是用户自己调的样式。
+  DiyThemeSet _diyThemes = DiyThemeSet.empty;
+  DiyThemeSet get diyThemes => _diyThemes;
+
+  /// 当前生效主题对应的 DIY 目标（深色是独立主题，与 uiStyle 无关）
+  DiyThemeTarget get diyCurrentTarget =>
+      darkMode ? DiyThemeTarget.dark : (uiStyle == 'glass' ? DiyThemeTarget.glass : DiyThemeTarget.classic);
+
+  /// 取某主题生效的背景配置：未 DIY 时返回 null（调用方自行用内置默认）
+  DiyBackdrop? diyBackdropOf(DiyThemeTarget t) => _diyThemes.configOf(t)?.backdrop;
+
+  /// 取某主题生效的按钮样式：未 DIY 时返回 null
+  DiyButtonStyle? diyButtonStyleOf(DiyThemeTarget t) => _diyThemes.configOf(t)?.button;
+
+  /// 当前主题是否已 DIY 过（设置页用于显示"已自定义"标记）
+  bool get diyCurrentCustomized => _diyThemes.isCustomized(diyCurrentTarget);
+
   /// R14: Agent 专注全屏模式（仅桌面）：图标导航栏 + 全宽聊天页。
   /// 会话内临时状态，不持久化。
   bool agentFullscreen = false;
@@ -679,6 +698,8 @@ class AppState extends ChangeNotifier {
     // 放在 App 启动阶段弹权限框体验很差。改为在"导入课表"与"打开课程表页"时调度。
     uiStyle = Storage.loadUiStyle();
     navIndicator = Storage.loadNavIndicator();
+    // 页面 DIY：损坏的配置串会被 DiyThemeSet.decode 吞掉并回退为空（=全部默认）
+    _diyThemes = DiyThemeSet.decode(Storage.loadDiyThemes());
     // 手机端启动即进入沉浸式全屏（隐藏系统状态栏/导航栏），电脑端不受影响
     _applySystemUiMode();
     // 全卷模拟考试：恢复最近一次成绩与历史摘要（供学习报告展示）；
@@ -3044,6 +3065,8 @@ class AppState extends ChangeNotifier {
           return await _toolGenerateFullExam(args);
         case 'exam_ai_test':
           return _toolExamAiTest(args);
+        case 'theme_diy':
+          return _toolThemeDiy(args);
         case 'submit_generated_questions':
           return _toolSubmitGeneratedQuestions(args);
         case 'lookup_word':
@@ -3344,6 +3367,257 @@ class AppState extends ChangeNotifier {
       ok: true,
       actionLabel: enabled ? '已开启考场 AI 接入测试' : '已关闭考场 AI 接入测试',
     );
+  }
+
+  /// Agent 工具：theme_diy —— 查看 / 修改主题 DIY（背景与按钮样式）。
+  /// 三个主题各自独立；所有写操作都经 clamp 层兜底，脏参数不会让界面异常。
+  ToolExecResult _toolThemeDiy(Map<String, dynamic> args) {
+    final action = ((args['action'] as String?) ?? 'get').trim().toLowerCase();
+    final target = DiyThemeTargetX.fromKey(args['target'] as String?) ?? diyCurrentTarget;
+
+    Map<String, dynamic> summaryOf(DiyThemeTarget t) {
+      final bd = effectiveBackdropOf(t);
+      final btn = effectiveButtonStyleOf(t);
+      return {
+        'customized': _diyThemes.isCustomized(t),
+        'backdrop': {
+          'base': bd.base.key,
+          'colors': [for (final cc in bd.colors) diyColorToHex(cc)],
+          'angle': bd.angle,
+          'animated': bd.animated,
+          'blur': bd.blur,
+          'scrim': bd.scrim,
+          'layers': [
+            for (var i = 0; i < bd.layers.length; i++)
+              {
+                'index': i,
+                'kind': bd.layers[i].kind.key,
+                'label': bd.layers[i].kind.label,
+                'enabled': bd.layers[i].enabled,
+                'color': diyColorToHex(bd.layers[i].color),
+                'color2': diyColorToHex(bd.layers[i].color2),
+                'x': bd.layers[i].x,
+                'y': bd.layers[i].y,
+                'size': bd.layers[i].size,
+                'angle': bd.layers[i].angle,
+                'intensity': bd.layers[i].intensity,
+                'density': bd.layers[i].density,
+              }
+          ],
+        },
+        'button': {
+          'fill': btn.fill.key,
+          'color': btn.color == null ? 'follow' : diyColorToHex(btn.color!),
+          'color2': btn.color2 == null ? 'auto' : diyColorToHex(btn.color2!),
+          'radius': btn.radius,
+          'height': btn.height,
+          'borderWidth': btn.borderWidth,
+          'borderOpacity': btn.borderOpacity,
+          'shadowBlur': btn.shadowBlur,
+          'shadowOpacity': btn.shadowOpacity,
+          'fontWeight': btn.fontWeight,
+        },
+      };
+    }
+
+    ToolExecResult fail(String reason, [String? hint]) => ToolExecResult(
+          content: jsonEncode({'ok': false, 'reason': reason, if (hint != null) 'hint': hint}),
+          ok: false,
+        );
+
+    switch (action) {
+      case 'get':
+        return ToolExecResult(
+          content: jsonEncode({
+            'ok': true,
+            'currentTheme': diyCurrentTarget.key,
+            if (args['target'] == null)
+              'themes': {for (final t in DiyThemeTarget.values) t.key: summaryOf(t)}
+            else
+              'theme': summaryOf(target),
+            'presets': [for (final p in kDiyPresets) {'key': p.key, 'label': p.label, 'desc': p.desc}],
+          }),
+          ok: true,
+          actionLabel: '已读取主题 DIY 配置',
+        );
+
+      case 'set_base': {
+        final bd = effectiveBackdropOf(target);
+        DiyBackdrop nb = bd;
+        final baseKey = args['base'] as String?;
+        if (baseKey != null) nb = nb.copyWith(base: DiyBaseKindX.fromKey(baseKey));
+        if (args['colors'] is List) {
+          final cs = <Color>[];
+          for (final e in (args['colors'] as List)) {
+            final col = diyParseColor('$e');
+            if (col != null) cs.add(col);
+          }
+          if (cs.isNotEmpty) nb = nb.copyWith(colors: cs);
+        }
+        if (args['angle'] is num) nb = nb.copyWith(angle: (args['angle'] as num).toDouble());
+        if (args['animated'] is bool) nb = nb.copyWith(animated: args['animated'] as bool);
+        if (args['blur'] is num) nb = nb.copyWith(blur: (args['blur'] as num).toDouble());
+        if (args['scrim'] is num) nb = nb.copyWith(scrim: (args['scrim'] as num).toDouble());
+        setDiyBackdrop(target, nb);
+        return ToolExecResult(
+          content: jsonEncode({'ok': true, 'theme': summaryOf(target)}),
+          ok: true,
+          actionLabel: '已更新${target.label}主题背景',
+        );
+      }
+
+      case 'layer_add': {
+        final kind = DiyLayerKind.fromKey(args['kind'] as String?);
+        if (kind == null) return fail('missing_kind', 'kind 需为 glow/grid/ribbon/noise/stripe/beam/dots/vignette 之一');
+        final bd = effectiveBackdropOf(target);
+        if (bd.layers.length >= kDiyMaxLayers) {
+          return fail('too_many_layers', '每个主题背景最多 $kDiyMaxLayers 层，可先删除或合并图层');
+        }
+        setDiyBackdrop(target, bd.withLayerAt(bd.layers.length, DiyLayer.defaultOf(kind)));
+        return ToolExecResult(
+          content: jsonEncode({
+            'ok': true,
+            'addedIndex': bd.layers.length,
+            'theme': summaryOf(target),
+          }),
+          ok: true,
+          actionLabel: '已为${target.label}主题添加${kind.label}图层',
+        );
+      }
+
+      case 'layer_update': {
+        final idx = (args['index'] as num?)?.toInt();
+        final m = args['layer'];
+        if (idx == null || m is! Map) return fail('missing_params', '需要 index 与 layer 字段');
+        final bd = effectiveBackdropOf(target);
+        if (idx < 0 || idx >= bd.layers.length) {
+          return fail('index_out_of_range', '当前共 ${bd.layers.length} 层，index 需在 0-${bd.layers.length - 1}');
+        }
+        var l = bd.layers[idx];
+        if (m['enabled'] is bool) l = l.copyWith(enabled: m['enabled'] as bool);
+        if (m['color'] != null) {
+          final col = diyParseColor('${m['color']}');
+          if (col != null) l = l.copyWith(color: col);
+        }
+        if (m['color2'] != null) {
+          final col = diyParseColor('${m['color2']}');
+          if (col != null) l = l.copyWith(color2: col);
+        }
+        if (m['x'] is num) l = l.copyWith(x: (m['x'] as num).toDouble());
+        if (m['y'] is num) l = l.copyWith(y: (m['y'] as num).toDouble());
+        if (m['size'] is num) l = l.copyWith(size: (m['size'] as num).toDouble());
+        if (m['angle'] is num) l = l.copyWith(angle: (m['angle'] as num).toDouble());
+        if (m['intensity'] is num) l = l.copyWith(intensity: (m['intensity'] as num).toDouble());
+        if (m['density'] is num) l = l.copyWith(density: (m['density'] as num).toDouble());
+        setDiyBackdrop(target, bd.withLayerAt(idx, l));
+        return ToolExecResult(
+          content: jsonEncode({'ok': true, 'theme': summaryOf(target)}),
+          ok: true,
+          actionLabel: '已调整${target.label}主题${l.kind.label}图层',
+        );
+      }
+
+      case 'layer_remove': {
+        final idx = (args['index'] as num?)?.toInt();
+        if (idx == null) return fail('missing_params', '需要 index');
+        final bd = effectiveBackdropOf(target);
+        if (idx < 0 || idx >= bd.layers.length) {
+          return fail('index_out_of_range', '当前共 ${bd.layers.length} 层');
+        }
+        final removed = bd.layers[idx].kind.label;
+        setDiyBackdrop(target, bd.withoutLayerAt(idx));
+        return ToolExecResult(
+          content: jsonEncode({'ok': true, 'removed': removed, 'theme': summaryOf(target)}),
+          ok: true,
+          actionLabel: '已删除${target.label}主题的${removed}图层',
+        );
+      }
+
+      case 'layer_move': {
+        final idx = (args['index'] as num?)?.toInt();
+        final to = (args['to'] as num?)?.toInt();
+        if (idx == null || to == null) return fail('missing_params', '需要 index 与 to');
+        final bd = effectiveBackdropOf(target);
+        if (idx < 0 || idx >= bd.layers.length || to < 0 || to >= bd.layers.length) {
+          return fail('index_out_of_range', '当前共 ${bd.layers.length} 层，index/to 需在有效范围');
+        }
+        setDiyBackdrop(target, bd.withLayerSwapped(idx, to));
+        return ToolExecResult(
+          content: jsonEncode({'ok': true, 'theme': summaryOf(target)}),
+          ok: true,
+          actionLabel: '已调整${target.label}主题图层顺序',
+        );
+      }
+
+      case 'set_button': {
+        final m = args['button'];
+        if (m is! Map) return fail('missing_params', '需要 button 字段（fill/color/radius 等）');
+        var b = effectiveButtonStyleOf(target);
+        if (m['fill'] is String) b = b.copyWith(fill: DiyButtonFill.fromKey(m['fill'] as String));
+        final colorRaw = m['color'];
+        if (colorRaw != null) {
+          if ('$colorRaw'.trim().toLowerCase() == 'follow') {
+            b = b.copyWith(clearColor: true);
+          } else {
+            final col = diyParseColor('$colorRaw');
+            if (col != null) b = b.copyWith(color: col);
+          }
+        }
+        final color2Raw = m['color2'];
+        if (color2Raw != null) {
+          if ('$color2Raw'.trim().toLowerCase() == 'follow' || '$color2Raw'.trim().toLowerCase() == 'auto') {
+            b = b.copyWith(clearColor2: true);
+          } else {
+            final col = diyParseColor('$color2Raw');
+            if (col != null) b = b.copyWith(color2: col);
+          }
+        }
+        if (m['radius'] is num) b = b.copyWith(radius: (m['radius'] as num).toDouble());
+        if (m['height'] is num) b = b.copyWith(height: (m['height'] as num).toDouble());
+        if (m['borderWidth'] is num) b = b.copyWith(borderWidth: (m['borderWidth'] as num).toDouble());
+        if (m['borderOpacity'] is num) b = b.copyWith(borderOpacity: (m['borderOpacity'] as num).toDouble());
+        if (m['shadowBlur'] is num) b = b.copyWith(shadowBlur: (m['shadowBlur'] as num).toDouble());
+        if (m['shadowOpacity'] is num) b = b.copyWith(shadowOpacity: (m['shadowOpacity'] as num).toDouble());
+        if (m['fontWeight'] is num) b = b.copyWith(fontWeight: (m['fontWeight'] as num).toDouble());
+        setDiyButtonStyle(target, b);
+        return ToolExecResult(
+          content: jsonEncode({'ok': true, 'theme': summaryOf(target)}),
+          ok: true,
+          actionLabel: '已更新${target.label}主题按钮样式',
+        );
+      }
+
+      case 'apply_preset': {
+        final ok = applyDiyPreset(target, (args['preset'] as String?) ?? '');
+        if (!ok) {
+          return fail('unknown_preset', 'preset 需为 aurora/dawn/ink/grid/paper/mint/sunset/plain 之一');
+        }
+        return ToolExecResult(
+          content: jsonEncode({'ok': true, 'theme': summaryOf(target)}),
+          ok: true,
+          actionLabel: '已为${target.label}主题套用风格预设',
+        );
+      }
+
+      case 'reset': {
+        final part = ((args['part'] as String?) ?? 'all').trim().toLowerCase();
+        if (part == 'backdrop') {
+          setDiyBackdrop(target, null);
+        } else if (part == 'button') {
+          setDiyButtonStyle(target, null);
+        } else {
+          resetDiyTheme(target);
+        }
+        return ToolExecResult(
+          content: jsonEncode({'ok': true, 'theme': summaryOf(target)}),
+          ok: true,
+          actionLabel: '已恢复${target.label}主题默认外观',
+        );
+      }
+
+      default:
+        return fail('unknown_action', 'action 需为 get/set_base/layer_add/layer_update/layer_remove/layer_move/set_button/apply_preset/reset');
+    }
   }
 
   /// 开始 AI 逐题作答（考场顶部工具条按钮触发）。
@@ -5911,6 +6185,8 @@ class AppState extends ChangeNotifier {
     'load_skill',
     'skill',
     'list_user_skills',
+    'list_mcp_tools',
+    'call_mcp_tool',
   };
 
   /// dsh-tool-subagent：派发隔离的子 Agent（多轮工具循环，独立上下文）。
@@ -6038,8 +6314,12 @@ class AppState extends ChangeNotifier {
   /// dsh-mcp-client: list_mcp_tools
   Future<ToolExecResult> _toolListMcpTools() async {
     if (mcpRegistry.clients.isEmpty) {
+      final errs = mcpRegistry.connectErrors.entries.map((e) => '${e.key}: ${e.value}').join('；');
+      final hint = errs.isEmpty
+          ? '请在设置 → 高级功能 → MCP 服务 中配置 server 后重启对话'
+          : '已配置的 MCP server 连接失败：$errs。可检查本机是否安装 Node.js(npx)/uvx，或稍后重试';
       return ToolExecResult(
-        content: jsonEncode({'ok': true, 'servers': [], 'hint': '请在设置 → MCP 中配置 server 后重启对话'}),
+        content: jsonEncode({'ok': true, 'servers': [], 'hint': hint, 'errors': mcpRegistry.connectErrors}),
         ok: true,
         actionLabel: 'MCP server 未连接',
       );
@@ -6832,6 +7112,15 @@ class AppState extends ChangeNotifier {
         return '正在生成全卷（约1-2分钟）';
       case 'exam_ai_test':
         return ((args['enabled'] as bool?) ?? true) ? '正在开启考场 AI 接入测试' : '正在关闭考场 AI 接入测试';
+      case 'theme_diy':
+        final act = ((args['action'] as String?) ?? 'get').trim();
+        final t = DiyThemeTargetX.fromKey(args['target'] as String?) ?? diyCurrentTarget;
+        return switch (act) {
+          'get' => '正在读取主题外观配置',
+          'reset' => '正在恢复${t.label}主题默认外观',
+          'apply_preset' => '正在套用${t.label}主题风格预设',
+          _ => '正在调整${t.label}主题外观',
+        };
       case 'lookup_word':
         final w = (args['word'] as String?) ?? '';
         return '正在查询 "$w"';
@@ -8004,6 +8293,32 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 预置 MCP server 模板（名称 → 启动命令/参数）。点击即可一键添加。
+  /// 需要 API Key 的服务（如快递100）在 env 中留空占位，添加时会弹窗补填。
+  /// Windows 下 Process.start 必须用 npx.cmd（不带 .cmd 会报"系统找不到指定的文件"）。
+  static Map<String, McpServerConfig> get mcpTemplates => {
+    '12306-mcp': McpServerConfig(name: '12306-mcp', command: 'npx.cmd', args: ['-y', '12306-mcp']),
+    'mcp-deepwiki': McpServerConfig(name: 'mcp-deepwiki', command: 'npx.cmd', args: ['-y', 'mcp-deepwiki@latest']),
+    'kuaidi100-mcp': McpServerConfig(name: 'kuaidi100-mcp', command: 'uvx', args: ['kuaidi100-mcp'], env: {'KUAIDI100_API_KEY': ''}),
+    'mcp-server-git (git)': McpServerConfig(name: 'mcp-server-git', command: 'uvx', args: ['mcp-server-git']),
+    'github-mcp-server': McpServerConfig(name: 'github-mcp-server', command: 'npx.cmd', args: ['-y', '@modelcontextprotocol/server-github']),
+  };
+
+  /// 按名称添加一个 MCP server（已存在同名的跳过）。返回是否新增。
+  Future<bool> addMcpServer(McpServerConfig cfg) async {
+    final list = parseMcpConfigs();
+    if (list.any((e) => e.name == cfg.name)) return false;
+    list.add(cfg);
+    await setMcpConfigJson(jsonEncode(list.map((e) => e.toJson()).toList()));
+    return true;
+  }
+
+  /// 按名称移除一个 MCP server
+  Future<void> removeMcpServer(String name) async {
+    final list = parseMcpConfigs().where((e) => e.name != name).toList();
+    await setMcpConfigJson(jsonEncode(list.map((e) => e.toJson()).toList()));
+  }
+
   /// 当前选中的技能对象（可能为 null）。先查通用+Agent 工具技能硬编码库，
   /// 再 fallback 到 SkillStore 动态加载的技能（含内置 + 用户自定义），
   /// 这样在聊天面板选择 SkillStore 里的技能后 activeSkillName/currentSkill 仍能正确解析
@@ -8238,6 +8553,74 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  // ==========================================================================
+  // 页面 DIY：主题外观自定义
+  // ==========================================================================
+
+  /// 写入某主题的 DIY 配置。cfg 为空或全空表示恢复默认（从集合中移除该主题）。
+  void setDiyTheme(DiyThemeTarget target, DiyThemeConfig? cfg) {
+    _diyThemes = _diyThemes.withConfig(target, cfg);
+    Storage.saveDiyThemes(_diyThemes.encode());
+    notifyListeners();
+  }
+
+  /// 仅更新背景
+  void setDiyBackdrop(DiyThemeTarget target, DiyBackdrop? backdrop) {
+    final cur = _diyThemes.configOf(target) ?? const DiyThemeConfig();
+    setDiyTheme(target, cur.copyWith(
+      backdrop: backdrop,
+      clearBackdrop: backdrop == null,
+    ));
+  }
+
+  /// 仅更新按钮样式
+  void setDiyButtonStyle(DiyThemeTarget target, DiyButtonStyle? style) {
+    final cur = _diyThemes.configOf(target) ?? const DiyThemeConfig();
+    setDiyTheme(target, cur.copyWith(
+      button: style,
+      clearButton: style == null,
+    ));
+  }
+
+  /// 恢复某一主题到内置默认
+  void resetDiyTheme(DiyThemeTarget target) {
+    if (!_diyThemes.isCustomized(target)) return;
+    _diyThemes = _diyThemes.without(target);
+    Storage.saveDiyThemes(_diyThemes.encode());
+    notifyListeners();
+  }
+
+  /// 恢复全部主题到内置默认
+  void resetAllDiyThemes() {
+    if (_diyThemes.isEmpty) return;
+    _diyThemes = DiyThemeSet.empty;
+    Storage.saveDiyThemes('');
+    notifyListeners();
+  }
+
+  /// 套用风格预设：只改背景，按钮样式保留用户原有设置
+  bool applyDiyPreset(DiyThemeTarget target, String presetKey) {
+    final p = presetOfKey(presetKey);
+    if (p == null) return false;
+    final forLight = target != DiyThemeTarget.dark;
+    final bd = p.build(forLight);
+    // 毛玻璃主题下保留用户当前的模糊强度，避免套预设后模糊被重置
+    final curBd = diyBackdropOf(target);
+    final merged = (target == DiyThemeTarget.glass && curBd != null)
+        ? bd.copyWith(blur: curBd.blur)
+        : bd;
+    setDiyBackdrop(target, merged);
+    return true;
+  }
+
+  /// DIY 预览用：取某主题最终生效的背景（未 DIY 时用内置默认）
+  DiyBackdrop effectiveBackdropOf(DiyThemeTarget t) =>
+      diyBackdropOf(t) ?? defaultBackdropOf(t);
+
+  /// DIY 预览用：取某主题最终生效的按钮样式（未 DIY 时用内置默认）
+  DiyButtonStyle effectiveButtonStyleOf(DiyThemeTarget t) =>
+      diyButtonStyleOf(t) ?? defaultButtonStyleOf(t);
+
   /// 根据当前 uiMode 切换系统 UI 模式：手机端沉浸式全屏（隐藏状态栏与导航栏），
   /// 电脑端恢复常规显示。SystemChrome 在桌面平台为 no-op，不会影响 Windows 端。
   /// 系统导航栏一律透明（并关闭 Android 10+ 的对比度强制），
@@ -8421,6 +8804,7 @@ class AppState extends ChangeNotifier {
       }
       uiStyle = Storage.loadUiStyle();
       navIndicator = Storage.loadNavIndicator();
+      _diyThemes = DiyThemeSet.decode(Storage.loadDiyThemes());
       apiProfiles = Storage.loadApiProfiles();
       chatProfiles = Storage.loadChatProfiles();
       loadFavorites();

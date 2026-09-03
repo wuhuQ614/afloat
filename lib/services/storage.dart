@@ -327,6 +327,11 @@ class Storage {
   static String loadNavIndicator() => _get('navIndicator', 'underline');
   static void saveNavIndicator(String v) => _set('navIndicator', v);
 
+  // ===== 页面 DIY（主题外观自定义） =====
+  /// 三个主题的 DIY 配置（JSON 原文）。为空表示全部走内置默认。
+  static String loadDiyThemes() => _get('diyThemes', '');
+  static void saveDiyThemes(String v) => _set('diyThemes', v);
+
   // ===== 收藏 =====
   static List<Favorite> loadFavorites() {
     final s = _get('favorites', '');

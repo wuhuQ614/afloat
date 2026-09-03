@@ -21,6 +21,8 @@ import 'models.dart';
 import 'services/tts_service.dart';
 import 'services/chat_capabilities.dart';
 import 'theme_colors.dart';
+import 'theme_diy.dart';
+import 'widgets/diy_backdrop.dart';
 import 'widgets/learn_page.dart';
 import 'widgets/grammar_page.dart';
 import 'widgets/onboarding_page.dart';
@@ -613,6 +615,8 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                   colors: c,
                   isGlass: _state.isGlassUI,
                   animated: !_state.onboardingDone,
+                  diyBackdrop: _state.diyBackdropOf(_state.diyCurrentTarget),
+                  animateAllowed: !_state.powerSavingMode && !_state.highPerformanceMode,
                 ),
               ),
             ),
@@ -739,28 +743,53 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
         hintStyle: TextStyle(fontSize: 13, color: isLight ? const Color(0xFF9CA3AF) : const Color(0xFF6B6B85)),
       ),
       filledButtonTheme: FilledButtonThemeData(
-        style: FilledButton.styleFrom(
-          backgroundColor: seedColor,
-          foregroundColor: Colors.white,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-          textStyle: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600),
+        style: diyToButtonStyle(
+          _state.effectiveButtonStyleOf(_state.diyCurrentTarget),
+          primary: seedColor,
+          onPrimary: Colors.white,
+          foreground: seedColor,
+          isLight: isLight,
+        ),
+      ),
+      elevatedButtonTheme: ElevatedButtonThemeData(
+        style: diyToButtonStyle(
+          _state.effectiveButtonStyleOf(_state.diyCurrentTarget),
+          primary: seedColor,
+          onPrimary: Colors.white,
+          foreground: seedColor,
+          isLight: isLight,
         ),
       ),
       outlinedButtonTheme: OutlinedButtonThemeData(
-        style: OutlinedButton.styleFrom(
-          foregroundColor: seedColor,
-          side: BorderSide(color: seedColor.withValues(alpha: isLight ? 0.2 : 0.5)),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
-          textStyle: const TextStyle(fontSize: 13),
+        style: diyToButtonStyle(
+          _state.effectiveButtonStyleOf(_state.diyCurrentTarget).copyWith(
+                // 描边按钮无论主样式如何，底色必须透明、文字用主色，
+                // 否则"描边"语义会在全局失效（变成实底一片）
+                fill: DiyButtonFill.outline,
+              ),
+          primary: seedColor,
+          onPrimary: Colors.white,
+          foreground: seedColor,
+          isLight: isLight,
+          fontSize: 13,
         ),
       ),
       textButtonTheme: TextButtonThemeData(
-        style: TextButton.styleFrom(
-          foregroundColor: seedColor,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-          textStyle: const TextStyle(fontSize: 13),
+        style: diyToButtonStyle(
+          _state.effectiveButtonStyleOf(_state.diyCurrentTarget).copyWith(
+                fill: DiyButtonFill.ghost,
+                borderWidth: 0,
+              ),
+          primary: seedColor,
+          onPrimary: Colors.white,
+          foreground: seedColor,
+          isLight: isLight,
+          fontSize: 13,
+        ).copyWith(
+          padding: WidgetStateProperty.all(const EdgeInsets.symmetric(horizontal: 12)),
+          minimumSize: WidgetStateProperty.all(Size(0, _state
+              .effectiveButtonStyleOf(_state.diyCurrentTarget)
+              .height)),
         ),
       ),
       iconButtonTheme: IconButtonThemeData(
@@ -5355,12 +5384,33 @@ class _AppGlassBackground extends StatelessWidget {
   final AppColors colors;
   final bool isGlass;
   final bool animated;
-  const _AppGlassBackground({required this.colors, this.isGlass = false, this.animated = true});
+  /// 当前主题的 DIY 背景配置（null = 未 DIY，走内置默认）
+  final DiyBackdrop? diyBackdrop;
+  /// 是否允许动效（省电/高性能模式下为 false）
+  final bool animateAllowed;
+  const _AppGlassBackground({
+    required this.colors,
+    this.isGlass = false,
+    this.animated = true,
+    this.diyBackdrop,
+    this.animateAllowed = true,
+  });
 
   @override
   Widget build(BuildContext context) {
+    // DIY 优先级最高：用户自己调过的背景（含经典/深色主题也得生效）
+    final diy = diyBackdrop;
+    if (diy != null) {
+      return DiyBackdropView(
+        config: diy,
+        isLight: colors.isLight,
+        // 模糊只在毛玻璃主题下叠加，经典/深色主题保持清晰
+        blur: isGlass ? diy.blur : 0,
+        animate: animated && animateAllowed,
+      );
+    }
     if (isGlass) {
-      return GlassBackground(isLight: colors.isLight, animated: animated);
+      return GlassBackground(isLight: colors.isLight, animated: animated && animateAllowed);
     }
     return DecoratedBox(
       decoration: BoxDecoration(color: colors.appBgGradientTop),
