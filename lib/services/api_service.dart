@@ -1000,6 +1000,62 @@ class ApiService {
     return on ? thinkingParams(modelName) : noThinkingParams(modelName);
   }
 
+  /// 拉取 OpenAI 兼容接口的模型列表（GET {base}/models）。
+  /// 成功返回模型 id 列表；失败返回 null（lastError 带原因）。
+  static Future<List<String>?> fetchModels(ApiConfig cfg) async {
+    if (!cfg.ready) {
+      lastError = '未配置 API 地址或密钥';
+      return null;
+    }
+    // 由 chat/completions 端点推导 models 端点
+    final trimmed = cfg.url.trimRight();
+    final Uri uri;
+    if (cfg.fullUrl) {
+      final replaced = trimmed.endsWith('/chat/completions')
+          ? trimmed.substring(0, trimmed.length - '/chat/completions'.length)
+          : trimmed;
+      uri = Uri.parse('$replaced/models');
+    } else {
+      uri = Uri.parse('$trimmed/models');
+    }
+    try {
+      final resp = await _requestClient()
+          .get(
+            uri,
+            headers: {
+              'Accept': 'application/json',
+              'Authorization': 'Bearer ${cfg.key}',
+            },
+          )
+          .timeout(const Duration(seconds: 20));
+      if (resp.statusCode != 200) {
+        final errBody = utf8.decode(resp.bodyBytes, allowMalformed: true).trim();
+        lastError = 'HTTP ${resp.statusCode}${errBody.length <= 160 ? '：$errBody' : ''}';
+        return null;
+      }
+      final data = jsonDecode(utf8.decode(resp.bodyBytes));
+      final list = data is Map ? (data['data'] ?? data['models']) : null;
+      if (list is! List) {
+        lastError = '响应格式不含模型列表';
+        return null;
+      }
+      final ids = <String>[];
+      for (final e in list) {
+        final id = e is Map ? (e['id'] ?? e['name'] ?? e['model']) : e;
+        final s = id?.toString() ?? '';
+        if (s.isNotEmpty) ids.add(s);
+      }
+      ids.sort();
+      return ids;
+    } on TimeoutException catch (_) {
+      lastError = '请求超时（20 秒）';
+      return null;
+    } catch (e) {
+      lastError = e.toString();
+      return null;
+    }
+  }
+
   /// 调用百度千帆 AI 搜索组件（联网搜索），返回 {answer, references}。
   /// 失败时抛异常。url 默认即千帆搜索端点；key 为 AppBuilder API Key。
   static Future<Map<String, dynamic>> searchWeb({

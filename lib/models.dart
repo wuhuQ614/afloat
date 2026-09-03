@@ -512,13 +512,17 @@ class ApiProfile {
   String? priceLabel;
   /// 模型旁的标签 chip（可选），用于展示「夜间加速」「限时免费」等运营标签
   List<({String text, int colorValue})> tags;
+  /// 已添加的模型收藏列表（通过「获取模型」从 API 拉取后自定义挑选，
+  /// 可包含不在远端列表中的手动条目；config.model 始终表示当前使用的模型）
+  List<String> models;
 
   ApiProfile({
     required this.name,
     required this.config,
     this.priceLabel,
     this.tags = const [],
-  });
+    List<String>? models,
+  }) : models = models ?? [];
 
   String get label => name.isEmpty ? config.model : name;
 
@@ -530,6 +534,7 @@ class ApiProfile {
           'tags': tags
               .map((t) => {'text': t.text, 'colorValue': t.colorValue})
               .toList(),
+        if (models.isNotEmpty) 'models': models,
       };
 
   factory ApiProfile.fromJson(Map<String, dynamic> j) {
@@ -550,6 +555,7 @@ class ApiProfile {
       config: ApiConfig.fromJson((j['config'] ?? {}) as Map<String, dynamic>),
       priceLabel: j['priceLabel'] as String?,
       tags: tagList,
+      models: ((j['models'] as List?) ?? []).map((e) => (e ?? '').toString()).toList(),
     );
   }
 }

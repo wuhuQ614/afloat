@@ -58,7 +58,12 @@ class _DebatePageState extends State<DebatePage> {
     super.dispose();
   }
 
-  List<ApiProfile> get _profiles => AppScope.of(context).chatProfiles;
+  /// 可选 API 来源：设置「模型设置」里保存的预设配置库（apiProfiles）；
+  /// 主设置为空时回退到对话助手的独立配置（chatProfiles），保证一定能选到模型
+  List<ApiProfile> get _profiles {
+    final s = AppScope.of(context);
+    return s.apiProfiles.isNotEmpty ? s.apiProfiles : s.chatProfiles;
+  }
 
   void _load() {
     final raw = Storage.loadDebateSetup();
@@ -182,7 +187,7 @@ class _DebatePageState extends State<DebatePage> {
         SingleChildScrollView(
           scrollDirection: Axis.horizontal,
           child: Row(children: [
-            _sideSelector('正方', _pro, c, (v) {
+            _sideSelector('正方', _pro, c, dark, (v) {
               setState(() {
                 _pro = v;
                 _error = null;
@@ -190,7 +195,7 @@ class _DebatePageState extends State<DebatePage> {
               _save();
             }),
             const SizedBox(width: 8),
-            _sideSelector('反方', _con, c, (v) {
+            _sideSelector('反方', _con, c, dark, (v) {
               setState(() {
                 _con = v;
                 _error = null;
@@ -205,7 +210,7 @@ class _DebatePageState extends State<DebatePage> {
     );
   }
 
-  Widget _sideSelector(String side, ApiConfig? current, AppColors c, ValueChanged<ApiConfig?> onPick) {
+  Widget _sideSelector(String side, ApiConfig? current, AppColors c, bool dark, ValueChanged<ApiConfig?> onPick) {
     final profiles = _profiles;
     final currentIdx = current == null
         ? -1
@@ -227,7 +232,7 @@ class _DebatePageState extends State<DebatePage> {
                 fontSize: 11, fontWeight: FontWeight.w700, color: accent)),
         const SizedBox(height: 2),
         SizedBox(
-          width: 132,
+          width: 156,
           height: 30,
           child: DropdownButtonHideUnderline(
             child: DropdownButton<int>(
@@ -241,8 +246,40 @@ class _DebatePageState extends State<DebatePage> {
                     value: -1, child: Text('选择 API', style: TextStyle(fontSize: 12))),
                 for (var i = 0; i < profiles.length; i++)
                   DropdownMenuItem<int>(
-                      value: i,
-                      child: Text(profiles[i].label, style: const TextStyle(fontSize: 12))),
+                    value: i,
+                    child: Row(children: [
+                      AiAvatar(model: profiles[i].config.model, size: 20, dark: dark),
+                      const SizedBox(width: 7),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(profiles[i].config.model,
+                                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+                                overflow: TextOverflow.ellipsis),
+                            if (profiles[i].name.isNotEmpty && profiles[i].name != profiles[i].config.model)
+                              Text(profiles[i].name,
+                                  style: const TextStyle(fontSize: 10, color: Color(0xFF9CA3AF)),
+                                  overflow: TextOverflow.ellipsis),
+                          ],
+                        ),
+                      ),
+                    ]),
+                  ),
+              ],
+              // 收起态只显示模型名
+              selectedItemBuilder: (_) => [
+                const Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text('选择 API', style: TextStyle(fontSize: 12, color: Color(0xFF9CA3AF))),
+                ),
+                for (final p in profiles)
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(p.config.model,
+                        style: TextStyle(fontSize: 12, color: c.text), overflow: TextOverflow.ellipsis),
+                  ),
               ],
               onChanged: _running
                   ? null

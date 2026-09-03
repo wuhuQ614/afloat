@@ -16,6 +16,7 @@ import '../theme_colors.dart' show kPrimary, AppColors;
 import '../theme_diy.dart';
 import 'diy_backdrop.dart';
 import 'learn_page.dart' show AppScope;
+import 'model_fetch_sheet.dart';
 import 'update_dialog.dart';
 
 const _primary = kPrimary;
@@ -149,13 +150,107 @@ class _SettingsDialogState extends State<SettingsDialog> {
     final profiles = List.of(s.apiProfiles);
     int activeIdx;
     if (_editIdx >= 0 && _editIdx < profiles.length) {
-      profiles[_editIdx] = ApiProfile(name: profiles[_editIdx].name, config: c);
+      final old = profiles[_editIdx];
+      profiles[_editIdx] = ApiProfile(
+        name: old.name,
+        config: c,
+        priceLabel: old.priceLabel,
+        tags: old.tags,
+        models: old.models,
+      );
       activeIdx = _editIdx;
     } else {
       profiles.add(ApiProfile(name: '配置${profiles.length + 1}', config: c));
       activeIdx = profiles.length - 1;
     }
     s.saveApiProfiles(profiles, activeIdx);
+  }
+
+  /// 「获取」：拉取远端模型列表 → 弹面板增删/挑选 → 立即落库收藏
+  Future<void> _fetchModels(AppState s) async {
+    final idx = _editIdx;
+    final initial = (idx >= 0 && idx < s.apiProfiles.length) ? s.apiProfiles[idx].models : <String>[];
+    final result = await ModelFetchSheet.show(
+      context,
+      configProvider: () => ApiConfig(url: _url.text.trim(), key: _key.text.trim(), fullUrl: _fullUrl),
+      initialModels: initial,
+      currentModel: _modelCtrl.text.trim(),
+    );
+    if (result == null || !mounted) return;
+    if (idx >= 0 && idx < s.apiProfiles.length) {
+      final profiles = List.of(s.apiProfiles);
+      final old = profiles[idx];
+      profiles[idx] = ApiProfile(
+        name: old.name,
+        config: old.config,
+        priceLabel: old.priceLabel,
+        tags: old.tags,
+        models: result.models,
+      );
+      s.saveApiProfiles(profiles, idx, notify: false);
+    }
+    if (result.pickedModel != null) {
+      _modelCtrl.text = result.pickedModel!;
+    }
+    setState(() {});
+  }
+
+  /// 已收藏模型横条：点 chip 切换当前模型；长按可从收藏移除
+  Widget _savedModelChips(AppState s, AppColors c) {
+    final idx = _editIdx;
+    if (idx < 0 || idx >= s.apiProfiles.length) return const SizedBox.shrink();
+    final models = s.apiProfiles[idx].models;
+    if (models.isEmpty) return const SizedBox.shrink();
+    final current = _modelCtrl.text.trim();
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: SizedBox(
+        height: 34,
+        child: ListView.separated(
+          scrollDirection: Axis.horizontal,
+          itemCount: models.length,
+          separatorBuilder: (_, __) => const SizedBox(width: 6),
+          itemBuilder: (ctx, i) {
+            final m = models[i];
+            final active = m == current;
+            return GestureDetector(
+              onLongPress: () async {
+                final rest = List.of(models)..remove(m);
+                final profiles = List.of(s.apiProfiles);
+                final old = profiles[idx];
+                profiles[idx] = ApiProfile(name: old.name, config: old.config, priceLabel: old.priceLabel, tags: old.tags, models: rest);
+                s.saveApiProfiles(profiles, idx, notify: false);
+                setState(() {});
+              },
+              child: InkWell(
+                onTap: () => setState(() => _modelCtrl.text = m),
+                borderRadius: BorderRadius.circular(9),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: active ? c.primary.withValues(alpha: 0.12) : (c.isLight ? const Color(0xFFF3F3F7) : const Color(0xFF26262C)),
+                    borderRadius: BorderRadius.circular(9),
+                    border: Border.all(color: active ? c.primary.withValues(alpha: 0.5) : c.border),
+                  ),
+                  child: Row(mainAxisSize: MainAxisSize.min, children: [
+                    Text(m,
+                        style: TextStyle(
+                          fontSize: 11.5,
+                          color: active ? c.primary : c.textSecondary,
+                          fontWeight: active ? FontWeight.w700 : FontWeight.w400,
+                        )),
+                    if (active) ...[
+                      const SizedBox(width: 4),
+                      Icon(Icons.check_rounded, size: 13, color: c.primary),
+                    ],
+                  ]),
+                ),
+              ),
+            );
+          },
+        ),
+      ),
+    );
   }
 
   void _deleteConfig(AppState s) {
@@ -649,8 +744,31 @@ class _SettingsDialogState extends State<SettingsDialog> {
         c,
       ),
       const SizedBox(height: 12),
-      // 模型
-      _labeledField('模型', TextField(controller: _modelCtrl, decoration: _deco(c, hint: '例如 qwen3.7-plus')), c),
+      // 模型（输入 + 「获取」拉取远端模型列表自定义挑选）
+      _labeledField(
+        '模型',
+        TextField(
+          controller: _modelCtrl,
+          decoration: _deco(c, hint: '例如 qwen3.7-plus').copyWith(
+            suffixIcon: Padding(
+              padding: const EdgeInsets.only(right: 4),
+              child: TextButton(
+                onPressed: () => _fetchModels(s),
+                style: TextButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 10),
+                  minimumSize: Size.zero,
+                  foregroundColor: c.primary,
+                  textStyle: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600),
+                ),
+                child: const Text('获取'),
+              ),
+            ),
+          ),
+        ),
+        c,
+      ),
+      // 已收藏模型（点选即切换；来自「获取」面板的 + 添加）
+      _savedModelChips(s, c),
       const SizedBox(height: 12),
       // 温度下拉
       _labeledField(
@@ -2770,6 +2888,97 @@ class _ChatSettingsDialogState extends State<ChatSettingsDialog> {
     });
   }
 
+  /// 「获取」：拉取远端模型列表 → 弹面板增删/挑选 → 立即落库收藏（仅独立配置时）
+  Future<void> _fetchModels() async {
+    final s = _state;
+    if (s == null) return;
+    final idx = _editIdx;
+    final initial = (idx >= 0 && idx < s.chatProfiles.length) ? s.chatProfiles[idx].models : <String>[];
+    final result = await ModelFetchSheet.show(
+      context,
+      configProvider: () => ApiConfig(url: _url.text.trim(), key: _key.text.trim(), fullUrl: _fullUrl),
+      initialModels: initial,
+      currentModel: _modelCtrl.text.trim(),
+    );
+    if (result == null || !mounted) return;
+    if (idx >= 0 && idx < s.chatProfiles.length) {
+      final profiles = List.of(s.chatProfiles);
+      final old = profiles[idx];
+      profiles[idx] = ApiProfile(
+        name: old.name,
+        config: old.config,
+        priceLabel: old.priceLabel,
+        tags: old.tags,
+        models: result.models,
+      );
+      s.saveChatProfiles(profiles, idx, notify: false);
+    }
+    if (result.pickedModel != null) {
+      _modelCtrl.text = result.pickedModel!;
+    }
+    setState(() {});
+  }
+
+  /// 已收藏模型横条：点 chip 切换当前模型；长按可从收藏移除
+  Widget _savedModelChips(AppColors c) {
+    final s = _state;
+    if (s == null) return const SizedBox.shrink();
+    final idx = _editIdx;
+    if (idx < 0 || idx >= s.chatProfiles.length) return const SizedBox.shrink();
+    final models = s.chatProfiles[idx].models;
+    if (models.isEmpty) return const SizedBox.shrink();
+    final current = _modelCtrl.text.trim();
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: SizedBox(
+        height: 34,
+        child: ListView.separated(
+          scrollDirection: Axis.horizontal,
+          itemCount: models.length,
+          separatorBuilder: (_, __) => const SizedBox(width: 6),
+          itemBuilder: (ctx, i) {
+            final m = models[i];
+            final active = m == current;
+            return GestureDetector(
+              onLongPress: () async {
+                final rest = List.of(models)..remove(m);
+                final profiles = List.of(s.chatProfiles);
+                final old = profiles[idx];
+                profiles[idx] = ApiProfile(name: old.name, config: old.config, priceLabel: old.priceLabel, tags: old.tags, models: rest);
+                s.saveChatProfiles(profiles, idx, notify: false);
+                setState(() {});
+              },
+              child: InkWell(
+                onTap: () => setState(() => _modelCtrl.text = m),
+                borderRadius: BorderRadius.circular(9),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: active ? c.primary.withValues(alpha: 0.12) : (c.isLight ? const Color(0xFFF3F3F7) : const Color(0xFF26262C)),
+                    borderRadius: BorderRadius.circular(9),
+                    border: Border.all(color: active ? c.primary.withValues(alpha: 0.5) : c.border),
+                  ),
+                  child: Row(mainAxisSize: MainAxisSize.min, children: [
+                    Text(m,
+                        style: TextStyle(
+                          fontSize: 11.5,
+                          color: active ? c.primary : c.textSecondary,
+                          fontWeight: active ? FontWeight.w700 : FontWeight.w400,
+                        )),
+                    if (active) ...[
+                      const SizedBox(width: 4),
+                      Icon(Icons.check_rounded, size: 13, color: c.primary),
+                    ],
+                  ]),
+                ),
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+
   void _save() {
     final s = AppScope.of(context);
     final cfg = ApiConfig(
@@ -2786,7 +2995,14 @@ class _ChatSettingsDialogState extends State<ChatSettingsDialog> {
       final profiles = List.of(s.chatProfiles);
       int activeIdx;
       if (_editIdx >= 0 && _editIdx < profiles.length) {
-        profiles[_editIdx] = ApiProfile(name: profiles[_editIdx].name, config: cfg);
+        final old = profiles[_editIdx];
+        profiles[_editIdx] = ApiProfile(
+          name: old.name,
+          config: cfg,
+          priceLabel: old.priceLabel,
+          tags: old.tags,
+          models: old.models,
+        );
         activeIdx = _editIdx;
       } else {
         profiles.add(ApiProfile(name: '对话配置${profiles.length + 1}', config: cfg));
@@ -2981,8 +3197,31 @@ class _ChatSettingsDialogState extends State<ChatSettingsDialog> {
                 c,
               ),
               const SizedBox(height: 12),
-              // 模型
-              _labeledField('模型', TextField(controller: _modelCtrl, decoration: _deco(c, hint: '例如 qwen3.7-plus')), c),
+              // 模型（输入 + 「获取」拉取远端模型列表自定义挑选）
+              _labeledField(
+                '模型',
+                TextField(
+                  controller: _modelCtrl,
+                  decoration: _deco(c, hint: '例如 qwen3.7-plus').copyWith(
+                    suffixIcon: Padding(
+                      padding: const EdgeInsets.only(right: 4),
+                      child: TextButton(
+                        onPressed: () => _fetchModels(),
+                        style: TextButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(horizontal: 10),
+                          minimumSize: Size.zero,
+                          foregroundColor: c.primary,
+                          textStyle: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600),
+                        ),
+                        child: const Text('获取'),
+                      ),
+                    ),
+                  ),
+                ),
+                c,
+              ),
+              // 已收藏模型（点选即切换；来自「获取」面板的 + 添加）
+              _savedModelChips(c),
               const SizedBox(height: 12),
               // 温度
               _labeledField(

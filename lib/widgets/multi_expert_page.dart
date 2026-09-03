@@ -87,7 +87,12 @@ class _MultiExpertPageState extends State<MultiExpertPage> {
     Storage.saveExpertSeats(jsonEncode(_seats.map((e) => e.toJson()).toList()));
   }
 
-  List<ApiProfile> get _profiles => AppScope.of(context).chatProfiles;
+  /// 可选 API 来源：设置「模型设置」里保存的预设配置库（apiProfiles）；
+  /// 主设置为空时回退到对话助手的独立配置（chatProfiles），保证一定能选到模型
+  List<ApiProfile> get _profiles {
+    final s = AppScope.of(context);
+    return s.apiProfiles.isNotEmpty ? s.apiProfiles : s.chatProfiles;
+  }
 
   void _scrollToEnd() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -194,12 +199,45 @@ class _MultiExpertPageState extends State<MultiExpertPage> {
     final label = (seat.kind == AgentRoleKind.analyzer || seat.kind == AgentRoleKind.verifier)
         ? '${agentRoleName(seat.kind)} ${seat.index}'
         : agentRoleName(seat.kind);
-    // 下拉项：0=未启用，其后为各已保存配置
+    // 下拉项：0=未启用，其后为设置里保存的各预设（主行显示模型名，副行显示配置名）
     final items = <DropdownMenuItem<int>>[
       const DropdownMenuItem<int>(value: -1, child: Text('未启用', style: TextStyle(fontSize: 12))),
       for (var i = 0; i < profiles.length; i++)
         DropdownMenuItem<int>(
-            value: i, child: Text(profiles[i].label, style: const TextStyle(fontSize: 12))),
+          value: i,
+          child: Row(children: [
+            AiAvatar(model: profiles[i].config.model, size: 20, dark: dark),
+            const SizedBox(width: 7),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(profiles[i].config.model,
+                      style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+                      overflow: TextOverflow.ellipsis),
+                  if (profiles[i].name.isNotEmpty && profiles[i].name != profiles[i].config.model)
+                    Text(profiles[i].name,
+                        style: const TextStyle(fontSize: 10, color: Color(0xFF9CA3AF)),
+                        overflow: TextOverflow.ellipsis),
+                ],
+              ),
+            ),
+          ]),
+        ),
+    ];
+    // 收起态只显示模型名（保持职位块紧凑）
+    final selectedItems = <Widget>[
+      const Align(
+        alignment: Alignment.centerLeft,
+        child: Text('未启用', style: TextStyle(fontSize: 12, color: Color(0xFF9CA3AF))),
+      ),
+      for (final p in profiles)
+        Align(
+          alignment: Alignment.centerLeft,
+          child: Text(p.config.model,
+              style: TextStyle(fontSize: 12, color: c.text), overflow: TextOverflow.ellipsis),
+        ),
     ];
     final currentIdx = seat.config == null
         ? -1
@@ -229,12 +267,13 @@ class _MultiExpertPageState extends State<MultiExpertPage> {
         ]),
         const SizedBox(height: 2),
         SizedBox(
-          width: 132,
+          width: 156,
           height: 30,
           child: DropdownButtonHideUnderline(
             child: DropdownButton<int>(
               value: currentIdx < 0 ? -1 : currentIdx,
               items: items,
+              selectedItemBuilder: (_) => selectedItems,
               isDense: true,
               isExpanded: true,
               style: TextStyle(fontSize: 12, color: c.text),
