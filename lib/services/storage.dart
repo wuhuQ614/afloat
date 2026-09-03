@@ -258,6 +258,15 @@ class Storage {
     _set('chatProfiles', jsonEncode(list.map((e) => e.toJson()).toList()));
   }
 
+  // ===== 多专家团 / 辩论模式配置 =====
+  /// 多专家团职位配置（JSON 数组，每项为 AgentSeat.toJson()）
+  static String loadExpertSeats() => _get('expertSeats', '');
+  static void saveExpertSeats(String json) => _set('expertSeats', json);
+
+  /// 辩论模式配置：{pro: 配置名, con: 配置名, rounds: 轮数}
+  static String loadDebateSetup() => _get('debateSetup', '');
+  static void saveDebateSetup(String json) => _set('debateSetup', json);
+
   static int loadChatProfileIdx() {
     try {
       return _p?.getInt('chatProfileIdx') ?? -1;

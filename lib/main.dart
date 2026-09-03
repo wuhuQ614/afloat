@@ -41,6 +41,8 @@ import 'widgets/snake_game_page.dart';
 import 'widgets/gomoku_page.dart';
 import 'widgets/source_viewer_page.dart';
 import 'widgets/agent_rows.dart';
+import 'widgets/multi_expert_page.dart';
+import 'widgets/debate_page.dart';
 
 final bool _isWindows = !kIsWeb && Platform.isWindows;
 
@@ -56,6 +58,8 @@ const _moreItemsData = [
   (Icons.language_rounded, '浏览器', '轻量网页浏览', 19),
   (Icons.videogame_asset_outlined, '贪吃蛇', '经典小游戏放松', 20),
   (Icons.grid_3x3_rounded, '五子棋', '双人对战五子连珠', 23),
+  (Icons.forum_outlined, '辩论模式', '两个模型正反方对辩', 26),
+  (Icons.groups_outlined, '多专家团', '解析·执行·验证协作', 25),
 ];
 
 // 更多功能选择页索引
@@ -868,7 +872,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
         (Icons.search_outlined, '查询', 3),
       ];
       final inMore = page >= 4;
-      final inSubFeature = page >= 4 && (page <= 8 || (page >= 12 && page <= 17) || page == 18 || page == 19 || page == 20 || page == 21 || page == 22 || page == 23 || page == 24);
+      final inSubFeature = page >= 4 && (page <= 8 || (page >= 12 && page <= 17) || page == 18 || page == 19 || page == 20 || page == 21 || page == 22 || page == 23 || page == 24 || page == 25 || page == 26);
       const moreTitle = '更多功能';
       const moreIcon = Icons.grid_view_outlined;
       final isGlass = _state.isGlassUI;
@@ -1713,6 +1717,10 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
         return const SourceViewerPage();
       case 23:
         return const _PageScaffold(title: '五子棋', child: GomokuPage());
+      case 25:
+        return const _PageScaffold(title: '多专家团', child: MultiExpertPage());
+      case 26:
+        return const _PageScaffold(title: '辩论模式', child: DebatePage());
       case 10:
       case 11:
         // 沉浸考场或成绩解析页（外层已隐藏 AI 对话栏）
