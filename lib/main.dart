@@ -1149,7 +1149,8 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
       builder: (ctx, _) {
         final isGlass = _state.isGlassUI;
         // 考场/游戏/浏览器沉浸模式（page==10/11/20/19）：隐藏 AI 对话栏（右侧30%），内容独占
-        if (_state.page == 10 || _state.page == 11 || _state.page == 20 || _state.page == 19) {
+        // page==25 多专家团：自身就是多角色对话页，右侧再挂 AI 对话栏没有意义，同样独占
+        if (_state.page == 10 || _state.page == 11 || _state.page == 20 || _state.page == 19 || _state.page == 25) {
           return Row(children: [
             Expanded(child: _animatedPage()),
           ]);

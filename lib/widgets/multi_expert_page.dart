@@ -15,6 +15,7 @@ import '../theme_colors.dart';
 import '../services/multi_agent_service.dart';
 import '../services/storage.dart';
 import 'ai_avatar.dart';
+import 'markdown_renderer.dart';
 
 class MultiExpertPage extends StatefulWidget {
   const MultiExpertPage({super.key});
@@ -365,7 +366,10 @@ class _MultiExpertPageState extends State<MultiExpertPage> {
         if (t.content.isEmpty && t.streaming)
           Text('正在生成…', style: TextStyle(fontSize: 13, color: c.textTertiary))
         else
-          SelectableText(t.content, style: TextStyle(fontSize: 13, height: 1.55, color: c.text)),
+          SelectableText.rich(
+            MarkdownRenderer.parse(t.content, c.text),
+            style: TextStyle(fontSize: 13, height: 1.55, color: c.text),
+          ),
         if (t.error != null) ...[
           const SizedBox(height: 6),
           Text('出错：${t.error}', style: const TextStyle(fontSize: 11.5, color: kDanger)),

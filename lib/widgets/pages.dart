@@ -3878,21 +3878,38 @@ class _SpellingGridState extends State<_SpellingGrid> {
 
   bool _isFilled() => _ctrls.every((c) => c.text.trim().isNotEmpty);
 
+  // 焦点跳转只落在可编辑格上，提示格对用户完全透明（不可选中、自动跳过）
+  int _nextEditable(int from) {
+    for (var i = from + 1; i < _isHint.length; i++) {
+      if (!_isHint[i]) return i;
+    }
+    return -1;
+  }
+
+  int _prevEditable(int from) {
+    for (var i = from - 1; i >= 0; i--) {
+      if (!_isHint[i]) return i;
+    }
+    return -1;
+  }
+
   void _onCellChanged(int idx) {
     final v = _ctrls[idx].text;
     if (v.isNotEmpty) {
       _emit();
-      // 输入后跳到下一个空格
-      if (idx < _ctrls.length - 1) {
-        _focus[idx + 1].requestFocus();
+      // 输入后跳到下一个可编辑格（自动跳过提示格）；后面全是提示格或已填满时检查提交
+      final next = _nextEditable(idx);
+      if (next >= 0) {
+        _focus[next].requestFocus();
       } else if (_isFilled()) {
         widget.onSubmit();
       }
     } else {
       _emit();
-      // 退格：当前格清空后回到上一格
-      if (idx > 0 && !_isHint[idx - 1]) {
-        _focus[idx - 1].requestFocus();
+      // 退格：当前格清空后回到上一个可编辑格（跳过提示格）
+      final prev = _prevEditable(idx);
+      if (prev >= 0) {
+        _focus[prev].requestFocus();
       }
     }
   }
@@ -3903,52 +3920,74 @@ class _SpellingGridState extends State<_SpellingGrid> {
     // 长单词格子缩小尺寸，保证一行放下
     final cellSize = n > 10 ? 34.0 : (n > 7 ? 40.0 : 46.0);
     final cellFont = n > 10 ? 18.0 : 20.0;
+    final firstEditable = _isHint.isEmpty ? -1 : _nextEditable(-1);
     return Wrap(
       alignment: WrapAlignment.center,
       spacing: 8,
       runSpacing: 8,
       children: [
         for (var i = 0; i < n; i++)
-          SizedBox(
-            width: cellSize,
-            height: cellSize + 4,
-            child: TextField(
-              controller: _ctrls[i],
-              focusNode: _focus[i],
-              readOnly: _isHint[i] || !widget.enabled,
-              textAlign: TextAlign.center,
-              maxLength: 1,
-              autofocus: i == 0 && !_isHint[0],
-              style: TextStyle(
-                fontSize: cellFont,
-                fontWeight: FontWeight.w600,
-                color: _isHint[i] ? widget.accent : widget.textColor,
+          if (_isHint[i])
+            // 提示格：纯展示，不可选中、不可聚焦，焦点永远不会落在它上面
+            Container(
+              width: cellSize,
+              height: cellSize + 4,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: widget.hintFill,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: widget.accent.withValues(alpha: 0.5)),
               ),
-              textCapitalization: TextCapitalization.characters,
-              decoration: InputDecoration(
-                counterText: '',
-                filled: true,
-                fillColor: _isHint[i] ? widget.hintFill : widget.inputFill,
-                contentPadding: EdgeInsets.zero,
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(8),
-                  borderSide: BorderSide(color: _isHint[i] ? widget.accent.withValues(alpha: 0.5) : widget.border),
-                ),
-                enabledBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(8),
-                  borderSide: BorderSide(color: _isHint[i] ? widget.accent.withValues(alpha: 0.5) : widget.border),
-                ),
-                focusedBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(8),
-                  borderSide: BorderSide(color: widget.accent, width: 1.6),
+              child: Text(
+                widget.word[i],
+                style: TextStyle(
+                  fontSize: cellFont,
+                  fontWeight: FontWeight.w600,
+                  color: widget.accent,
                 ),
               ),
-              onChanged: (_) => _onCellChanged(i),
-              onSubmitted: (_) {
-                if (_isFilled()) widget.onSubmit();
-              },
+            )
+          else
+            SizedBox(
+              width: cellSize,
+              height: cellSize + 4,
+              child: TextField(
+                controller: _ctrls[i],
+                focusNode: _focus[i],
+                readOnly: !widget.enabled,
+                textAlign: TextAlign.center,
+                maxLength: 1,
+                autofocus: i == firstEditable,
+                style: TextStyle(
+                  fontSize: cellFont,
+                  fontWeight: FontWeight.w600,
+                  color: widget.textColor,
+                ),
+                textCapitalization: TextCapitalization.characters,
+                decoration: InputDecoration(
+                  counterText: '',
+                  filled: true,
+                  fillColor: widget.inputFill,
+                  contentPadding: EdgeInsets.zero,
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(8),
+                    borderSide: BorderSide(color: widget.border),
+                  ),
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(8),
+                    borderSide: BorderSide(color: widget.border),
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(8),
+                    borderSide: BorderSide(color: widget.accent, width: 1.6),
+                  ),
+                ),
+                onChanged: (_) => _onCellChanged(i),
+                onSubmitted: (_) {
+                  if (_isFilled()) widget.onSubmit();
+                },
+              ),
             ),
-          ),
       ],
     );
   }
