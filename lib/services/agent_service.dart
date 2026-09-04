@@ -36,6 +36,29 @@ class AgentService {
         {
           'type': 'function',
           'function': {
+            'name': 'search_knowledge_base',
+            'description': '检索用户上传的外挂知识库文档（txt/md/csv/json 等文本资料），返回与查询最相关的内容片段。当用户提问涉及知识库、上传的资料、文档内容，或需要引用用户自有资料作答时，必须先调用此工具检索，再基于检索结果回答；检索无结果时如实说明，禁止编造文档内容。',
+            'parameters': {
+              'type': 'object',
+              'properties': {
+                'query': {
+                  'type': 'string',
+                  'description': '检索关键词或问题（支持中英文，可给多组关键词提高命中）',
+                },
+                'top_k': {
+                  'type': 'integer',
+                  'description': '返回的相关片段数量（1-10），默认 5',
+                  'minimum': 1,
+                  'maximum': 10,
+                },
+              },
+              'required': ['query'],
+            },
+          },
+        },
+        {
+          'type': 'function',
+          'function': {
             'name': 'generate_questions',
             'description': '为用户生成英语练习题并放入答题区。当用户要求出题、练习、做题、生成综合模拟全卷时调用。',
             'parameters': {

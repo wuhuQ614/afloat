@@ -23,6 +23,7 @@ import 'services/storage.dart';
 import 'services/wechat_service.dart';
 import 'services/dict_service.dart';
 import 'services/agent_service.dart';
+import 'services/knowledge_base.dart';
 import 'services/chat_capabilities.dart';
 import 'services/mcp_client.dart';
 import 'services/skill_store.dart';
@@ -3059,6 +3060,8 @@ class AppState extends ChangeNotifier {
         return await _toolSpawnSubagent(args, onProgress: onProgress);
       }
       switch (name) {
+        case 'search_knowledge_base':
+          return _toolSearchKnowledgeBase(args);
         case 'generate_questions':
           return await _toolGenerateQuestions(args);
         case 'generate_full_exam':
@@ -3184,6 +3187,48 @@ class AppState extends ChangeNotifier {
     } catch (e) {
       return ToolExecResult(content: '工具执行异常：$e', ok: false);
     }
+  }
+
+  /// 检索外挂知识库：按关键词评分返回最相关片段
+  ToolExecResult _toolSearchKnowledgeBase(Map<String, dynamic> args) {
+    final query = ((args['query'] as String?) ?? '').trim();
+    var topK = (args['top_k'] as num?)?.toInt() ?? 5;
+    if (topK < 1) topK = 1;
+    if (topK > 10) topK = 10;
+    KnowledgeBase.ensureLoaded();
+    if (KnowledgeBase.isEmpty) {
+      return ToolExecResult(
+        content: '{"ok":false,"reason":"empty"}',
+        ok: false,
+        actionLabel: '知识库为空，请在「+ → 知识库」上传文档',
+      );
+    }
+    if (query.isEmpty) {
+      return ToolExecResult(content: '{"ok":false,"reason":"empty_query"}', ok: false);
+    }
+    final hits = KnowledgeBase.search(query, topK: topK);
+    if (hits.isEmpty) {
+      return ToolExecResult(
+        content: '{"ok":true,"query":${jsonEncode(query)},"results":[],"note":"知识库中未检索到相关内容，请如实告知用户"}',
+        ok: true,
+      );
+    }
+    final results = hits
+        .map((h) => {
+              'doc': h.doc.name,
+              'score': h.score,
+              'snippet': h.snippet,
+            })
+        .toList();
+    return ToolExecResult(
+      content: jsonEncode({
+        'ok': true,
+        'query': query,
+        'totalDocs': KnowledgeBase.docs.length,
+        'results': results,
+      }),
+      ok: true,
+    );
   }
 
   Future<ToolExecResult> _toolGenerateQuestions(Map<String, dynamic> args) async {
@@ -6509,8 +6554,11 @@ class AppState extends ChangeNotifier {
     final contextPrompt = buildChatContextPrompt();
     // 个性化记忆：根据本轮用户消息检索相关历史长期信息，注入系统提示词
     final memoryContext = _buildMemoryContext(text);
+    // 外挂知识库：非空时注入文档清单，提示模型主动检索
+    final kbCatalog = KnowledgeBase.catalogPrompt();
     final sysPrompt = (contextPrompt.isNotEmpty ? '$contextPrompt\n\n' : '') +
         (memoryContext.isNotEmpty ? '$memoryContext\n\n' : '') +
+        (kbCatalog.isNotEmpty ? '$kbCatalog\n\n' : '') +
         AgentService.buildSystemPrompt(skillCatalog: skillStore.loaded ? skillStore.catalogPrompt() : null);
   
     // 构建 messages：从 chatHistory 读历史，但排除最后一条（刚加的 user 消息，避免重复）

@@ -267,6 +267,10 @@ class Storage {
   static String loadDebateSetup() => _get('debateSetup', '');
   static void saveDebateSetup(String json) => _set('debateSetup', json);
 
+  /// 外挂知识库文档（JSON 数组，每项为 KbDoc.toJson()）
+  static String loadKnowledgeBase() => _get('knowledgeBase', '');
+  static void saveKnowledgeBase(String json) => _set('knowledgeBase', json);
+
   static int loadChatProfileIdx() {
     try {
       return _p?.getInt('chatProfileIdx') ?? -1;

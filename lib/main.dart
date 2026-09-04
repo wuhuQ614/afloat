@@ -20,6 +20,7 @@ import 'state.dart';
 import 'models.dart';
 import 'services/tts_service.dart';
 import 'services/chat_capabilities.dart';
+import 'services/knowledge_base.dart';
 import 'theme_colors.dart';
 import 'theme_diy.dart';
 import 'widgets/diy_backdrop.dart';
@@ -2396,7 +2397,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
         codeBuffer.add(line);
         continue;
       }
-      
+
       if (i > 0) {
         // R17: 块级组件后的单个空行折叠（组件自带外边距，不再叠加空行高度）
         if (lastWasBlockWidget && line.trim().isEmpty) {
@@ -2609,20 +2610,18 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
         // 斜体
         spans.add(TextSpan(text: earliestMatch.group(1)!, style: TextStyle(color: textColor, fontStyle: FontStyle.italic)));
       } else if (earliestPattern == patterns[3]) {
-        // R18: 行内代码 —— 灰底圆角小芯片（仿对话流行内代码样式）
-        spans.add(WidgetSpan(
-          alignment: PlaceholderAlignment.middle,
-          child: Container(
-            margin: const EdgeInsets.symmetric(horizontal: 2),
-            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
-            decoration: BoxDecoration(
-              color: textColor.withValues(alpha: 0.12),
-              borderRadius: BorderRadius.circular(5),
-            ),
-            child: Text(
-              earliestMatch.group(1)!,
-              style: TextStyle(fontSize: 12, height: 1.35, color: textColor, fontFamily: 'Consolas'),
-            ),
+        // 行内代码：背景色 TextSpan（等宽字体）。
+        // 曾用 WidgetSpan 灰底芯片——单条消息行内代码多时（如粘贴系统提示词全文，
+        // 可达数百个）会产生几百个嵌入 widget，Windows 上 Paragraph 布局崩溃，
+        // 表现为"输出到一半文字突然消失、占位还在、滚动后整列表空白"。
+        // 改为背景色文本后 span 树保持纯文本结构，任意长度稳定渲染。
+        spans.add(TextSpan(
+          text: earliestMatch.group(1)!,
+          style: TextStyle(
+            color: textColor,
+            fontSize: 12.5,
+            fontFamily: 'Consolas',
+            backgroundColor: textColor.withValues(alpha: 0.12),
           ),
         ));
       } else if (earliestPattern == patterns[5]) {
@@ -3062,7 +3061,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
     }
 
     StatefulBuilder contentBuilder(BuildContext ctx, void Function(void Function()) setState) {
-      var page = 'main'; // main / skills / connectors
+      var page = 'main'; // main / kb / skills / connectors
       return StatefulBuilder(
         builder: (ctx, setSt) {
           Widget body;
@@ -3145,6 +3144,69 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                 );
               },
             );
+          } else if (page == 'kb') {
+            // 知识库：上传外挂文档，AI 通过 search_knowledge_base 工具检索
+            final kbDocs = KnowledgeBase.docs;
+            body = Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                buildHeader('知识库', onBack: () => setSt(() => page = 'main')),
+                if (kbDocs.isEmpty)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 20, 16, 8),
+                    child: Column(children: [
+                      Text('暂无文档', style: TextStyle(fontSize: 13, color: textSecondary)),
+                      const SizedBox(height: 6),
+                      Text('上传 txt / md / csv / json 等文本文件，\nAI 会自动检索知识库内容来回答问题',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(fontSize: 11, color: textTertiary, height: 1.5)),
+                    ]),
+                  ),
+                Flexible(
+                  child: ListView.builder(
+                    shrinkWrap: true,
+                    padding: EdgeInsets.zero,
+                    itemCount: kbDocs.length,
+                    itemBuilder: (ctx3, i) {
+                      final d = kbDocs[i];
+                      final sizeLabel = d.sizeBytes >= 1024 * 1024
+                          ? '${(d.sizeBytes / 1024 / 1024).toStringAsFixed(1)}MB'
+                          : '${(d.sizeBytes / 1024).toStringAsFixed(1)}KB';
+                      return _darkMenuItem(
+                        icon: const Icon(Icons.description_outlined, size: 20, color: textSecondary),
+                        title: d.name,
+                        subtitle: sizeLabel,
+                        trailing: GestureDetector(
+                          onTap: () {
+                            KnowledgeBase.remove(d.id);
+                            setSt(() {});
+                          },
+                          child: const Icon(Icons.delete_outline_rounded, size: 17, color: Color(0xFFF87171)),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+                const Divider(height: 1, color: Color(0xFF3D3D45)),
+                _darkMenuItem(
+                  icon: const Icon(Icons.upload_file_outlined, size: 20, color: Color(0xFF10B981)),
+                  title: '上传文档',
+                  subtitle: 'txt / md / csv / json 等，单份 ≤1MB',
+                  onTap: () async {
+                    final err = await _pickKbFile();
+                    if (!ctx.mounted) return;
+                    if (err != null) {
+                      _showChatToast(context, err);
+                    } else {
+                      setSt(() {});
+                      if (KnowledgeBase.docs.isNotEmpty) {
+                        _showChatToast(context, '已加入知识库，可直接向 AI 提问');
+                      }
+                    }
+                  },
+                ),
+              ],
+            );
           } else if (page == 'connectors') {
             body = Column(
               mainAxisSize: MainAxisSize.min,
@@ -3181,10 +3243,21 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
               ],
             );
           } else {
+            // 主菜单：一比一复刻目标样式（图标 + 标题 + 右箭头，分组分隔线）
+            Widget chevron({bool dot = false}) => Row(mainAxisSize: MainAxisSize.min, children: [
+                  if (dot) ...[
+                    Container(
+                      width: 8,
+                      height: 8,
+                      decoration: const BoxDecoration(color: Color(0xFF10B981), shape: BoxShape.circle),
+                    ),
+                    const SizedBox(width: 6),
+                  ],
+                  const Icon(Icons.chevron_right_rounded, size: 16, color: textTertiary),
+                ]);
             body = Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                // R15: 工作区选择入口移入 + 菜单首项（此前在输入框行内，挤压其他按钮）
                 _darkMenuItem(
                   icon: Icon(
                     s.workspacePath.isEmpty ? Icons.folder_open_outlined : Icons.folder_rounded,
@@ -3192,7 +3265,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                     color: s.workspacePath.isEmpty ? textSecondary : const Color(0xFF10B981),
                   ),
                   title: '工作区',
-                  subtitle: s.workspacePath.isEmpty ? '默认（C:\\Users 下所有位置）' : s.workspacePath,
+                  trailing: chevron(),
                   onTap: () {
                     entry.remove();
                     _showWorkspacePicker(context, c, s);
@@ -3202,7 +3275,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                 _darkMenuItem(
                   icon: const Icon(Icons.attach_file_outlined, size: 20, color: textSecondary),
                   title: '添加文件',
-                  subtitle: '从电脑上传图片或文档',
+                  trailing: chevron(),
                   onTap: () {
                     entry.remove();
                     _pickChatFile();
@@ -3210,30 +3283,23 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                 ),
                 const Divider(height: 1, color: Color(0xFF3D3D45)),
                 _darkMenuItem(
+                  icon: const Icon(Icons.library_books_outlined, size: 20, color: textSecondary),
+                  title: '知识库',
+                  trailing: chevron(dot: KnowledgeBase.docs.isNotEmpty),
+                  onTap: () => setSt(() => page = 'kb'),
+                ),
+                const Divider(height: 1, color: Color(0xFF3D3D45)),
+                _darkMenuItem(
                   icon: const Icon(Icons.auto_fix_high_outlined, size: 20, color: textSecondary),
                   title: '技能',
-                  subtitle: '浏览并调用已安装技能',
-                  trailing: s.currentSkill != null
-                      ? Container(
-                          width: 8,
-                          height: 8,
-                          decoration: const BoxDecoration(color: Color(0xFF10B981), shape: BoxShape.circle),
-                        )
-                      : const SizedBox(width: 18),
+                  trailing: chevron(dot: s.currentSkill != null),
                   onTap: () => setSt(() => page = 'skills'),
                 ),
                 const Divider(height: 1, color: Color(0xFF3D3D45)),
                 _darkMenuItem(
                   icon: const Icon(Icons.lan_outlined, size: 20, color: textSecondary),
                   title: '连接器',
-                  subtitle: '联网搜索与外部工具',
-                  trailing: s.searchEnabled
-                      ? Container(
-                          width: 8,
-                          height: 8,
-                          decoration: const BoxDecoration(color: Color(0xFF10B981), shape: BoxShape.circle),
-                        )
-                      : const SizedBox(width: 18),
+                  trailing: chevron(dot: s.searchEnabled),
                   onTap: () => setSt(() => page = 'connectors'),
                 ),
               ],
@@ -3250,10 +3316,36 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
     entry = _showOverlayPanel(
       context,
       _plusBtnKey,
-      width: 240,
-      height: 200,
+      width: 250,
+      height: 300,
       content: contentBuilder(context, (_) {}),
     );
+  }
+
+  /// 选择文本文件加入外挂知识库。成功返回 null；失败返回错误文案。
+  Future<String?> _pickKbFile() async {
+    try {
+      final res = await FilePicker.platform.pickFiles(type: FileType.any, withData: true);
+      if (res == null || res.files.isEmpty) return null;
+      final f = res.files.first;
+      final bytes = f.bytes;
+      final name = f.name;
+      if (bytes == null || bytes.isEmpty) return '文件为空';
+      final lower = name.toLowerCase();
+      const textExts = ['.txt', '.md', '.json', '.dart', '.js', '.ts', '.html', '.htm', '.css', '.csv', '.xml', '.yml', '.yaml', '.log', '.py', '.java', '.c', '.cpp', '.h', '.sql'];
+      final isText = textExts.any((e) => lower.endsWith(e));
+      if (!isText) return '暂支持 txt / md / csv / json 等文本文件';
+      String text;
+      try {
+        text = utf8.decode(bytes);
+      } catch (_) {
+        text = latin1.decode(bytes);
+      }
+      if (text.trim().isEmpty) return '文件内容为空';
+      return KnowledgeBase.add(name, text);
+    } catch (e) {
+      return '选择文件失败：$e';
+    }
   }
 
   void _showChatToast(BuildContext context, String text) {
