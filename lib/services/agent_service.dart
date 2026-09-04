@@ -440,14 +440,14 @@ class AgentService {
           'type': 'function',
           'function': {
             'name': 'start_dictation',
-            'description': '启动单词默写（听写）练习并进入默写页。当用户要求"默写"、"听写"、"开始默写"时调用。',
+            'description': '启动单词默写（听写）或拼写练习并进入默写页。当用户要求"默写"、"听写"、"开始默写"、"拼写单词"、"拼写练习"时调用。',
             'parameters': {
               'type': 'object',
               'properties': {
                 'mode': {
                   'type': 'string',
-                  'enum': ['zh2en', 'en2zh'],
-                  'description': '默写方向：zh2en=看中文默写英文, en2zh=看英文默写中文。默认 zh2en',
+                  'enum': ['zh2en', 'en2zh', 'spell'],
+                  'description': '默写方向：zh2en=看中文默写英文, en2zh=看英文默写中文, spell=拼写练习（看释义，随机提示 1-2 个字母后补全拼写）。默认 zh2en',
                 },
                 'count': {
                   'type': 'integer',
@@ -459,6 +459,11 @@ class AgentService {
                   'type': 'string',
                   'enum': ['zsb', 'custom', 'maimemo'],
                   'description': '词库来源：zsb=专升本词库, custom=自定义词库, maimemo=墨墨词库。默认 zsb',
+                },
+                'spelling_hints': {
+                  'type': 'integer',
+                  'enum': [-1, 0, 1, 2],
+                  'description': '仅 mode=spell 有效：提示字母数。-1=自动分档（≤3字母给首字母/4-6给首字母+1随机/>6给首字母+2随机）, 0=无提示, 1=仅首字母, 2=首字母+随机1个。默认 -1',
                 },
               },
               'required': ['count'],

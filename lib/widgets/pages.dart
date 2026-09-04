@@ -2627,6 +2627,8 @@ class _DictationPageState extends State<DictationPage> {
   int _count = 10;
   /// 词库来源：'custom' = 自定义词库 | 'zsb' = 专升本词库 | 'maimemo' = 墨墨词库
   String _source = 'zsb';
+  /// 拼写模式：当前拼出的完整单词（由 _SpellingGrid 回调填充，提交用）
+  String _spellAnswer = '';
   late final int _zsbCount;
   final TextEditingController _ansCtrl = TextEditingController();
   String? _feedback;
@@ -2656,6 +2658,7 @@ class _DictationPageState extends State<DictationPage> {
 
   void _resetDictationState() {
     _ansCtrl.clear();
+    _spellAnswer = '';
     _feedback = null;
     _isCorrect = false;
     _showAnswer = false;
@@ -2678,6 +2681,9 @@ class _DictationPageState extends State<DictationPage> {
     // 兜底：队列非空但当前词取不到时回到开始页，避免 w! 空崩溃
     if (w == null) {
       return _buildStartPage(s);
+    }
+    if (s.dictationMode == 'spell') {
+      return _buildSpellingPage(s, w);
     }
     return _buildAnsweringPage(s, w);
   }
@@ -2728,6 +2734,17 @@ class _DictationPageState extends State<DictationPage> {
                   child: _countChip(c, n),
                 ),
             ]),
+            if (_mode == 'spell') ...[
+              const SizedBox(height: 22),
+              _sectionHeader(c, Icons.tips_and_updates_outlined, '提示字母'),
+              const SizedBox(height: 12),
+              Row(children: [
+                _hintChip(c, -1, '自动'),
+                _hintChip(c, 0, '无提示'),
+                _hintChip(c, 1, '1 个'),
+                _hintChip(c, 2, '2 个'),
+              ]),
+            ],
             const SizedBox(height: 22),
             // 自动跳转
             _autoAdvanceTile(c, isGlass),
@@ -2797,6 +2814,7 @@ class _DictationPageState extends State<DictationPage> {
     const modes = [
       (v: 'zh2en', label: '中文 → 英文', sub: '看中文，默写英文', icon: Icons.translate_rounded),
       (v: 'en2zh', label: '英文 → 中文', sub: '看英文，默写中文', icon: Icons.menu_book_rounded),
+      (v: 'spell', label: '拼写', sub: '看释义，补全拼写', icon: Icons.abc_rounded),
     ];
     return Container(
       padding: const EdgeInsets.all(4),
@@ -2855,6 +2873,31 @@ class _DictationPageState extends State<DictationPage> {
           boxShadow: sel ? [BoxShadow(color: Colors.black.withValues(alpha: 0.10), blurRadius: 10, offset: const Offset(0, 3))] : null,
         ),
         child: Text('$n 题', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: sel ? _accentText : c.textSecondary)),
+      ),
+    );
+  }
+
+  // ===== 拼写提示字母数胶囊 =====
+  Widget _hintChip(AppColors c, int v, String label) {
+    final sel = AppScope.of(context).spellingHintCount == v;
+    return GestureDetector(
+      onTap: () {
+        AppScope.of(context).setSpellingHintCount(v);
+        setState(() {});
+      },
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOutCubic,
+        margin: const EdgeInsets.only(right: 10),
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 9),
+        decoration: BoxDecoration(
+          gradient: sel ? _accentGradient : null,
+          color: sel ? null : c.chipUnselected,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: sel ? _accentDark : c.chipBorder),
+          boxShadow: sel ? [BoxShadow(color: Colors.black.withValues(alpha: 0.10), blurRadius: 10, offset: const Offset(0, 3))] : null,
+        ),
+        child: Text(label, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: sel ? _accentText : c.textSecondary)),
       ),
     );
   }
@@ -3124,6 +3167,175 @@ class _DictationPageState extends State<DictationPage> {
   }
 
   // ===== 答题页面（参考"墨墨词库"简洁深色风格） =====
+  // ===== 拼写模式答题页：释义 + 逐格补全 =====
+  Widget _buildSpellingPage(AppState s, WordToken w) {
+    final c = AppColors.of(context);
+    final isGlass = s.isGlassUI;
+    final total = s.dictationQueue.length;
+    final progress = total == 0 ? 0.0 : (s.dictationIdx / total);
+    final hints = s.spellingHintPositions(w.word);
+    final entry = DictService.lookup(w.word);
+    final phonetic = entry?.phonetic ?? '';
+    final posLabel = w.pos.isNotEmpty ? w.pos : (entry?.pos ?? '');
+    final panelColor = isGlass
+        ? (c.isLight ? Colors.white.withValues(alpha: 0.6) : const Color(0xFF232328).withValues(alpha: 0.6))
+        : c.card;
+
+    return Center(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(32),
+        child: SizedBox(
+          width: 640,
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            // 顶部信息栏
+            Row(children: [
+              Text(_sourceName(s), style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: c.text)),
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 9),
+                child: Icon(Icons.circle, size: 3, color: Color(0xFF70727C)),
+              ),
+              Text('共 $total 题', style: TextStyle(fontSize: 13, color: c.textTertiary)),
+              const Spacer(),
+              Text('${s.dictationIdx + 1} / $total', style: TextStyle(fontSize: 13, color: c.textSecondary, fontFeatures: const [FontFeature.tabularFigures()])),
+            ]),
+            const SizedBox(height: 14),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(999),
+              child: TweenAnimationBuilder<double>(
+                tween: Tween(begin: 0, end: progress),
+                duration: const Duration(milliseconds: 350),
+                curve: Curves.easeOut,
+                builder: (ctx, v, _) => LinearProgressIndicator(
+                  value: v,
+                  minHeight: 3,
+                  backgroundColor: c.progressBg,
+                  valueColor: AlwaysStoppedAnimation(c.primaryText),
+                ),
+              ),
+            ),
+            const SizedBox(height: 32),
+            // 提示
+            Row(children: [
+              Container(
+                width: 28, height: 28,
+                decoration: BoxDecoration(color: c.primaryBg, borderRadius: BorderRadius.circular(8)),
+                child: Icon(Icons.lightbulb_outline_rounded, size: 15, color: c.primaryText),
+              ),
+              const SizedBox(width: 10),
+              Text('根据释义拼写该单词', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w500, color: c.textSecondary)),
+            ]),
+            const SizedBox(height: 16),
+            // 释义卡
+            Container(
+              width: double.infinity,
+              constraints: const BoxConstraints(minHeight: 180),
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 28),
+              decoration: BoxDecoration(
+                color: panelColor,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: c.border),
+              ),
+              child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+                Text(
+                  w.translation.isEmpty ? '（暂无释义）' : w.translation,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 30, fontWeight: FontWeight.w600, color: c.text, height: 1.25, letterSpacing: 0.5),
+                ),
+                if (phonetic.isNotEmpty || posLabel.isNotEmpty) ...[
+                  const SizedBox(height: 16),
+                  Text(
+                    [if (phonetic.isNotEmpty) '/$phonetic/', if (posLabel.isNotEmpty) posLabel].join(' · '),
+                    style: TextStyle(fontSize: 13, color: c.textTertiary, letterSpacing: 0.2),
+                  ),
+                ],
+              ]),
+            ),
+            const SizedBox(height: 24),
+            // 逐格拼写输入
+            _SpellingGrid(
+              key: ValueKey('spell-${s.dictationIdx}-${w.word}'),
+              word: w.word,
+              hints: hints,
+              enabled: !_aiGrading && _feedback == null,
+              accent: c.primaryText,
+              hintFill: c.primaryBg,
+              border: c.border,
+              textColor: c.text,
+              inputFill: c.inputFill,
+              onChanged: (v) => _spellAnswer = v,
+              onSubmit: () {
+                if (_feedback != null) {
+                  _nextQuestion(s);
+                } else if (_spellAnswer.length == w.word.length) {
+                  _submit(s);
+                }
+              },
+            ),
+            const SizedBox(height: 18),
+            // 反馈区
+            if (_feedback != null) ...[
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: _isCorrect ? c.successBg : c.dangerBg,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: _isCorrect ? c.successBorder : c.dangerBorder),
+                ),
+                child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Container(
+                    width: 30, height: 30,
+                    decoration: BoxDecoration(color: _isCorrect ? c.scoreHigh : c.scoreLow, borderRadius: BorderRadius.circular(8)),
+                    child: Icon(_isCorrect ? Icons.check_rounded : Icons.close_rounded, color: Colors.white, size: 18),
+                  ),
+                  const SizedBox(width: 11),
+                  Expanded(
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Row(children: [
+                        Text(_isCorrect ? '拼写正确' : '拼写错误',
+                            style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: _isCorrect ? c.scoreHigh : c.scoreLow)),
+                        if (_autoAdvance && _isCorrect) ...[
+                          const SizedBox(width: 10),
+                          Text('即将跳转下一题', style: TextStyle(fontSize: 11, color: c.textTertiary)),
+                        ],
+                      ]),
+                      if (!_isCorrect) ...[
+                        const SizedBox(height: 6),
+                        Text('正确答案：${w.word}', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: c.primaryText)),
+                      ],
+                    ]),
+                  ),
+                ]),
+              ),
+            ],
+            const SizedBox(height: 22),
+            // 操作区
+            Row(children: [
+              _flatPrimaryButton(c, _feedback != null, () {
+                if (_feedback != null) {
+                  _nextQuestion(s);
+                } else if (_spellAnswer.length == w.word.length) {
+                  _submit(s);
+                }
+              }),
+              const SizedBox(width: 10),
+              _flatSecondaryButton(c, Icons.skip_next_rounded, '跳过', _aiGrading ? null : () => _skip(s)),
+              const Spacer(),
+              TextButton(
+                onPressed: () => setState(() => _showAnswer = !_showAnswer),
+                child: Text(_showAnswer ? '隐藏答案' : '显示答案', style: TextStyle(color: c.textTertiary, fontSize: 13)),
+              ),
+            ]),
+            if (_showAnswer) ...[
+              const SizedBox(height: 10),
+              Center(child: Text(w.word, style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600, color: c.primaryText, letterSpacing: 2))),
+            ],
+          ]),
+        ),
+      ),
+    );
+  }
+
   Widget _buildAnsweringPage(AppState s, WordToken w) {
     final c = AppColors.of(context);
     final isGlass = s.isGlassUI;
@@ -3533,7 +3745,7 @@ class _DictationPageState extends State<DictationPage> {
   }
 
   Future<void> _submit(AppState s) async {
-    final ans = _ansCtrl.text.trim();
+    final ans = (s.dictationMode == 'spell' ? _spellAnswer : _ansCtrl.text).trim();
     if (ans.isEmpty || _aiGrading) return;
     // 先取当前词，再批改（advance=false 不推进索引，避免 UI 刷新后显示错位）
     final w = s.currentDictationWord;
@@ -3595,5 +3807,149 @@ class _DictationPageState extends State<DictationPage> {
     _resetDictationState();
     setState(() {});
     WidgetsBinding.instance.addPostFrameCallback((_) => _focusNode.requestFocus());
+  }
+}
+
+/// 拼写逐格输入：单词每个字母一格，提示格只读预填，其余格可输入。
+/// 输入后自动跳下一格；退格（当前格空时）跳回上一格；填满触发 onSubmit。
+class _SpellingGrid extends StatefulWidget {
+  final String word;
+  final Set<int> hints;
+  final bool enabled;
+  final Color accent;
+  final Color hintFill;
+  final Color border;
+  final Color textColor;
+  final Color inputFill;
+  final ValueChanged<String> onChanged;
+  final VoidCallback onSubmit;
+
+  const _SpellingGrid({
+    super.key,
+    required this.word,
+    required this.hints,
+    required this.enabled,
+    required this.accent,
+    required this.hintFill,
+    required this.border,
+    required this.textColor,
+    required this.inputFill,
+    required this.onChanged,
+    required this.onSubmit,
+  });
+
+  @override
+  State<_SpellingGrid> createState() => _SpellingGridState();
+}
+
+class _SpellingGridState extends State<_SpellingGrid> {
+  late final List<TextEditingController> _ctrls;
+  late final List<FocusNode> _focus;
+  final List<bool> _isHint = [];
+
+  @override
+  void initState() {
+    super.initState();
+    final n = widget.word.length;
+    _ctrls = List.generate(n, (i) {
+      final isHint = widget.hints.contains(i);
+      _isHint.add(isHint);
+      return TextEditingController(text: isHint ? widget.word[i] : '');
+    });
+    _focus = List.generate(n, (_) => FocusNode());
+  }
+
+  @override
+  void dispose() {
+    for (final c in _ctrls) {
+      c.dispose();
+    }
+    for (final f in _focus) {
+      f.dispose();
+    }
+    super.dispose();
+  }
+
+  String get _joined => _ctrls.map((c) => c.text).join();
+
+  void _emit() {
+    widget.onChanged(_joined);
+  }
+
+  bool _isFilled() => _ctrls.every((c) => c.text.trim().isNotEmpty);
+
+  void _onCellChanged(int idx) {
+    final v = _ctrls[idx].text;
+    if (v.isNotEmpty) {
+      _emit();
+      // 输入后跳到下一个空格
+      if (idx < _ctrls.length - 1) {
+        _focus[idx + 1].requestFocus();
+      } else if (_isFilled()) {
+        widget.onSubmit();
+      }
+    } else {
+      _emit();
+      // 退格：当前格清空后回到上一格
+      if (idx > 0 && !_isHint[idx - 1]) {
+        _focus[idx - 1].requestFocus();
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final n = _ctrls.length;
+    // 长单词格子缩小尺寸，保证一行放下
+    final cellSize = n > 10 ? 34.0 : (n > 7 ? 40.0 : 46.0);
+    final cellFont = n > 10 ? 18.0 : 20.0;
+    return Wrap(
+      alignment: WrapAlignment.center,
+      spacing: 8,
+      runSpacing: 8,
+      children: [
+        for (var i = 0; i < n; i++)
+          SizedBox(
+            width: cellSize,
+            height: cellSize + 4,
+            child: TextField(
+              controller: _ctrls[i],
+              focusNode: _focus[i],
+              readOnly: _isHint[i] || !widget.enabled,
+              textAlign: TextAlign.center,
+              maxLength: 1,
+              autofocus: i == 0 && !_isHint[0],
+              style: TextStyle(
+                fontSize: cellFont,
+                fontWeight: FontWeight.w600,
+                color: _isHint[i] ? widget.accent : widget.textColor,
+              ),
+              textCapitalization: TextCapitalization.characters,
+              decoration: InputDecoration(
+                counterText: '',
+                filled: true,
+                fillColor: _isHint[i] ? widget.hintFill : widget.inputFill,
+                contentPadding: EdgeInsets.zero,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                  borderSide: BorderSide(color: _isHint[i] ? widget.accent.withValues(alpha: 0.5) : widget.border),
+                ),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                  borderSide: BorderSide(color: _isHint[i] ? widget.accent.withValues(alpha: 0.5) : widget.border),
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                  borderSide: BorderSide(color: widget.accent, width: 1.6),
+                ),
+              ),
+              onChanged: (_) => _onCellChanged(i),
+              onSubmitted: (_) {
+                if (_isFilled()) widget.onSubmit();
+              },
+            ),
+          ),
+      ],
+    );
   }
 }

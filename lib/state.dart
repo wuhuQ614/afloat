@@ -602,6 +602,46 @@ class AppState extends ChangeNotifier {
   String dictationSource = 'zsb';
   int dictationTotal = 0;
   int dictationCorrect = 0;
+  /// 拼写模式提示字母数：-1=自动分档（≤3给首字母/4-6首字母+1随机/>6首字母+2随机），0/1/2=手动
+  int spellingHintCount = -1;
+
+  void setSpellingHintCount(int v) {
+    spellingHintCount = v;
+    notifyListeners();
+  }
+
+  /// 拼写模式：返回需要预填提示字母的位置索引集合。
+  /// 规则（自动分档 -1）：≤3 字母给首字母；4-6 给首字母 + 随机 1 个；>6 给首字母 + 随机 2 个。
+  /// 手动 0/1/2：0 无提示；1 首字母；2 首字母 + 随机 1 个（非首）。
+  Set<int> spellingHintPositions(String word) {
+    final n = word.length;
+    if (n == 0) return {};
+    final positions = <int>{};
+    // 手动 0 → 无提示
+    if (spellingHintCount == 0) return positions;
+    // 首字母始终提示（价值最高、干扰最少）
+    positions.add(0);
+    int extra;
+    if (spellingHintCount >= 0) {
+      extra = spellingHintCount - 1; // 手动 1/2 → 额外 0/1 个
+    } else {
+      // 自动分档
+      if (n <= 3) {
+        extra = 0;
+      } else if (n <= 6) {
+        extra = 1;
+      } else {
+        extra = 2;
+      }
+    }
+    if (extra <= 0 || n <= 1) return positions;
+    // 从非首字母位置随机抽 extra 个
+    final pool = [for (var i = 1; i < n; i++) i]..shuffle(Random());
+    for (final i in pool.take(extra)) {
+      positions.add(i);
+    }
+    return positions;
+  }
 
   // ===== 初始化 =====
   Future<void> init() async {
@@ -4389,9 +4429,14 @@ class AppState extends ChangeNotifier {
   }
 
   ToolExecResult _toolStartDictation(Map<String, dynamic> args) {
-    final mode = (args['mode'] as String?) == 'en2zh' ? 'en2zh' : 'zh2en';
+    final rawMode = args['mode'] as String?;
+    final mode = rawMode == 'en2zh' ? 'en2zh' : (rawMode == 'spell' ? 'spell' : 'zh2en');
     final count = ((args['count'] as num?)?.toInt() ?? 10).clamp(1, 50);
     final source = (args['source'] as String?) ?? 'zsb';
+    if (mode == 'spell') {
+      final hint = (args['spelling_hints'] as num?)?.toInt() ?? -1;
+      spellingHintCount = hint.clamp(-1, 2);
+    }
     // 校验词库非空
     bool hasWords() {
       if (source == 'custom') return customWordbook.isNotEmpty;
@@ -4406,7 +4451,7 @@ class AppState extends ChangeNotifier {
     return ToolExecResult(
       content: '{"ok":true,"mode":"$mode","count":$count,"source":"$source"}',
       ok: true,
-      actionLabel: '已开始 ${count} 个单词的默写',
+      actionLabel: mode == 'spell' ? '已开始 ${count} 个单词的拼写练习' : '已开始 ${count} 个单词的默写',
     );
   }
 
@@ -7743,9 +7788,9 @@ class AppState extends ChangeNotifier {
     return correct;
   }
 
-  /// 本地判定：中文→英文要求拼写完全一致；英文→中文要求释义包含匹配
+  /// 本地判定：中文→英文/拼写 要求拼写完全一致；英文→中文要求释义包含匹配
   bool _judgeDictationLocal(WordToken w, String ans) {
-    if (dictationMode == 'zh2en') {
+    if (dictationMode == 'zh2en' || dictationMode == 'spell') {
       return ans.toLowerCase() == w.word.toLowerCase();
     }
     final ref = w.translation.replaceAll(RegExp(r'[；;，,。.、/]'), ' ').split(' ').where((s) => s.length >= 2).toList();
@@ -7763,8 +7808,8 @@ class AppState extends ChangeNotifier {
         level: 'zsb',
         chinese: w.translation,
         english: w.word,
-        text: dictationMode == 'zh2en' ? w.translation : w.word,
-        correctAnswer: dictationMode == 'zh2en' ? w.word : w.translation,
+        text: dictationMode == 'en2zh' ? w.word : w.translation,
+        correctAnswer: dictationMode == 'en2zh' ? w.translation : w.word,
         score: 0,
       );
       final now2 = DateTime.now().millisecondsSinceEpoch;
