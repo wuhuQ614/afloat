@@ -5873,7 +5873,6 @@ class _ThinkingFoldState extends State<_ThinkingFold> {
 
   @override
   Widget build(BuildContext context) {
-    final steps = widget.children.length;
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       InkWell(
         onTap: () => setState(() => _expanded = !_expanded),
@@ -5884,14 +5883,6 @@ class _ThinkingFoldState extends State<_ThinkingFold> {
             Text('思考过程',
                 style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w500,
                     color: widget.light ? const Color(0xFF6B6D78) : _subText)),
-            const SizedBox(width: 8),
-            if (widget.running)
-              const SizedBox(
-                width: 11, height: 11,
-                child: CircularProgressIndicator(strokeWidth: 1.5, color: Color(0xFF9CA3AF)),
-              )
-            else
-              Text('$steps 步', style: TextStyle(fontSize: 11, color: _subText)),
             const SizedBox(width: 4),
             AnimatedRotation(
               turns: _expanded ? 0.25 : 0,
