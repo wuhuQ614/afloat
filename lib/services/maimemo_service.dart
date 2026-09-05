@@ -279,6 +279,51 @@ class MaimemoService {
     }).toList();
   }
 
+  /// 拉取全部学习记录（滑窗分页：单次上限 1000，以最后一条的 next_study_date
+  /// 作为下一页起点，官方文档推荐方式；按 vocId 去重防止滑窗边界重复）
+  static Future<List<MaimemoStudyRecord>> fetchAllStudyRecords(
+    String token, {
+    int pageSize = 1000,
+    int maxPages = 20,
+  }) async {
+    final all = <MaimemoStudyRecord>[];
+    final seen = <String>{};
+    String? cursor;
+    for (var page = 0; page < maxPages; page++) {
+      final body = <String, dynamic>{
+        if (cursor != null) 'next_study_date': {'start': cursor},
+        'limit': pageSize,
+      };
+      final data = await _post(token, '/api/v1/study/query_study_records', body);
+      final list = data['records'] as List? ?? [];
+      final records = list.map((e) {
+        final m = e as Map<String, dynamic>;
+        return MaimemoStudyRecord(
+          vocId: m['voc_id']?.toString() ?? '',
+          spelling: m['voc_spelling']?.toString() ?? '',
+          addDate: m['add_date'] as String?,
+          firstStudyDate: m['first_study_date'] as String?,
+          lastStudyDate: m['last_study_date'] as String?,
+          nextStudyDate: m['next_study_date'] as String?,
+          studyCount: _asInt(m['study_count']),
+        );
+      }).toList();
+      var added = 0;
+      for (final r in records) {
+        if (r.vocId.isEmpty || seen.add(r.vocId)) {
+          all.add(r);
+          added++;
+        }
+      }
+      if (records.length < pageSize) break;
+      final last = records.last.nextStudyDate;
+      if (last == null || last.isEmpty) break;
+      cursor = last;
+      if (added == 0) break; // 整页重复时防死循环
+    }
+    return all;
+  }
+
   /// 查询词汇（按拼写或 ID），返回 id + spelling 基本字段（供墨墨词库同步分批校验用）
   static Future<List<MaimemoVocabulary>> queryVocabulary(
     String token, {

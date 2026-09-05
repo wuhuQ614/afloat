@@ -2695,6 +2695,7 @@ class _DictationPageState extends State<DictationPage> {
     final sources = <({String key, IconData icon, String name, int count, String desc})>[
       (key: 'custom', icon: Icons.create_new_folder_outlined, name: '自定义词库', count: s.customWordbook.length, desc: '手动添加自己整理的单词'),
       (key: 'zsb', icon: Icons.school_outlined, name: '专升本词库', count: _zsbCount, desc: '覆盖专升本考纲核心词汇'),
+      (key: 'cet4', icon: Icons.workspace_premium_outlined, name: '四级词库', count: DictService.cet4Words().length, desc: 'CET-4 核心词汇，约 2600 词'),
       (key: 'maimemo', icon: Icons.auto_stories_outlined, name: '墨墨词库', count: s.maimemoWordbook.length, desc: '同步自墨墨今日已学习单词'),
     ];
     return Center(
@@ -2986,6 +2987,7 @@ class _DictationPageState extends State<DictationPage> {
     return switch (s.dictationSource) {
       'custom' => '自定义',
       'maimemo' => '墨墨词库',
+      'cet4' => '四级词库',
       _ => '专升本',
     };
   }
@@ -3252,24 +3254,29 @@ class _DictationPageState extends State<DictationPage> {
             ),
             const SizedBox(height: 24),
             // 逐格拼写输入
-            _SpellingGrid(
-              key: ValueKey('spell-${s.dictationIdx}-${w.word}'),
-              word: w.word,
-              hints: hints,
-              enabled: !_aiGrading && _feedback == null,
-              accent: c.primaryText,
-              hintFill: c.primaryBg,
-              border: c.border,
-              textColor: c.text,
-              inputFill: c.inputFill,
-              onChanged: (v) => _spellAnswer = v,
-              onSubmit: () {
-                if (_feedback != null) {
-                  _nextQuestion(s);
-                } else if (_spellAnswer.length == w.word.length) {
-                  _submit(s);
-                }
-              },
+            // IgnorePointer 锁提交后的交互：不能切 TextField 的 enabled（禁用态
+            // InputDecorator 布局与启用态不同，格子会缩水）；保持视觉状态零变化
+            IgnorePointer(
+              ignoring: _aiGrading || _feedback != null,
+              child: _SpellingGrid(
+                key: ValueKey('spell-${s.dictationIdx}-${w.word}'),
+                word: w.word,
+                hints: hints,
+                enabled: true,
+                accent: c.primaryText,
+                hintFill: c.primaryBg,
+                border: c.border,
+                textColor: c.text,
+                inputFill: c.inputFill,
+                onChanged: (v) => _spellAnswer = v,
+                onSubmit: () {
+                  if (_feedback != null) {
+                    _nextQuestion(s);
+                  } else if (_spellAnswer.length == w.word.length) {
+                    _submit(s);
+                  }
+                },
+              ),
             ),
             const SizedBox(height: 18),
             // 反馈区
@@ -3749,6 +3756,29 @@ class _DictationPageState extends State<DictationPage> {
     if (ans.isEmpty || _aiGrading) return;
     // 先取当前词，再批改（advance=false 不推进索引，避免 UI 刷新后显示错位）
     final w = s.currentDictationWord;
+    // 拼写模式：本地全等判定，不走 AI 批改——AI 批改的题面构造只认 zh2en/en2zh，
+    // spell 会落入"英文→中文"分支（题目=单词、标准答案=释义），把拼写正确的答案误判为错
+    if (s.dictationMode == 'spell') {
+      final correct = s.checkDictationAnswer(ans, advance: false);
+      setState(() {
+        _isCorrect = correct;
+        _feedback = correct ? '回答正确！' : '回答错误';
+        _showAnswer = !correct;
+        if (!correct && w != null) {
+          _wrongWords.add(w);
+          s.addToWordBook(w.word, w.translation);
+        }
+      });
+      if (_autoAdvance && correct) {
+        _autoAdvanceTimer?.cancel();
+        _autoAdvanceTimer = Timer(const Duration(milliseconds: 1000), () {
+          if (mounted && _feedback != null && _isCorrect) {
+            _nextQuestion(s);
+          }
+        });
+      }
+      return;
+    }
     setState(() => _aiGrading = true);
     try {
       final result = await s.checkDictationAnswerAI(ans, advance: false);

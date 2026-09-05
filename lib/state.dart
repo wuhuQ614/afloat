@@ -4441,6 +4441,7 @@ class AppState extends ChangeNotifier {
     bool hasWords() {
       if (source == 'custom') return customWordbook.isNotEmpty;
       if (source == 'maimemo') return maimemoWordbook.isNotEmpty;
+      if (source == 'cet4') return DictService.cet4Words().isNotEmpty;
       return DictService.zsbWords().isNotEmpty;
     }
     if (!hasWords()) {
@@ -7751,6 +7752,13 @@ class AppState extends ChangeNotifier {
     } else if (source == 'maimemo') {
       all = maimemoWordbook
           .map((e) => WordToken(text: e.word, type: 'word', word: e.word, pos: '', translation: e.translation, other: ''))
+          .toList();
+    } else if (source == 'cet4') {
+      all = DictService.cet4Words()
+          .map((w) {
+            final e = DictService.cet4Lookup(w);
+            return WordToken(text: w, type: 'word', word: w, pos: e?.pos ?? '', translation: e?.translation ?? '', other: e?.other ?? '');
+          })
           .toList();
     } else {
       all = DictService.zsbWords()

@@ -457,8 +457,8 @@ class AgentService {
                 },
                 'source': {
                   'type': 'string',
-                  'enum': ['zsb', 'custom', 'maimemo'],
-                  'description': '词库来源：zsb=专升本词库, custom=自定义词库, maimemo=墨墨词库。默认 zsb',
+                  'enum': ['zsb', 'custom', 'maimemo', 'cet4'],
+                  'description': '词库来源：zsb=专升本词库, custom=自定义词库, maimemo=墨墨词库, cet4=四级词库。默认 zsb',
                 },
                 'spelling_hints': {
                   'type': 'integer',
