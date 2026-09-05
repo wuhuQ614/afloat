@@ -5881,8 +5881,6 @@ class _ThinkingFoldState extends State<_ThinkingFold> {
         child: Padding(
           padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 2),
           child: Row(mainAxisSize: MainAxisSize.min, children: [
-            Icon(Icons.psychology_outlined, size: 14, color: _subText),
-            const SizedBox(width: 6),
             Text('思考过程',
                 style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w500,
                     color: widget.light ? const Color(0xFF6B6D78) : _subText)),
