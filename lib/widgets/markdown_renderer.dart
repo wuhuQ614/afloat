@@ -9,6 +9,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_math_fork/flutter_math.dart';
 
 import 'code_card.dart';
+import 'chart_card.dart';
 
 class MarkdownRenderer {
   // 解析 RegExp（static final，避免每次重建新建）
@@ -121,7 +122,7 @@ class MarkdownRenderer {
         if (inCodeBlock) {
           spans.add(WidgetSpan(
             alignment: PlaceholderAlignment.middle,
-            child: CodeCard(code: codeBuffer.join('\n'), lang: codeLang),
+            child: chartAwareCodeBlock(codeBuffer.join('\n'), codeLang),
           ));
           codeBuffer.clear();
           inCodeBlock = false;
@@ -289,7 +290,7 @@ class MarkdownRenderer {
     if (inCodeBlock && codeBuffer.isNotEmpty) {
       spans.add(WidgetSpan(
         alignment: PlaceholderAlignment.middle,
-        child: CodeCard(code: codeBuffer.join('\n'), lang: codeLang),
+        child: chartAwareCodeBlock(codeBuffer.join('\n'), codeLang),
       ));
     }
     return TextSpan(children: spans, style: TextStyle(fontSize: 14.5, height: 1.5));

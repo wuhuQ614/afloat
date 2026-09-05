@@ -36,6 +36,7 @@ import 'widgets/platform_select_page.dart';
 import 'widgets/timetable_page.dart';
 import 'widgets/glass_background.dart';
 import 'widgets/code_card.dart';
+import 'widgets/chart_card.dart';
 import 'widgets/maimemo_wordbook_page.dart';
 import 'widgets/browser_page.dart';
 import 'widgets/snake_game_page.dart';
@@ -2380,7 +2381,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
           // R16: 可执行代码卡片（仿 Gemini/ChatGPT Canvas）：语法高亮 + 预览运行/复制/下载
           spans.add(WidgetSpan(
             alignment: PlaceholderAlignment.middle,
-            child: CodeCard(code: codeBuffer.join('\n'), lang: codeLang),
+            child: chartAwareCodeBlock(codeBuffer.join('\n'), codeLang),
           ));
           codeBuffer.clear();
           inCodeBlock = false;
@@ -2560,7 +2561,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
     if (inCodeBlock && codeBuffer.isNotEmpty) {
       spans.add(WidgetSpan(
         alignment: PlaceholderAlignment.middle,
-        child: CodeCard(code: codeBuffer.join('\n'), lang: codeLang),
+        child: chartAwareCodeBlock(codeBuffer.join('\n'), codeLang),
       ));
     }
     return TextSpan(children: spans, style: TextStyle(fontSize: 14.5, height: 1.5));
