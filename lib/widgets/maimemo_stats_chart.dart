@@ -9,32 +9,7 @@ import 'package:flutter/material.dart';
 
 import '../services/maimemo_service.dart';
 import '../theme_colors.dart' show AppColors;
-
-/// 单日统计
-class _DayStat {
-  final DateTime date;
-  int learned = 0; // 已学词数（历史：lastStudyDate 聚合）
-  int newWords = 0; // 其中新学（firstStudyDate 聚合 / 今日 is_new）
-  int wellFamiliar = 0;
-  int familiar = 0;
-  int vague = 0;
-  int forget = 0;
-  final bool isFuture; // 未来列（待学）
-  int due = 0; // 未来：到期待学数（nextStudyDate 聚合）
-
-  _DayStat(this.date, {this.isFuture = false});
-
-  int get total => isFuture ? due : learned;
-}
-
-// 图表配色（文件级，_BarPainter 与 State 共用）
-const _cWellFamiliar = Color(0xFF10B981); // 熟知 绿
-const _cFamiliar = Color(0xFF3B82F6); // 认识 蓝
-const _cVague = Color(0xFFF59E0B); // 模糊 橙
-const _cForget = Color(0xFFEF4444); // 忘记 红
-const _cDue = Color(0xFFC9CDD4); // 待学 灰
-const _cLearned = Color(0xFF5B7FD4); // 历史已学 蓝紫
-const _cNew = Color(0xFF22C1A3); // 新学 青
+import 'stats_bar_chart.dart' show StatsBarChart, DayStat, cStatWellFamiliar, cStatFamiliar, cStatVague, cStatForget, cStatDue, cStatLearned, cStatNew;
 
 class MaimemoStatsChart extends StatefulWidget {
   final String token;
@@ -91,9 +66,9 @@ class _MaimemoStatsChartState extends State<MaimemoStatsChart> {
   /// 认知分层统一用 StudyRecord.last_response（该词当前记忆状态）：
   /// 历史当天的一次性认知细分 API 不提供，用当前状态近似（WELL_FAMILIAR/FAMILIAR/VAGUE/FORGET，
   /// CANCEL_WELL_FAMILIAR 与空值归入「认识」）。
-  List<_DayStat> _buildDays() {
+  List<DayStat> _buildDays() {
     final now = DateTime.now();
-    final days = <_DayStat>[];
+    final days = <DayStat>[];
     // 按日期索引：已学（lastStudyDate）、新学（firstStudyDate）、四色（lastStudyDate × lastResponse）、待学（nextStudyDate）
     final learnedByDay = <String, int>{};
     final firstStudyByDay = <String, int>{};
@@ -126,7 +101,7 @@ class _MaimemoStatsChartState extends State<MaimemoStatsChart> {
       final d = DateTime(now.year, now.month, now.day + i);
       final key = _dateKey(d);
       if (i < 0) {
-        final st = _DayStat(d)
+        final st = DayStat(d)
           ..learned = learnedByDay[key] ?? 0
           ..newWords = firstStudyByDay[key] ?? 0;
         final bucket = respByDay[key];
@@ -139,7 +114,7 @@ class _MaimemoStatsChartState extends State<MaimemoStatsChart> {
         days.add(st);
       } else if (i == 0) {
         // 今天：与历史同一数据源（lastStudyDate 聚合），保证柱形与总量一致
-        final st = _DayStat(d);
+        final st = DayStat(d);
         st.learned = learnedByDay[key] ?? 0;
         st.newWords = _todayWords.where((w) => w.isNew).length;
         final bucket = respByDay[key];
@@ -151,7 +126,7 @@ class _MaimemoStatsChartState extends State<MaimemoStatsChart> {
         }
         days.add(st);
       } else {
-        final st = _DayStat(d, isFuture: true)
+        final st = DayStat(d, isFuture: true)
           ..due = dueByDay[key] ?? 0;
         days.add(st);
       }
@@ -243,7 +218,7 @@ class _MaimemoStatsChartState extends State<MaimemoStatsChart> {
       ]),
       const SizedBox(height: 14),
       // 柱状图
-      SizedBox(height: 170, width: double.infinity, child: CustomPaint(painter: _BarPainter(days: days, cognition: _cognitionMode, textColor: c.text, gridColor: c.border))),
+      SizedBox(height: 220, width: double.infinity, child: StatsBarChart(days: days, cognition: _cognitionMode, textColor: c.text, gridColor: c.border)),
       const SizedBox(height: 10),
       // 图例
       Wrap(
@@ -251,15 +226,15 @@ class _MaimemoStatsChartState extends State<MaimemoStatsChart> {
         runSpacing: 6,
         children: [
           if (_cognitionMode) ...[
-            _legend('熟知', _cWellFamiliar, c),
-            _legend('认识', _cFamiliar, c),
-            _legend('模糊', _cVague, c),
-            _legend('忘记', _cForget, c),
-            _legend('等待复习', _cDue, c),
+            _legend('熟知', cStatWellFamiliar, c),
+            _legend('认识', cStatFamiliar, c),
+            _legend('模糊', cStatVague, c),
+            _legend('忘记', cStatForget, c),
+            _legend('等待复习', cStatDue, c),
           ] else ...[
-            _legend('已学(含复习)', _cLearned, c),
-            _legend('新学', _cNew, c),
-            _legend('等待复习', _cDue, c),
+            _legend('已学(含复习)', cStatLearned, c),
+            _legend('新学', cStatNew, c),
+            _legend('等待复习', cStatDue, c),
           ],
         ],
       ),
@@ -309,114 +284,3 @@ class _MaimemoStatsChartState extends State<MaimemoStatsChart> {
   }
 }
 
-class _BarPainter extends CustomPainter {
-  final List<_DayStat> days;
-  final bool cognition;
-  final Color textColor;
-  final Color gridColor;
-
-  _BarPainter({required this.days, required this.cognition, required this.textColor, required this.gridColor});
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    const axisPad = 16.0;
-    final chartH = size.height - axisPad - 18;
-    final n = days.length;
-    final colW = size.width / n;
-    final barW = colW * 0.52;
-    var maxV = 1;
-    for (final d in days) {
-      if (d.total > maxV) maxV = d.total;
-    }
-    maxV = (maxV * 1.15).ceil();
-
-    // 网格线（3 条横线）
-    final gridPaint = Paint()
-      ..color = gridColor.withValues(alpha: 0.5)
-      ..strokeWidth = 0.5;
-    for (var g = 0; g <= 2; g++) {
-      final y = chartH - chartH * g / 2;
-      canvas.drawLine(Offset(0, y), Offset(size.width, y), gridPaint);
-    }
-
-    final dateStyle = TextStyle(fontSize: 9.5, color: textColor.withValues(alpha: 0.55));
-    final todayStyle = TextStyle(fontSize: 9.5, color: textColor.withValues(alpha: 0.9), fontWeight: FontWeight.w700);
-    final now = DateTime.now();
-
-    for (var i = 0; i < n; i++) {
-      final d = days[i];
-      final cx = colW * i + colW / 2;
-      final left = cx - barW / 2;
-      final total = d.total;
-      final totalH = total <= 0 ? 0.0 : chartH * total / maxV;
-
-      void seg(double yTop, double height, Color color) {
-        if (height <= 0) return;
-        final rrect = RRect.fromRectAndCorners(
-          Rect.fromLTWH(left, yTop, barW, height),
-          topLeft: const Radius.circular(3),
-          topRight: const Radius.circular(3),
-        );
-        canvas.drawRRect(rrect, Paint()..color = color);
-      }
-
-      double top = chartH;
-      if (d.isFuture) {
-        seg(top - totalH, totalH, _cDue);
-      } else if (cognition) {
-        // 四色堆叠（自底向上：忘记/模糊/认识/熟知？墨墨习惯：从底往上按量绘制）
-        final parts = <(int, Color)>[
-          (d.forget, _cForget),
-          (d.vague, _cVague),
-          (d.familiar, _cFamiliar),
-          (d.wellFamiliar, _cWellFamiliar),
-        ];
-        for (final (v, color) in parts) {
-          if (v <= 0) continue;
-          final h = chartH * v / maxV;
-          top -= h;
-          seg(top, h, color);
-        }
-        // 今日无认知细分但已学（first_response 为空的词）：用认识蓝补齐
-        final misc = d.learned - d.wellFamiliar - d.familiar - d.vague - d.forget;
-        if (misc > 0) {
-          final h = chartH * misc / maxV;
-          top -= h;
-          seg(top, h, _cFamiliar.withValues(alpha: 0.6));
-        }
-      } else {
-        // 复习·新学：新学段（青）在上，复习段（蓝紫）在下
-        final newH = chartH * d.newWords / maxV;
-        final reviewH = chartH * (d.learned - d.newWords).clamp(0, 1 << 31) / maxV;
-        top -= newH;
-        seg(top, newH, _cNew);
-        top -= reviewH;
-        seg(top, reviewH, _cLearned);
-      }
-
-      // 数值标注（仅最大几根柱显示，避免拥挤：有值且 > 0 时显示）
-      if (total > 0) {
-        final tp = TextPainter(
-          text: TextSpan(text: '$total', style: TextStyle(fontSize: 9, color: textColor.withValues(alpha: 0.7))),
-          textDirection: TextDirection.ltr,
-        )..layout();
-        tp.paint(canvas, Offset(cx - tp.width / 2, (top - 13).clamp(0, chartH - 12)));
-      }
-
-      // 日期标签
-      final isToday = d.date.year == now.year && d.date.month == now.month && d.date.day == now.day;
-      final label = isToday
-          ? '今天'
-          : '${d.date.month}.${d.date.day}';
-      final dp = TextPainter(
-        text: TextSpan(text: label, style: isToday ? todayStyle : dateStyle),
-        textDirection: TextDirection.ltr,
-      )..layout();
-      dp.paint(canvas, Offset(cx - dp.width / 2, chartH + 4));
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant _BarPainter old) =>
-      old.days != days || old.cognition != cognition || old.textColor != textColor;
-}
