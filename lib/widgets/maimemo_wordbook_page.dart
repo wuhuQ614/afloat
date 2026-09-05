@@ -259,7 +259,11 @@ class _MaimemoWordbookPageState extends State<MaimemoWordbookPage> {
     }
 
     final visible = _visibleWords();
-    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+    // 整页单一滚动（鼠标滚轮/触屏）：统计图加入后内容远超一屏，
+    // 头部区块走 SliverToBoxAdapter，单词列表走 SliverList 保持懒加载
+    return CustomScrollView(slivers: [
+      SliverToBoxAdapter(
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       // Header
       Padding(
         padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
@@ -395,24 +399,102 @@ class _MaimemoWordbookPageState extends State<MaimemoWordbookPage> {
           Text('${visible.length} 个词', style: TextStyle(fontSize: 12, color: c.textTertiary)),
         ]),
       ),
-      // 列表或空状态
-      Expanded(
-        child: visible.isEmpty
-            ? Center(
-                child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-                  Icon(Icons.search_off, size: 40, color: c.textTertiary.withValues(alpha: 0.5)),
-                  const SizedBox(height: 12),
-                  Text('没有找到相关词汇', style: TextStyle(fontSize: 14, color: c.textTertiary)),
-                  const SizedBox(height: 6),
-                  Text(
-                    list.isEmpty ? '点击上方「同步」按钮拉取今日已学单词' : '换个关键词试试',
-                    style: TextStyle(fontSize: 12.5, color: c.textTertiary),
-                  ),
-                ]),
-              )
-            : _buildList(c, list, visible),
+        ]),
       ),
-    ]);
+      // 列表或空状态（Sliver 懒加载，随整页滚动）
+      if (visible.isEmpty)
+        SliverToBoxAdapter(
+          child: SizedBox(
+            height: 240,
+            child: Center(
+              child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+                Icon(Icons.search_off, size: 40, color: c.textTertiary.withValues(alpha: 0.5)),
+                const SizedBox(height: 12),
+                Text('没有找到相关词汇', style: TextStyle(fontSize: 14, color: c.textTertiary)),
+                const SizedBox(height: 6),
+                Text(
+                  list.isEmpty ? '点击上方「同步」按钮拉取今日已学单词' : '换个关键词试试',
+                  style: TextStyle(fontSize: 12.5, color: c.textTertiary),
+                ),
+              ]),
+            ),
+          ),
+        )
+      else
+        SliverList.builder(
+          itemCount: visible.length * 2 - 1,
+          itemBuilder: (ctx, i) {
+            if (i.isOdd) {
+              return Divider(height: 1, thickness: 1, color: c.divider, indent: 20, endIndent: 20);
+            }
+            final idx = i ~/ 2;
+            final w = visible[idx].value;
+            final origIndex = visible[idx].key; // 源列表真实下标（随筛选结果携带，非反查）
+            final entry = DictService.lookup(w.word);
+            final ph = entry?.phonetic ?? '';
+            final pos = entry?.pos ?? '';
+            return InkWell(
+              onTap: () => _editWord(origIndex, w),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 13),
+                child: Row(children: [
+                  Expanded(
+                    flex: 3,
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Text(w.word, style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, letterSpacing: -0.2, color: c.text)),
+                      if (pos.isNotEmpty) ...[
+                        const SizedBox(height: 3),
+                        Text(_posLabel(pos), style: TextStyle(fontSize: 12, color: c.textTertiary)),
+                      ],
+                    ]),
+                  ),
+                  const SizedBox(width: 12),
+                  SizedBox(
+                    width: 112,
+                    child: Text(
+                      ph.isEmpty ? '' : '/$ph/',
+                      style: TextStyle(fontSize: 13, color: c.textTertiary),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    flex: 4,
+                    child: Text(w.translation, style: TextStyle(fontSize: 14, color: c.textSecondary), maxLines: 1, overflow: TextOverflow.ellipsis),
+                  ),
+                  const SizedBox(width: 6),
+                  Row(mainAxisSize: MainAxisSize.min, children: [
+                    if (TtsService.instance.available)
+                      IconButton(
+                        icon: Icon(Icons.volume_up, size: 18, color: c.textTertiary),
+                        tooltip: '发音',
+                        visualDensity: VisualDensity.compact,
+                        onPressed: () => TtsService.instance.speakWord(w.word),
+                      ),
+                    IconButton(
+                      icon: Icon(Icons.edit_outlined, size: 18, color: c.textTertiary),
+                      tooltip: '编辑',
+                      visualDensity: VisualDensity.compact,
+                      onPressed: () => _editWord(origIndex, w),
+                    ),
+                    IconButton(
+                      icon: Icon(Icons.close, size: 18, color: c.textTertiary),
+                      tooltip: '删除',
+                      visualDensity: VisualDensity.compact,
+                      onPressed: () {
+                        s.removeFromMaimemoWordbook(w.word);
+                        setState(() {});
+                      },
+                    ),
+                  ]),
+                ]),
+              ),
+            );
+          },
+        ),
+      ],
+    );
   }
 
   Widget _stat(AppColors c, String num, String label) {
@@ -469,80 +551,6 @@ class _MaimemoWordbookPageState extends State<MaimemoWordbookPage> {
           icon: Icon(Icons.arrow_drop_down, color: c.textTertiary),
         ),
       ),
-    );
-  }
-
-  Widget _buildList(AppColors c, List<WordBookItem> list, List<MapEntry<int, WordBookItem>> visible) {
-    final s = AppScope.of(context);
-    return ListView.separated(
-      padding: const EdgeInsets.only(bottom: 20),
-      itemCount: visible.length,
-      separatorBuilder: (_, __) => Divider(height: 1, thickness: 1, color: c.divider, indent: 20, endIndent: 20),
-      itemBuilder: (ctx, i) {
-        final w = visible[i].value;
-        final origIndex = visible[i].key; // 源列表真实下标（随筛选结果携带，非反查）
-        final entry = DictService.lookup(w.word);
-        final ph = entry?.phonetic ?? '';
-        final pos = entry?.pos ?? '';
-        return InkWell(
-          onTap: () => _editWord(origIndex, w),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 13),
-            child: Row(children: [
-              Expanded(
-                flex: 3,
-                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Text(w.word, style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, letterSpacing: -0.2, color: c.text)),
-                  if (pos.isNotEmpty) ...[
-                    const SizedBox(height: 3),
-                    Text(_posLabel(pos), style: TextStyle(fontSize: 12, color: c.textTertiary)),
-                  ],
-                ]),
-              ),
-              const SizedBox(width: 12),
-              SizedBox(
-                width: 112,
-                child: Text(
-                  ph.isEmpty ? '' : '/$ph/',
-                  style: TextStyle(fontSize: 13, color: c.textTertiary),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                flex: 4,
-                child: Text(w.translation, style: TextStyle(fontSize: 14, color: c.textSecondary), maxLines: 1, overflow: TextOverflow.ellipsis),
-              ),
-              const SizedBox(width: 6),
-              Row(mainAxisSize: MainAxisSize.min, children: [
-                if (TtsService.instance.available)
-                  IconButton(
-                    icon: Icon(Icons.volume_up, size: 18, color: c.textTertiary),
-                    tooltip: '发音',
-                    visualDensity: VisualDensity.compact,
-                    onPressed: () => TtsService.instance.speakWord(w.word),
-                  ),
-                IconButton(
-                  icon: Icon(Icons.edit_outlined, size: 18, color: c.textTertiary),
-                  tooltip: '编辑',
-                  visualDensity: VisualDensity.compact,
-                  onPressed: () => _editWord(origIndex, w),
-                ),
-                IconButton(
-                  icon: Icon(Icons.close, size: 18, color: c.textTertiary),
-                  tooltip: '删除',
-                  visualDensity: VisualDensity.compact,
-                  onPressed: () {
-                    s.removeFromMaimemoWordbook(w.word);
-                    setState(() {});
-                  },
-                ),
-              ]),
-            ]),
-          ),
-        );
-      },
     );
   }
 
