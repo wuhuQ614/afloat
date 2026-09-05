@@ -8,7 +8,6 @@ import '../theme_colors.dart' show kPrimary, kSuccess, AppColors;
 import '../services/dict_service.dart';
 import '../services/tts_service.dart';
 import 'settings_dialog.dart';
-import 'maimemo_stats_chart.dart';
 
 class MaimemoWordbookPage extends StatefulWidget {
   const MaimemoWordbookPage({super.key});
@@ -354,11 +353,6 @@ class _MaimemoWordbookPageState extends State<MaimemoWordbookPage> {
             _stat(c, '${_todayCount()}', '今日新增'),
           ]),
         ),
-      ),
-      // 学习情况统计图（复刻墨墨统计页）
-      Padding(
-        padding: const EdgeInsets.fromLTRB(20, 12, 20, 0),
-        child: MaimemoStatsChart(token: s.maimemoToken),
       ),
       // 工具栏：搜索 + 词性筛选 + 排序
       Padding(

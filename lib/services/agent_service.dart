@@ -955,43 +955,6 @@ class AgentService {
             },
           },
         },
-        // ========== dsh-mcp-client（仿 @deepseek-ai/dsh-mcp-client）==========
-        // 用户在设置里填 mcp_servers，AppState 启动时拉起这些 server 并把它们的 tools 合并进来。
-        // 这里仅注册一个空的 list_mcp_tools 占位（实际 MCP 工具列表是动态拼接的）。
-        {
-          'type': 'function',
-          'function': {
-            'name': 'list_mcp_tools',
-            'description':
-                '列出当前已连接的 MCP server 提供的所有工具。返回 {"servers": [{"name": "...", "tools": [{"name": "...", "description": "..."}]}]}。'
-                '需要在设置中配置 MCP server 后才返回非空结果。',
-            'parameters': {
-              'type': 'object',
-              'properties': {},
-            },
-          },
-        },
-        {
-          'type': 'function',
-          'function': {
-            'name': 'call_mcp_tool',
-            'description':
-                '调用某个 MCP server 上的工具。server_name 是 list_mcp_tools 返回的 server 名；tool_name 是该 server 暴露的工具名；arguments 是该工具的参数对象。',
-            'parameters': {
-              'type': 'object',
-              'properties': {
-                'server_name': {'type': 'string'},
-                'tool_name': {'type': 'string'},
-                'arguments': {
-                  'type': 'object',
-                  'description': '该 MCP 工具的参数对象，键值对。',
-                  'additionalProperties': true,
-                },
-              },
-              'required': ['server_name', 'tool_name', 'arguments'],
-            },
-          },
-        },
         // ========== dsh-tool-ask-user（仿 @deepseek-ai/dsh-tool-ask-user）==========
         {
           'type': 'function',
@@ -1295,15 +1258,13 @@ class AgentService {
 | "学习报告/学习成果/统计" | get_study_report |
 | "查看/修改设置、打开/关闭某选项、换主题/模型/温度" | config_settings |
 | "实时信息、新闻、天气、联网核实" | search_web |
-| "查火车票/车次/余票/12306/购票" | list_mcp_tools → call_mcp_tool（优先 12306-mcp 的查询工具）；MCP 未连接/无结果时才 search_web |
-| "查百科知识/名词概念/历史人物/事件/知识求证" | list_mcp_tools → call_mcp_tool（优先 mcp-deepwiki 的搜索/文章工具）；MCP 未连接/无结果时才 search_web |
 | "备份数据、导出备份" | backup_data |
 | "打开某文件/文件夹/软件/网页，执行某条命令" | operate_computer |
 | "读/写/编辑本地文件，列目录，执行 shell 命令" | read_file / write_file / edit_file / list_dir / bash（需要"完全访问"） |
 | "查看带行号的代码、创建文件、精确替换/插入（coding 场景优先）" | str_replace_editor（view/create/str_replace/insert） |
 | "一次性连续执行多个工具（多步文件操作合并）" | run_code（Code Mode：`await tools.<工具名>({...})`） |
 | "下一步拆解多步任务" | todo（按 dsh-tool-todo 规则：单 in_progress，每次提交完整列表） |
-| "按某技能的具体指令工作" | skill（按下方「可用技能目录」匹配技能名，或直接传中文名；不要用 list_mcp_tools——那是 MCP 工具清单，不是技能目录） |
+| "按某技能的具体指令工作" | skill（按下方「可用技能目录」匹配技能名，或直接传中文名） |
 | "OCR/表格/手写/公式识别、文生图、股票分析、简历筛选、PDF转PPT/网页、GitHub操作等专项任务" | skill（按下方「可用技能目录」匹配技能名，加载完整指令后按其工作流执行） |
 | "抓取网页内容（已去除脚本样式）" | web_fetch |
 | "查找之前对话、列出会话清单" | session_query |
@@ -1314,7 +1275,6 @@ class AgentService {
 | "帮我调研 X/查资料汇总成报告" | skill（work-research-brief）：search_web/web_fetch 多源交叉核实 → 报告落盘；量大派 spawn_subagent(type=research) |
 | "把这份材料翻译成中/英文（合同/论文/简历级）" | skill（work-pro-translation）：术语表 → 初译 → 润色 → 校对，双语对照落盘 |
 | "办公、写文档、做数据分析、写/改代码等重活、多步骤独立任务" | spawn_subagent（优先派发子 Agent 隔离执行，避免污染主对话上下文；子 Agent 可自主调用文件/命令/搜索工具多轮完成） |
-| "调用任意 MCP server 提供的工具（需先 list_mcp_tools）" | list_mcp_tools / call_mcp_tool |
 | "需要用户做选择/确认/补全信息" | ask_user_question（先列 2-4 个选项，推荐项加 (Recommended)） |
 | "对话太长，token 接近上限（>80%）" | compact_conversation（保留最近 N 条，旧的总结成摘要） |
 | "用户想用工作区里的自定义技能（.dsh/skills/*.md）" | list_user_skills / load_skill |
@@ -1328,12 +1288,6 @@ class AgentService {
 - 用户说"来3道四级阅读" → type="reading", level="cet4", count=3
 - 用户问英语知识（语法讲解、翻译思路、用法辨析）→ **不要调工具**，直接用你的知识回答
 - 工具返回 ok=false 时，把 reason 翻译成友好提示告诉用户
-
-## MCP 优先原则（关键）
-- **火车票/车次/余票/票价**：先 `list_mcp_tools` 拿到实际工具名（12306-mcp 提供），再 `call_mcp_tool` 查询。
-- **百科类知识求证**（概念、人物、历史、事件、术语）：先 `list_mcp_tools` → `call_mcp_tool` 用 mcp-deepwiki 的搜索/文章工具。
-- **只有 MCP server 未连接、或 MCP 无结果时，才降级用 `search_web`**，并说明"通过搜索补充"。
-- `list_mcp_tools` 返回空或提示未配置时，如实告知用户"当前没有可用的 MCP 服务"，同时用 search_web 继续完成查询，不要只回复"未配置"就结束。
 
 ## 题型枚举说明
 - translation=翻译题, choice=选择题, reading=阅读理解, grammar=语法填空
