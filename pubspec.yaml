@@ -33,6 +33,10 @@ dependencies:
   timezone: ^0.11.1
   package_info_plus: ^9.0.1
   url_launcher: ^6.3.2
+  # 本地 vendor（third_party/enough_mail）：上游 basic_utils 依赖与 excel/pdf
+  # 的 archive 版本冲突，已移除 basic_utils（仅影响未使用的服务器自动发现）。
+  enough_mail:
+    path: third_party/enough_mail
 
 dev_dependencies:
   flutter_test:

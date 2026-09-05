@@ -763,4 +763,22 @@ class Storage {
     _set('grammarProgress', '');
     _set('answeredBankIdx', '');
   }
+
+  // ---- 邮箱账号（JSON 列表，MailAccountConfig）----
+  static String _mailAccountsKey = 'mailAccounts';
+
+  static List<Map<String, dynamic>> loadMailAccounts() {
+    final raw = _get(_mailAccountsKey, '');
+    if (raw.isEmpty) return [];
+    try {
+      final list = jsonDecode(raw) as List;
+      return list.map((e) => (e as Map).cast<String, dynamic>()).toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
+  static Future<void> saveMailAccounts(List<Map<String, dynamic>> accounts) async {
+    _set(_mailAccountsKey, jsonEncode(accounts));
+  }
 }

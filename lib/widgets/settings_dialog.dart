@@ -13,6 +13,7 @@ import '../services/wechat_service.dart';
 import '../state.dart';
 import '../theme_colors.dart' show kPrimary, AppColors;
 import '../theme_diy.dart';
+import '../services/browser_register.dart';
 import 'diy_backdrop.dart';
 import 'learn_page.dart' show AppScope;
 import 'model_fetch_sheet.dart';
@@ -1166,6 +1167,35 @@ class _SettingsDialogState extends State<SettingsDialog> {
   }
 
   // ============== Section 4: 高级功能 ==============
+  void _registerBrowser() {
+    final err = BrowserRegister.register();
+    setState(() {});
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          err == null
+              ? BrowserRegister.isWindows
+                  ? '注册成功，请到 Windows「设置 → 应用 → 默认应用 → 浏览器」中选用 AFloat'
+                  : '已注册'
+              : err,
+          style: const TextStyle(fontSize: 12.5),
+        ),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
+  void _unregisterBrowser() {
+    final err = BrowserRegister.unregister();
+    setState(() {});
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(err == null ? '已取消注册' : err, style: const TextStyle(fontSize: 12.5)),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
   Widget _sectionAdvanced(AppState s, AppColors c) {
     final wechatState = WeChatService.bound
         ? (WeChatService.autoReply ? '已连接 · 自动回复中' : '已连接 · 自动回复关闭')
@@ -1173,6 +1203,61 @@ class _SettingsDialogState extends State<SettingsDialog> {
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       _sectionTitle('高级功能', c),
       const SizedBox(height: 14),
+      // 设为默认浏览器：注册到 Windows 系统候选列表，用户可在系统设置中选用
+      Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: c.isLight ? const Color(0xFFF7F8FA) : const Color(0xFF26262C),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: c.border),
+        ),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [
+            Icon(Icons.language_rounded, size: 18, color: c.isLight ? const Color(0xFF2563EB) : const Color(0xFF60A5FA)),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text('设为默认浏览器', style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w700, color: c.text)),
+                const SizedBox(height: 2),
+                Text(
+                  BrowserRegister.isRegistered
+                      ? '已注册：AFloat 出现在系统默认浏览器候选列表'
+                      : '注册后可在 Windows「设置 → 应用 → 默认应用」中选择 AFloat',
+                  style: TextStyle(fontSize: 11.5, color: BrowserRegister.isRegistered ? const Color(0xFF10B981) : c.textTertiary),
+                ),
+              ]),
+            ),
+          ]),
+          const SizedBox(height: 10),
+          Row(children: [
+            Expanded(
+              child: OutlinedButton.icon(
+                icon: Icon(
+                  BrowserRegister.isRegistered ? Icons.check_circle_rounded : Icons.language_rounded,
+                  size: 16,
+                ),
+                label: Text(
+                  BrowserRegister.isRegistered ? '重新注册' : '注册为默认浏览器',
+                  style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600),
+                ),
+                onPressed: () => _registerBrowser(),
+              ),
+            ),
+            if (BrowserRegister.isRegistered) ...[
+              const SizedBox(width: 10),
+              OutlinedButton(
+                onPressed: () => _unregisterBrowser(),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: const Color(0xFFEF4444),
+                  side: const BorderSide(color: Color(0x33EF4444)),
+                ),
+                child: Text('取消注册', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600)),
+              ),
+            ],
+          ]),
+        ]),
+      ),
+      const SizedBox(height: 10),
       // 页面 DIY：三个主题（经典/毛玻璃/深色）的背景与按钮样式自定义
       _diyEntryCard(s, c),
       const SizedBox(height: 10),

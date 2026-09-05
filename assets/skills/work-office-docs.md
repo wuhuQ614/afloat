@@ -1,9 +1,10 @@
----
+***
+
 name: work-office-docs
 description: 在 Windows 上生成真正的 Word(.docx)/Excel(.xlsx)/PPT(.pptx) 文件（PowerShell COM 自动化，未装 Office 时降级 CSV/HTML/Markdown）。当用户要求做文档、表格、PPT、报告文件时使用。
 category: 办公效率
 source: builtin
----
+---------------
 
 # 办公文档工厂
 
@@ -98,7 +99,11 @@ $out = Join-Path $desktop 'output.docx'
 
 ## 硬性约束
 
-- bash 默认 30 秒超时：Office COM 首次启动可能慢，执行前把 `timeout_ms` 提到 60000；更长的批量任务改用 `run_background_job` + `job_output` 轮询。
+- bash 默认 2 分钟超时（timeout\_ms 可调至 10 分钟），Office COM 首次启动慢也能跑完；更长的批量任务改用 `run_background_job` + `job_output` 轮询。
+
 - COM 对象用完必须 Quit() 并释放，否则残留 WINWORD.EXE/EXCEL.EXE 进程占用文件锁。
+
 - 同名文件已存在时 SaveAs 会失败：脚本里先 `Remove-Item -ErrorAction SilentlyContinue` 或加时间戳后缀。
+
 - 每轮 bash 都是全新 shell：不要依赖上一次的 cd / 变量；脚本内一律用绝对或工作区相对路径自行解析。
+

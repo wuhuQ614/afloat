@@ -45,6 +45,7 @@ import 'widgets/source_viewer_page.dart';
 import 'widgets/agent_rows.dart';
 import 'widgets/multi_expert_page.dart';
 import 'widgets/debate_page.dart';
+import 'pages/mail_page.dart';
 
 final bool _isWindows = !kIsWeb && Platform.isWindows;
 
@@ -62,6 +63,7 @@ const _moreItemsData = [
   (Icons.grid_3x3_rounded, '五子棋', '双人对战五子连珠', 23),
   (Icons.forum_outlined, '辩论模式', '两个模型正反方对辩', 26),
   (Icons.groups_outlined, '多专家团', '解析·执行·验证协作', 25),
+  (Icons.email_outlined, '邮箱', '收发邮件/写信', 27),
 ];
 
 // 更多功能选择页索引
@@ -197,7 +199,7 @@ class _SidebarNavPill extends StatelessWidget {
   }
 }
 
-void main() async {
+void main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
   // 全局异常日志：捕获未处理异常写入文件，便于定位运行时白屏/崩溃
   FlutterError.onError = (details) {
@@ -213,7 +215,25 @@ void main() async {
   }
   // 后台初始化 TTS（失败时自动降级为不可用）
   TtsService.instance.init();
-  runApp(const SmartEnglishApp());
+  runApp(SmartEnglishApp(launchUrl: _extractLaunchUrl(args)));
+}
+
+/// 从命令行参数提取要打开的 URL（Windows 默认浏览器以 `afloat.exe "https://..."` 形式唤起）。
+/// 兼容 `--` 前缀与裸 URL；非 URL 参数返回 null。
+String? _extractLaunchUrl(List<String> args) {
+  if (args.isEmpty) return null;
+  for (final raw in args) {
+    final a = raw.trim();
+    if (a.isEmpty) continue;
+    final url = a.startsWith('"') && a.endsWith('"') && a.length >= 2
+        ? a.substring(1, a.length - 1)
+        : a;
+    final lower = url.toLowerCase();
+    if (lower.startsWith('http://') || lower.startsWith('https://')) return url;
+    if (lower.startsWith('mailto:')) return url;
+    if (lower.startsWith('afloat://')) return 'https://${url.substring(9)}';
+  }
+  return null;
 }
 
 /// 追加写入运行时错误日志（Windows: %APPDATA%\AFloat\error_log.txt；其他: 应用目录）
@@ -368,7 +388,10 @@ void _writeErrorLog(String err, String stack) {
 // _IconChip / _SearchField 已移除（历史版本中保留，现不再使用）
 
 class SmartEnglishApp extends StatefulWidget {
-  const SmartEnglishApp({super.key});
+  const SmartEnglishApp({super.key, this.launchUrl});
+
+  /// 启动时携带的 URL（Windows 被设为默认浏览器后，外部链接以此唤起）
+  final String? launchUrl;
 
   @override
   State<SmartEnglishApp> createState() => _SmartEnglishAppState();
@@ -486,6 +509,13 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
     _state.loadRecordsSelected();
     _state.loadAnsweredBankIndices();
     if (mounted) setState(() => _ready = true);
+    // 外部 URL 唤起：写入 pendingBrowserUrl 并跳转浏览器页（page 19）
+    final url = widget.launchUrl;
+    if (url != null && url.isNotEmpty) {
+      _state.pendingBrowserUrl = url;
+      _state.browserNavSeq++;
+      _state.setPage(19);
+    }
     // 初始化帧率
     _updateFrameRate();
     // 启动 6 秒后静默检查在线更新：有新版才弹窗，网络失败/已是最新则完全无感知
@@ -678,13 +708,27 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                                     body: (_state.page == 10 || _state.page == 11 || _state.page == 20 || _state.page == 19)
                                         ? _buildMainContent()
                                         : (_state.agentFullscreen
-                                            // R14: 专注全屏：图标导航栏 + 全宽聊天页
+                                            // R14: 专注全屏：图标导航栏 + 全宽聊天页（可带侧边浏览器）
                                             ? ListenableBuilder(
-                                                listenable: _state,
-                                                builder: (ctx, _) => Row(children: [
-                                                  _buildAgentRail(),
-                                                  Expanded(child: _buildChatPanel(fullscreen: true)),
-                                                ]),
+                                                listenable: Listenable.merge([_state, _state.sideBrowserNotifier]),
+                                                builder: (ctx, _) {
+                                                  final fc = AppColors(!_state.darkMode);
+                                                  return Row(children: [
+                                                    _buildAgentRail(),
+                                                    Expanded(flex: 5, child: _buildChatPanel(fullscreen: true)),
+                                                    // 全屏模式下同样支持侧边浏览器面板（默认关闭）
+                                                    if (_state.sideBrowserOpen)
+                                                      Expanded(
+                                                        flex: 4,
+                                                        child: Container(
+                                                          decoration: BoxDecoration(
+                                                            border: Border(left: BorderSide(color: fc.divider)),
+                                                          ),
+                                                          child: BrowserPage(onClose: () => _state.toggleSideBrowser(open: false)),
+                                                        ),
+                                                      ),
+                                                  ]);
+                                                },
                                               )
                                             : Row(children: [
                                                 _buildSidebar(),
@@ -1146,7 +1190,8 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
   Widget _buildMainContent() {
     final c = AppColors(!_state.darkMode);
     return ListenableBuilder(
-      listenable: _state.pageNotifier,
+      // 同时监听切页与侧边浏览器开关，两侧任一变化都重建布局
+      listenable: Listenable.merge([_state.pageNotifier, _state.sideBrowserNotifier]),
       builder: (ctx, _) {
         final isGlass = _state.isGlassUI;
         // 考场/游戏/浏览器沉浸模式（page==10/11/20/19）：隐藏 AI 对话栏（右侧30%），内容独占
@@ -1156,33 +1201,44 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
             Expanded(child: _animatedPage()),
           ]);
         }
-        return Row(children: [
-          // 中间内容区（70%）
-          Expanded(
-            flex: 7,
-            child: isGlass
-              // 玻璃模式：只做半透明染色，不再挂 BackdropFilter——
-              // 背景层已换静态实底，模糊纯色没有视觉意义，而内容每帧重绘
-              // （滚动/流式输出）时全屏重跑高斯模糊是卡顿大头
-              ? Container(
-                  decoration: BoxDecoration(
-                    gradient: glassTintGradient(c.bg, _state.darkMode ? 0.45 : 0.5),
-                  ),
-                  child: _animatedPage(),
-                )
-              : _animatedPage(),
+        // 内容区（玻璃模式半透明染色 / 普通实底）
+        final contentArea = isGlass
+            ? Container(
+                decoration: BoxDecoration(
+                  gradient: glassTintGradient(c.bg, _state.darkMode ? 0.45 : 0.5),
+                ),
+                child: _animatedPage(),
+              )
+            : _animatedPage();
+        // 右侧 AI 对话助手 — 监听 darkMode + chatUpdate，避免流式输出时全应用重建
+        final chatPanel = ListenableBuilder(
+          listenable: _state,
+          builder: (ctx2, _) => ListenableBuilder(
+            listenable: _state.chatUpdateNotifier,
+            builder: (ctx3, _) => _buildChatPanel(),
           ),
-          // 右侧 AI 对话助手（30%）— 监听 darkMode + chatUpdate，避免流式输出时全应用重建
-          Expanded(
-            flex: 3,
-            child: ListenableBuilder(
-              listenable: _state,
-              builder: (ctx2, _) => ListenableBuilder(
-                listenable: _state.chatUpdateNotifier,
-                builder: (ctx3, _) => _buildChatPanel(),
+        );
+        // 侧边浏览器开启：内容区/聊天栏/浏览器按 5:2:3 分配
+        if (_state.sideBrowserOpen) {
+          return Row(children: [
+            Expanded(flex: 5, child: contentArea),
+            Expanded(flex: 2, child: chatPanel),
+            Expanded(
+              flex: 3,
+              child: Container(
+                decoration: BoxDecoration(
+                  border: Border(left: BorderSide(color: c.divider)),
+                ),
+                child: BrowserPage(onClose: () => _state.toggleSideBrowser(open: false)),
               ),
             ),
-          ),
+          ]);
+        }
+        return Row(children: [
+          // 中间内容区（70%）
+          Expanded(flex: 7, child: contentArea),
+          // 右侧 AI 对话助手（30%）
+          Expanded(flex: 3, child: chatPanel),
         ]);
       },
     );
@@ -1724,6 +1780,8 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
         return const _PageScaffold(title: '多专家团', child: MultiExpertPage());
       case 26:
         return const _PageScaffold(title: '辩论模式', child: DebatePage());
+      case 27:
+        return const MailPage();
       case 10:
       case 11:
         // 沉浸考场或成绩解析页（外层已隐藏 AI 对话栏）
@@ -1964,6 +2022,14 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                 tooltip: '历史对话',
                 onPressed: () => _showHistoryPicker(hsCtx, c, s),
               )),
+              // 侧边浏览器：对话栏右侧滑出内嵌浏览器面板（普通布局与专注全屏均支持）
+                IconButton(
+                  padding: const EdgeInsets.all(8),
+                  constraints: const BoxConstraints.tightFor(width: 32, height: 32),
+                  icon: Icon(Icons.public_rounded, size: 18, color: s.sideBrowserOpen ? c.primary : c.textTertiary),
+                  tooltip: s.sideBrowserOpen ? '关闭侧边浏览器' : '打开侧边浏览器',
+                  onPressed: () => s.toggleSideBrowser(),
+                ),
             ]),
           ),
         // R32: 旧式「上下文分布」长条已删除——占用情况统一由输入栏圆环承担（含全屏）

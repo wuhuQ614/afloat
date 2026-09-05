@@ -28,6 +28,7 @@ import 'services/chat_capabilities.dart';
 import 'services/mcp_client.dart';
 import 'services/skill_store.dart';
 import 'services/notification_service.dart';
+import 'services/mail_service.dart';
 
 /// 单词跨度信息（用于词组匹配）
 class _WordSpan {
@@ -338,6 +339,25 @@ class AppScope extends InheritedWidget {
 class AppState extends ChangeNotifier {
   // ===== 基础状态 =====
   String direction = 'zh2en';
+
+  /// 待打开的外部 URL（Windows 默认浏览器/Agent 注入，由 BrowserPage 消费后清空）
+  String pendingBrowserUrl = '';
+  /// 希望浏览器页激活的信号（每次自增；BrowserPage 监听 pageNotifier 发现 page==19 时读取 pendingBrowserUrl）
+  int browserNavSeq = 0;
+
+  /// 侧边浏览器开关：在 AI 对话栏右侧滑出内嵌浏览器面板（桌面端）
+  bool sideBrowserOpen = false;
+  /// 侧边浏览器刷新信号（开/关/URL 变化时自增，驱动布局细粒度重建）
+  final ValueNotifier<int> sideBrowserNotifier = ValueNotifier<int>(0);
+
+  /// 切换/设置侧边浏览器：可附带待打开 URL（非空则注入 pendingBrowserUrl 供 BrowserPage 消费）
+  void toggleSideBrowser({bool? open, String url = ''}) {
+    final target = open ?? !sideBrowserOpen;
+    sideBrowserOpen = target;
+    if (url.isNotEmpty) pendingBrowserUrl = url;
+    sideBrowserNotifier.value++;
+    notifyListeners();
+  }
   List<ChatMessage> chatHistory = [];
   List<Question> generatedQuestions = [];
   int generatedQuestionIdx = 0;
@@ -3102,6 +3122,12 @@ class AppState extends ChangeNotifier {
       switch (name) {
         case 'search_knowledge_base':
           return _toolSearchKnowledgeBase(args);
+        case 'mail_list':
+          return await _toolMailList(args);
+        case 'mail_send':
+          return await _toolMailSend(args);
+        case 'browser_open':
+          return _toolBrowserOpen(args);
         case 'generate_questions':
           return await _toolGenerateQuestions(args);
         case 'generate_full_exam':
@@ -3229,7 +3255,120 @@ class AppState extends ChangeNotifier {
     }
   }
 
-  /// 检索外挂知识库：按关键词评分返回最相关片段
+  /// 在浏览器中打开网址（Agent 工具 browser_open）：
+  /// 桌面端 → 对话栏右侧滑出侧边浏览器；移动端/全屏浏览器页 → 跳转全屏浏览器页（page 19）
+  ToolExecResult _toolBrowserOpen(Map<String, dynamic> args) {
+    var url = (args['url'] as String?)?.trim() ?? '';
+    if (url.isEmpty) {
+      return const ToolExecResult(content: '{"ok":false,"reason":"missing_url"}', ok: false);
+    }
+    if (!url.contains('://')) {
+      url = 'https://$url';
+    }
+    if (page == 19 || uiMode == 'mobile') {
+      pendingBrowserUrl = url;
+      browserNavSeq++;
+      if (page != 19) setPage(19);
+    } else {
+      toggleSideBrowser(open: true, url: url);
+    }
+    return ToolExecResult(
+      content: jsonEncode({'ok': true, 'opened': url}),
+      ok: true,
+      actionLabel: '已在浏览器中打开 $url',
+    );
+  }
+
+  /// 列出收件箱邮件（Agent 工具 mail_list）
+  Future<ToolExecResult> _toolMailList(Map<String, dynamic> args) async {
+    final accounts = MailService.loadFromStorage();
+    if (accounts.isEmpty) {
+      return const ToolExecResult(
+        content: '{"ok":false,"reason":"no_account"}',
+        ok: false,
+        actionLabel: '尚未配置邮箱账号，请在「更多功能 → 邮箱 → 账号」中添加',
+      );
+    }
+    final email = (args['email'] as String?)?.trim() ?? '';
+    final count = (args['count'] as num?)?.toInt() ?? 20;
+    final MailAccountConfig account;
+    if (email.isNotEmpty) {
+      final matched = accounts.where((a) => a.email.toLowerCase() == email.toLowerCase()).toList();
+      if (matched.isEmpty) {
+        return ToolExecResult(
+          content: jsonEncode({'ok': false, 'reason': 'account_not_found', 'available': accounts.map((a) => a.email).toList()}),
+          ok: false,
+        );
+      }
+      account = matched.first;
+    } else {
+      account = accounts.first;
+    }
+    try {
+      final items = await MailService(accounts).fetchInbox(account, count: count.clamp(1, 50));
+      return ToolExecResult(
+        content: jsonEncode({
+          'ok': true,
+          'account': account.email,
+          'count': items.length,
+          'mails': items.map((m) => m.toJson()).toList(),
+        }),
+        ok: true,
+      );
+    } catch (e) {
+      return ToolExecResult(
+        content: jsonEncode({'ok': false, 'reason': 'fetch_failed', 'error': e.toString().split('\n').first}),
+        ok: false,
+        actionLabel: '收件失败，请检查网络或授权码',
+      );
+    }
+  }
+
+  Future<ToolExecResult> _toolMailSend(Map<String, dynamic> args) async {
+    final accounts = MailService.loadFromStorage();
+    if (accounts.isEmpty) {
+      return const ToolExecResult(
+        content: '{"ok":false,"reason":"no_account"}',
+        ok: false,
+        actionLabel: '尚未配置邮箱账号，请在「更多功能 → 邮箱 → 账号」中添加',
+      );
+    }
+    final email = (args['email'] as String?)?.trim() ?? '';
+    final to = (args['to'] as String?)?.trim() ?? '';
+    final subject = (args['subject'] as String?)?.trim() ?? '';
+    final body = (args['body'] as String?)?.trim() ?? '';
+    final MailAccountConfig account;
+    if (email.isNotEmpty) {
+      final matched = accounts.where((a) => a.email.toLowerCase() == email.toLowerCase()).toList();
+      if (matched.isEmpty) {
+        return ToolExecResult(
+          content: jsonEncode({'ok': false, 'reason': 'account_not_found', 'available': accounts.map((a) => a.email).toList()}),
+          ok: false,
+        );
+      }
+      account = matched.first;
+    } else {
+      account = accounts.first;
+    }
+    if (to.isEmpty) {
+      return const ToolExecResult(content: '{"ok":false,"reason":"missing_to"}', ok: false);
+    }
+    try {
+      await MailService(accounts).sendMail(account, to: to, subject: subject, body: body);
+      return ToolExecResult(
+        content: jsonEncode({'ok': true, 'from': account.email, 'to': to, 'subject': subject}),
+        ok: true,
+        actionLabel: '邮件已发送',
+      );
+    } catch (e) {
+      return ToolExecResult(
+        content: jsonEncode({'ok': false, 'reason': 'send_failed', 'error': e.toString().split('\n').first}),
+        ok: false,
+        actionLabel: '发送失败，请检查网络或授权码',
+      );
+    }
+  }
+
   ToolExecResult _toolSearchKnowledgeBase(Map<String, dynamic> args) {
     final query = ((args['query'] as String?) ?? '').trim();
     var topK = (args['top_k'] as num?)?.toInt() ?? 5;
@@ -5351,9 +5490,11 @@ class AppState extends ChangeNotifier {
         actionLabel: '重复失败命令已拦截',
       );
     }
-    var timeoutMs = (args['timeout_ms'] as num?)?.toInt() ?? 30000;
+    // 默认 2 分钟、上限 10 分钟：长任务（构建/安装/脚本）可直接跑完；
+    // 更长或常驻型任务用 run_background_job 后台化，避免占死一轮工具调用。
+    var timeoutMs = (args['timeout_ms'] as num?)?.toInt() ?? 120000;
     if (timeoutMs < 1000) timeoutMs = 1000;
-    if (timeoutMs > 60000) timeoutMs = 60000;
+    if (timeoutMs > 600000) timeoutMs = 600000;
     bool userAborted = false;
     bool timedOut = false;
     try {
@@ -5798,7 +5939,10 @@ class AppState extends ChangeNotifier {
       try {
         // Process.start 保留进程引用，job_kill 可真正终止；
         // Process.run 无法拿到 Process 对象，kill 只能改标志位（旧缺陷）
-        final proc = await Process.start('cmd', ['/c', cmd], runInShell: false);
+        // cwd 与 _toolBash 保持一致（工作区根目录），相对路径命令在前后台行为相同；
+        // 工作区目录不存在时回退系统默认 cwd。
+        final bgWd = Directory(_fsRoot()).existsSync() ? _fsRoot() : null;
+        final proc = await Process.start('cmd', ['/c', cmd], runInShell: false, workingDirectory: bgWd);
         job.process = proc;
         // kill 恰好发生在 start 与赋值之间的竞态窗口：立即补杀
         if (job.killed) proc.kill();
@@ -5844,7 +5988,7 @@ class AppState extends ChangeNotifier {
     final wait = args['wait'] != false;
     var timeoutMs = (args['timeout_ms'] as num?)?.toInt() ?? 5000;
     if (timeoutMs < 100) timeoutMs = 100;
-    if (timeoutMs > 60000) timeoutMs = 60000;
+    if (timeoutMs > 600000) timeoutMs = 600000;
     final job = backgroundJobs[jobId];
     if (job == null) {
       return ToolExecResult(content: jsonEncode({'ok': false, 'reason': 'job_not_found'}), ok: false, actionLabel: '未找到任务 $jobId');

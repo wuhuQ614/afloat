@@ -60,5 +60,5 @@ $m = $rows | Measure-Object score -Min -Max -Average
 ## 硬性约束
 
 - 所有数字必须来自工具的真实输出；报告里的每个数字都能追溯到某次命令结果。
-- bash 默认 30 秒超时：大数据集（>10 万行）改用 `run_background_job` 跑批 + `job_output` 取结果。
+- bash 默认 2 分钟超时（timeout_ms 可调至 10 分钟）：超长跑批（>10 万行）改用 `run_background_job` + `job_output` 轮询取结果。
 - 用户问的是业务问题（如「为什么销量跌了」）：先给数据侧能回答的部分，明确指出哪些原因需要数据之外的验证。

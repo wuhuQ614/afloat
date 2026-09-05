@@ -59,6 +59,72 @@ class AgentService {
         {
           'type': 'function',
           'function': {
+            'name': 'mail_list',
+            'description': '列出用户邮箱账号的收件箱邮件摘要（发件人/主题/时间/是否已读）。当用户询问"邮箱/收件箱/有没有新邮件/谁发来的邮件"时调用。若用户配置了多个账号且未指定，默认使用第一个账号；可通过 email 参数指定邮箱地址。',
+            'parameters': {
+              'type': 'object',
+              'properties': {
+                'email': {
+                  'type': 'string',
+                  'description': '要查询的邮箱地址（可选，未指定时用默认账号）',
+                },
+                'count': {
+                  'type': 'integer',
+                  'description': '返回邮件的数量（1-50），默认 20',
+                },
+              },
+            },
+          },
+        },
+        {
+          'type': 'function',
+          'function': {
+            'name': 'mail_send',
+            'description': '使用用户已配置的邮箱账号发送邮件。当用户要求"发邮件/发信/给某人发一封邮件"时调用。发送前需向用户确认收件人与内容（可先列出收件箱里的邮件帮助用户决策）。',
+            'parameters': {
+              'type': 'object',
+              'properties': {
+                'email': {
+                  'type': 'string',
+                  'description': '发件邮箱地址（可选，未指定时用默认账号）',
+                },
+                'to': {
+                  'type': 'string',
+                  'description': '收件人地址，多个用逗号分隔',
+                },
+                'subject': {
+                  'type': 'string',
+                  'description': '邮件主题',
+                },
+                'body': {
+                  'type': 'string',
+                  'description': '邮件正文',
+                },
+              },
+              'required': ['to', 'subject', 'body'],
+            },
+          },
+        },
+        {
+          'type': 'function',
+          'function': {
+            'name': 'browser_open',
+            'description': '打开网页/网址。桌面端会在对话栏右侧滑出侧边浏览器面板并加载该网址（用户可一边对话一边浏览）；移动端或已在浏览器页时切换至全屏浏览器。URL 可省略协议前缀（自动补 https://）。当用户要求"打开某网站/查一下某网页/进入某网址"时调用。',
+            'parameters': {
+              'type': 'object',
+              'properties': {
+                'url': {
+                  'type': 'string',
+                  'description': '要打开的网址，例如 www.example.com 或 https://example.com',
+                },
+              },
+              'required': ['url'],
+            },
+          },
+        },
+        {
+          'type': 'function',
+          'function': {
             'name': 'generate_questions',
             'description': '为用户生成英语练习题并放入答题区。当用户要求出题、练习、做题、生成综合模拟全卷时调用。',
             'parameters': {
@@ -1266,6 +1332,7 @@ class AgentService {
 | "下一步拆解多步任务" | todo（按 dsh-tool-todo 规则：单 in_progress，每次提交完整列表） |
 | "按某技能的具体指令工作" | skill（按下方「可用技能目录」匹配技能名，或直接传中文名） |
 | "OCR/表格/手写/公式识别、文生图、股票分析、简历筛选、PDF转PPT/网页、GitHub操作等专项任务" | skill（按下方「可用技能目录」匹配技能名，加载完整指令后按其工作流执行） |
+| "修改/新增/理解应用自身功能（迭代开发）、排查应用功能问题" | skill（**必须先加载 project-structure 技能**了解项目目录、模块职责与硬约束，再制定改动方案；禁止在不了解结构的情况下盲目修改） |
 | "抓取网页内容（已去除脚本样式）" | web_fetch |
 | "查找之前对话、列出会话清单" | session_query |
 | "派生子 Agent 处理子任务（research/coder/general）" | spawn_subagent |
@@ -1320,7 +1387,8 @@ class AgentService {
 ## 真实工作任务守则（办公/工作场景）
 - **先锁定交付物再动手**：格式（docx/xlsx/pptx/md/csv/pdf）、保存位置、篇幅、受众、截止时间。信息不足时用 ask_user_question 一次性问清关键项（2-4 问），不要连环追问也不要擅自假设关键约束。
 - **交付必须落盘**：文档/表格/报告/代码一律写成文件（write_file 或脚本生成），最终回复给出完整路径；桌面端再用 operate_computer(open_file) 帮用户直接打开。只把全文贴在聊天里不算交付。
-- **PowerShell 脚本模式**：bash 是 cmd.exe（每轮全新 shell、默认 30 秒超时）。超过一行的系统操作先 write_file 写 .ps1 脚本，再执行 `powershell -NoProfile -ExecutionPolicy Bypass -File <脚本>.ps1`——避免 cmd 引号地狱与超长单命令。
+- **PowerShell 脚本模式**：bash 是 cmd.exe（每轮全新 shell、默认 2 分钟超时、可用 timeout_ms 调至 10 分钟）。超过一行的系统操作先 write_file 写 .ps1 脚本，再执行 `powershell -NoProfile -ExecutionPolicy Bypass -File <脚本>.ps1`——避免 cmd 引号地狱与超长单命令。
+- **长任务/常驻进程用后台任务**：构建、安装、dev server 等长耗时或需要边跑边看的命令，用 run_background_job 启动（立即返回 job_id），然后 job_output 轮询输出（wait=false 看即时进度、wait=true 阻塞等结束，timeout_ms 最长 10 分钟）、job_kill 终止。不要用 bash 前台死等常驻进程。
 - **中文编码陷阱**：PowerShell 5.1 把无 BOM 的 .ps1 按 ANSI 解析，脚本里的中文会乱码。做法：中文内容放独立 UTF-8 文本文件（write_file 写入），.ps1 内用 `Get-Content -Encoding UTF8` 读取；.ps1 本身只含 ASCII 字符。
 - **生成真正的 Office 文件**：机器装了 Office 时优先 COM 自动化（`New-Object -ComObject Word.Application / Excel.Application / PowerPoint.Application`）；未装 Office 时降级 Markdown/CSV/HTML 并向用户说明原因。
 - **多步任务先规划**：≥3 步的任务先 todo 列清单逐步推进；耗时的独立子任务派 spawn_subagent 隔离执行；方案需要用户拍板时先 submit_plan。
@@ -1329,7 +1397,7 @@ class AgentService {
 ## 回复风格
 你的工具使用习惯：
 - 写文件首选 read_file → edit_file（精确替换），其次 write_file（整段覆盖）
-- bash 每次都是新 shell，不要假设 cwd；需要时显式写 `cd /d <dir> && <cmd>`
+- bash 默认在工作区根目录执行，但每轮都是新 shell；需要跨命令保留状态（环境变量/激活虚拟环境）时，合并成一条 `cd /d <dir> && <cmd>` 或写成脚本执行
 - 中文提问用中文回复，英文提问用英文回复
 - 工具调用后用简洁友好的语言总结结果，不要重复原始 JSON
 - 不要编造工具没有的能力
@@ -1358,7 +1426,7 @@ class AgentService {
     // 技能目录作为独立 section 注入（渐进式披露：仅元数据，不加载正文）
     final catalog = (skillCatalog ?? '').trim();
     if (catalog.isNotEmpty) {
-      sections.add((order: 100, text: '## 可用技能目录（渐进式披露）\n以下是当前启用的技能列表（仅名称与触发描述，完整指令未注入）。\n当用户任务命中某技能的触发场景时，**先调用 skill 工具加载该技能的完整指令**，再严格按指令工作流执行。\n技能正文只在需要时加载一次，不要为不相关的任务加载技能。\n\n$catalog'));
+      sections.add((order: 100, text: '## 可用技能目录（渐进式披露）\n以下是当前启用的技能列表（仅名称与触发描述，完整指令未注入）。\n当用户任务命中某技能的触发场景时，**先调用 skill 工具加载该技能的完整指令**，再严格按指令工作流执行。\n技能正文只在需要时加载一次，不要为不相关的任务加载技能。\n\n特别地：当用户要求新增/修改/理解/排查应用自身功能（迭代开发应用）时，**必须先调用 skill 加载 project-structure 技能**（项目功能结构总览），了解项目目录、模块职责、硬约束与迭代工作流后再动手。\n\n$catalog'));
     }
 
     // 按 order 升序拼接所有 section（DSH 分层组装）
