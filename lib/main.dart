@@ -2221,7 +2221,9 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
         const SizedBox(height: 2),
       ],
       // R9: 工作流时间线：思考段（带时长）与工具步骤按轮次穿插（仿 coding-agent 过程流）
-      if (msg.showReasoning) ..._buildAgentTimeline(msg, isLight, running),
+      // 「思考过程」折叠容器（仿 TraeWork）：运行中默认展开，结束自动收起，点击切换
+      if (msg.showReasoning)
+        _ThinkingFold(children: _buildAgentTimeline(msg, isLight, running), running: running, light: isLight),
       if (hasSteps) const SizedBox(height: 2),
       // dsh-tool-ask-user：弹问题让用户选。
       // 多轮提问按序堆叠展示，每轮独立 ValueKey：新一轮是全新 State，
@@ -5829,4 +5831,90 @@ class _ContextRingPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_ContextRingPainter old) => old.ratio != ratio || old.color != color;
+}
+
+/// 「思考过程」折叠容器（仿 TraeWork）：把思考段 + 工具调用时间线收进一个
+/// 可展开/收起的块。运行中默认展开（用户看得到进度），结束后自动收起，
+/// 点击 header 随时切换。展开内容左侧带竖线连接，保持时间线视觉。
+class _ThinkingFold extends StatefulWidget {
+  final List<Widget> children;
+  final bool running;
+  final bool light;
+
+  const _ThinkingFold({required this.children, required this.running, required this.light});
+
+  @override
+  State<_ThinkingFold> createState() => _ThinkingFoldState();
+}
+
+class _ThinkingFoldState extends State<_ThinkingFold> {
+  late bool _expanded;
+  bool _wasRunning = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _expanded = widget.running;
+    _wasRunning = widget.running;
+  }
+
+  @override
+  void didUpdateWidget(covariant _ThinkingFold old) {
+    super.didUpdateWidget(old);
+    // 运行结束：自动收起（用户需要细节时点开）
+    if (_wasRunning && !widget.running && _expanded) {
+      setState(() => _expanded = false);
+    }
+    _wasRunning = widget.running;
+  }
+
+  Color get _subText => widget.light ? const Color(0xFF85859A) : const Color(0xFFADADB8);
+  Color get _lineColor => widget.light ? const Color(0xFFDDDEE6) : const Color(0xFF3A3D46);
+
+  @override
+  Widget build(BuildContext context) {
+    final steps = widget.children.length;
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      InkWell(
+        onTap: () => setState(() => _expanded = !_expanded),
+        borderRadius: BorderRadius.circular(6),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 2),
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            Icon(Icons.psychology_outlined, size: 14, color: _subText),
+            const SizedBox(width: 6),
+            Text('思考过程',
+                style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w500,
+                    color: widget.light ? const Color(0xFF6B6D78) : _subText)),
+            const SizedBox(width: 8),
+            if (widget.running)
+              const SizedBox(
+                width: 11, height: 11,
+                child: CircularProgressIndicator(strokeWidth: 1.5, color: Color(0xFF9CA3AF)),
+              )
+            else
+              Text('$steps 步', style: TextStyle(fontSize: 11, color: _subText)),
+            const SizedBox(width: 4),
+            AnimatedRotation(
+              turns: _expanded ? 0.25 : 0,
+              duration: const Duration(milliseconds: 160),
+              child: Icon(Icons.chevron_right_rounded, size: 16, color: _subText),
+            ),
+          ]),
+        ),
+      ),
+      // 展开内容：左侧竖线 + 缩进（时间线视觉）
+      AnimatedCrossFade(
+        firstChild: const SizedBox(width: double.infinity),
+        secondChild: Container(
+          margin: const EdgeInsets.only(left: 6, top: 2, bottom: 4),
+          padding: const EdgeInsets.only(left: 10),
+          decoration: BoxDecoration(border: Border(left: BorderSide(color: _lineColor, width: 1.5))),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: widget.children),
+        ),
+        crossFadeState: _expanded ? CrossFadeState.showSecond : CrossFadeState.showFirst,
+        duration: const Duration(milliseconds: 160),
+      ),
+    ]);
+  }
 }
