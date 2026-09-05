@@ -48,6 +48,7 @@ class MaimemoStudyRecord {
   final String? firstStudyDate;
   final String? lastStudyDate;
   final String? nextStudyDate;
+  final String? lastResponse; // StudyResponse: WELL_FAMILIAR/FAMILIAR/VAGUE/FORGET/CANCEL_WELL_FAMILIAR
   final int studyCount;
   const MaimemoStudyRecord({
     required this.vocId,
@@ -56,6 +57,7 @@ class MaimemoStudyRecord {
     this.firstStudyDate,
     this.lastStudyDate,
     this.nextStudyDate,
+    this.lastResponse,
     required this.studyCount,
   });
 }
@@ -274,6 +276,7 @@ class MaimemoService {
         firstStudyDate: m['first_study_date'] as String?,
         lastStudyDate: m['last_study_date'] as String?,
         nextStudyDate: m['next_study_date'] as String?,
+        lastResponse: m['last_response'] as String?,
         studyCount: _asInt(m['study_count']),
       );
     }).toList();
@@ -305,20 +308,25 @@ class MaimemoService {
           firstStudyDate: m['first_study_date'] as String?,
           lastStudyDate: m['last_study_date'] as String?,
           nextStudyDate: m['next_study_date'] as String?,
+          lastResponse: m['last_response'] as String?,
           studyCount: _asInt(m['study_count']),
         );
       }).toList();
       var added = 0;
+      String? maxNext; // 本页最大的非空 nextStudyDate（作为下一页游标；最后一条可能为 null 不能直接用）
       for (final r in records) {
         if (r.vocId.isEmpty || seen.add(r.vocId)) {
           all.add(r);
           added++;
         }
+        final nd = r.nextStudyDate;
+        if (nd != null && nd.isNotEmpty && (maxNext == null || nd.compareTo(maxNext) > 0)) {
+          maxNext = nd;
+        }
       }
       if (records.length < pageSize) break;
-      final last = records.last.nextStudyDate;
-      if (last == null || last.isEmpty) break;
-      cursor = last;
+      if (maxNext == null) break; // 整页都无下次复习日期，无法继续推进
+      cursor = maxNext;
       if (added == 0) break; // 整页重复时防死循环
     }
     return all;

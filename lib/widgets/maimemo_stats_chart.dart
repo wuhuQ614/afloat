@@ -87,18 +87,31 @@ class _MaimemoStatsChartState extends State<MaimemoStatsChart> {
   String _dateKey(DateTime d) =>
       '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
 
-  /// 构建 过去4天 + 今天 + 未来6天 共 11 列统计
+  /// 构建 过去4天 + 今天 + 未来6天 共 11 列统计。
+  /// 认知分层统一用 StudyRecord.last_response（该词当前记忆状态）：
+  /// 历史当天的一次性认知细分 API 不提供，用当前状态近似（WELL_FAMILIAR/FAMILIAR/VAGUE/FORGET，
+  /// CANCEL_WELL_FAMILIAR 与空值归入「认识」）。
   List<_DayStat> _buildDays() {
     final now = DateTime.now();
     final days = <_DayStat>[];
-    // 历史日期索引（lastStudyDate/firstStudyDate 取前 10 字符做键）
-    final lastStudyByDay = <String, int>{};
+    // 按日期索引：已学（lastStudyDate）、新学（firstStudyDate）、四色（lastStudyDate × lastResponse）、待学（nextStudyDate）
+    final learnedByDay = <String, int>{};
     final firstStudyByDay = <String, int>{};
     final dueByDay = <String, int>{};
+    final respByDay = <String, Map<String, int>>{};
     for (final r in _records) {
       final last = r.lastStudyDate;
       if (last != null && last.length >= 10) {
-        lastStudyByDay[last.substring(0, 10)] = (lastStudyByDay[last.substring(0, 10)] ?? 0) + 1;
+        final key = last.substring(0, 10);
+        learnedByDay[key] = (learnedByDay[key] ?? 0) + 1;
+        final resp = switch (r.lastResponse) {
+          'WELL_FAMILIAR' => 'WELL_FAMILIAR',
+          'VAGUE' => 'VAGUE',
+          'FORGET' => 'FORGET',
+          _ => 'FAMILIAR', // FAMILIAR / CANCEL_WELL_FAMILIAR / null 均归「认识」
+        };
+        final bucket = respByDay.putIfAbsent(key, () => {});
+        bucket[resp] = (bucket[resp] ?? 0) + 1;
       }
       final first = r.firstStudyDate;
       if (first != null && first.length >= 10) {
@@ -114,25 +127,27 @@ class _MaimemoStatsChartState extends State<MaimemoStatsChart> {
       final key = _dateKey(d);
       if (i < 0) {
         final st = _DayStat(d)
-          ..learned = lastStudyByDay[key] ?? 0
+          ..learned = learnedByDay[key] ?? 0
           ..newWords = firstStudyByDay[key] ?? 0;
+        final bucket = respByDay[key];
+        if (bucket != null) {
+          st.wellFamiliar = bucket['WELL_FAMILIAR'] ?? 0;
+          st.familiar = bucket['FAMILIAR'] ?? 0;
+          st.vague = bucket['VAGUE'] ?? 0;
+          st.forget = bucket['FORGET'] ?? 0;
+        }
         days.add(st);
       } else if (i == 0) {
-        // 今天：实时认知细分
+        // 今天：与历史同一数据源（lastStudyDate 聚合），保证柱形与总量一致
         final st = _DayStat(d);
-        st.learned = _todayWords.length;
-        for (final w in _todayWords) {
-          if (w.isNew) st.newWords++;
-          switch (w.firstResponse) {
-            case 'WELL_FAMILIAR':
-              st.wellFamiliar++;
-            case 'FAMILIAR':
-              st.familiar++;
-            case 'VAGUE':
-              st.vague++;
-            case 'FORGET':
-              st.forget++;
-          }
+        st.learned = learnedByDay[key] ?? 0;
+        st.newWords = _todayWords.where((w) => w.isNew).length;
+        final bucket = respByDay[key];
+        if (bucket != null) {
+          st.wellFamiliar = bucket['WELL_FAMILIAR'] ?? 0;
+          st.familiar = bucket['FAMILIAR'] ?? 0;
+          st.vague = bucket['VAGUE'] ?? 0;
+          st.forget = bucket['FORGET'] ?? 0;
         }
         days.add(st);
       } else {
@@ -236,23 +251,22 @@ class _MaimemoStatsChartState extends State<MaimemoStatsChart> {
         runSpacing: 6,
         children: [
           if (_cognitionMode) ...[
-            _legend('已学', _cLearned, c),
-            _legend('今日熟知', _cWellFamiliar, c),
-            _legend('今日认识', _cFamiliar, c),
-            _legend('今日模糊', _cVague, c),
-            _legend('今日忘记', _cForget, c),
-            _legend('待学', _cDue, c),
+            _legend('熟知', _cWellFamiliar, c),
+            _legend('认识', _cFamiliar, c),
+            _legend('模糊', _cVague, c),
+            _legend('忘记', _cForget, c),
+            _legend('等待复习', _cDue, c),
           ] else ...[
             _legend('已学(含复习)', _cLearned, c),
             _legend('新学', _cNew, c),
-            _legend('待学', _cDue, c),
+            _legend('等待复习', _cDue, c),
           ],
         ],
       ),
       const SizedBox(height: 8),
       Text(
         _cognitionMode
-            ? '历史柱为当日学习词数（无法回溯当日认知细分）；今日柱按墨墨实时认知状态着色；未来柱为到期复习预测'
+            ? '每天的柱按当日学习词数绘制，四色对应该批词当前的记忆状态（熟知/认识/模糊/忘记）；灰色为未来到期待复习预测'
             : '历史柱按「最后学习日期」聚合，新学部分按「首次学习日期」近似；今日按新词标记拆分',
         style: TextStyle(fontSize: 10.5, color: c.textTertiary, height: 1.5),
       ),
