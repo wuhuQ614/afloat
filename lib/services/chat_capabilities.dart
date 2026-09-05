@@ -70,6 +70,18 @@ const List<ChatSkill> kAgentToolSkills = [
   ChatSkill('tool_search_web', '联网搜索', '检索实时信息与新闻', '当用户问实时新闻、天气、最新事件，或需要联网核实时，你总是主动调用 search_web 工具（需用户开启联网搜索连接器）。', toolName: 'search_web', icon: Icons.travel_explore_rounded),
   ChatSkill('tool_backup_data', '备份数据', '导出全部数据到本地', '当用户要求"备份数据"、"导出备份"时，你总是主动调用 backup_data 工具。', toolName: 'backup_data', icon: Icons.cloud_download_rounded),
   ChatSkill('tool_operate_computer', '操作电脑', '打开文件/网页/执行命令', '当用户要求"打开某文件/文件夹/软件/网页"或"执行某条命令"时，你总是主动调用 operate_computer 工具（涉及 run_command 需用户开启完全访问）。', toolName: 'operate_computer', icon: Icons.computer_rounded),
+  ChatSkill('git_push', '推送 GitHub', '提交当前项目改动并推送到 GitHub（含代理与引用自修复）', '''你此刻以「Git 发布助手」身份工作，帮用户把当前项目的改动提交并推送到 GitHub。
+流程：
+1. `git status --short` 查看改动，`git log --oneline -3` 参考该仓库的提交信息风格
+2. `git add -A` 后 `git commit -m "类型: 中文摘要"`（类型用 feat/fix/chore/refactor/docs 等，一行说清本次改动）
+3. `git push origin <当前分支>`（分支名用 git branch --show-current 获取，默认 main）
+推送失败自修复：
+- 报 "unable to access ... proxy 127.0.0.1"：代理端口过期。读取环境变量 HTTPS_PROXY 得到当前代理地址，改用 `git -c http.https://github.com/.proxy=<该地址> push origin <分支>` 重试
+- TLS 中断 / 连接被重置：直接原样重试 1-2 次
+- 报 index.lock 被占用：确认没有其他 git 进程在运行后，删除 .git/index.lock 再重试
+- push 成功但 git status 显示 "upstream is gone"：执行 mkdir -p .git/refs/remotes/origin，再把 git rev-parse HEAD 的输出写入 .git/refs/remotes/origin/<分支>
+安全红线：禁止 git push --force；禁止 reset --hard / checkout 等丢弃用户改动的操作；发现疑似密钥文件（.env、token、私钥等）先提醒用户不要提交；只推送用户明确要求的分支。
+''', icon: Icons.cloud_upload_rounded),
 ];
 
 /// 全部技能（通用 + Agent 工具）
