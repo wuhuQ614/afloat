@@ -20,6 +20,12 @@ import 'learn_page.dart' show AppScope;
 import 'model_fetch_sheet.dart';
 import 'update_dialog.dart';
 
+// 设置页强调色：固定浅蓝（全局主色为紫，设置内不出现紫色）；文件级供各 State/卡片类共用
+Color _accent(AppColors c) => c.isLight ? const Color(0xFF2F6FED) : const Color(0xFF8AB4F8);
+Color _accentBg(AppColors c) => c.isLight ? const Color(0xFFE8F0FE) : const Color(0xFF1B2745);
+Color _accentBorder(AppColors c) => c.isLight ? const Color(0xFFC9DBF9) : const Color(0xFF31415F);
+
+
 
 const _models = ['gpt-5.1', 'gpt-5.1-instant', 'gpt-5.5', 'gpt-4o', 'deepseek-v4-flash', 'deepseek-v4-pro', 'kimi', 'longcat'];
 
@@ -229,20 +235,20 @@ class _SettingsDialogState extends State<SettingsDialog> {
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                   decoration: BoxDecoration(
-                    color: active ? c.primary.withValues(alpha: 0.12) : (c.isLight ? const Color(0xFFF3F3F7) : const Color(0xFF26262C)),
+                    color: active ? _accent(c).withValues(alpha: 0.12) : (c.isLight ? const Color(0xFFF3F3F7) : const Color(0xFF26262C)),
                     borderRadius: BorderRadius.circular(9),
-                    border: Border.all(color: active ? c.primary.withValues(alpha: 0.5) : c.border),
+                    border: Border.all(color: active ? _accent(c).withValues(alpha: 0.5) : c.border),
                   ),
                   child: Row(mainAxisSize: MainAxisSize.min, children: [
                     Text(m,
                         style: TextStyle(
                           fontSize: 11.5,
-                          color: active ? c.primary : c.textSecondary,
+                          color: active ? _accent(c) : c.textSecondary,
                           fontWeight: active ? FontWeight.w700 : FontWeight.w400,
                         )),
                     if (active) ...[
                       const SizedBox(width: 4),
-                      Icon(Icons.check_rounded, size: 13, color: c.primary),
+                      Icon(Icons.check_rounded, size: 13, color: _accent(c)),
                     ],
                   ]),
                 ),
@@ -481,14 +487,14 @@ class _SettingsDialogState extends State<SettingsDialog> {
             child: Container(
               height: 60,
               decoration: BoxDecoration(
-                color: selected ? c.primaryBg : Colors.transparent,
+                color: selected ? _accentBg(c) : Colors.transparent,
                 borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: selected ? c.primary.withValues(alpha: 0.4) : c.border, width: selected ? 1.4 : 1),
+                border: Border.all(color: selected ? _accent(c).withValues(alpha: 0.4) : c.border, width: selected ? 1.4 : 1),
               ),
               child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-                Icon(icon, size: 19, color: selected ? c.primary : c.textTertiary),
+                Icon(icon, size: 19, color: selected ? _accent(c) : c.textTertiary),
                 const SizedBox(height: 3),
-                Text(label, style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: selected ? c.primary : c.textSecondary)),
+                Text(label, style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: selected ? _accent(c) : c.textSecondary)),
               ]),
             ),
           ),
@@ -758,7 +764,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
                 style: TextButton.styleFrom(
                   padding: const EdgeInsets.symmetric(horizontal: 10),
                   minimumSize: Size.zero,
-                  foregroundColor: c.primary,
+                  foregroundColor: _accent(c),
                   textStyle: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600),
                 ),
                 child: const Text('获取'),
@@ -852,7 +858,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
         height: 46,
         child: FilledButton(
           style: FilledButton.styleFrom(
-            backgroundColor: c.primary,
+            backgroundColor: _accent(c),
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
             textStyle: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
           ),
@@ -1004,9 +1010,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
   // ============== 数据备份卡片 ==============
   Widget _buildBackupCard(AppState s, AppColors c) {
     // 主操作按钮：主色 12% 淡底（浅蓝主题下为设计稿的浅蓝），深色主题保持深色适配
-    final mainBtnBg = c.isLight
-        ? Color.alphaBlend(c.primary.withValues(alpha: 0.12), Colors.white)
-        : c.primaryBg;
+    final mainBtnBg = _accentBg(c);
     return _settingsCard(
       c: c,
       icon: Icons.backup_outlined,
@@ -1024,7 +1028,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
             label: const Text('一键备份数据', style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600)),
             style: FilledButton.styleFrom(
               backgroundColor: mainBtnBg,
-              foregroundColor: c.primaryText,
+              foregroundColor: _accent(c),
               elevation: 0,
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
             ),
@@ -1038,9 +1042,9 @@ class _SettingsDialogState extends State<SettingsDialog> {
               icon: const Icon(Icons.download_rounded, size: 16),
               label: const Text('导出备份'),
               style: OutlinedButton.styleFrom(
-                foregroundColor: c.primaryText,
+                foregroundColor: _accent(c),
                 backgroundColor: c.isLight ? Colors.white : Colors.transparent,
-                side: BorderSide(color: c.primaryBorder),
+                side: BorderSide(color: _accentBorder(c)),
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
               ),
             ),
@@ -1052,9 +1056,9 @@ class _SettingsDialogState extends State<SettingsDialog> {
               icon: const Icon(Icons.upload_rounded, size: 16),
               label: const Text('导入备份'),
               style: OutlinedButton.styleFrom(
-                foregroundColor: c.primaryText,
+                foregroundColor: _accent(c),
                 backgroundColor: c.isLight ? Colors.white : Colors.transparent,
-                side: BorderSide(color: c.primaryBorder),
+                side: BorderSide(color: _accentBorder(c)),
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
               ),
             ),
@@ -1155,7 +1159,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
               ]),
             ),
             const SizedBox(width: 10),
-            Text(_formatTokens(e.value), style: TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: c.primary)),
+            Text(_formatTokens(e.value), style: TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: _accent(c))),
           ]),
         ),
       const SizedBox(height: 6),
@@ -1196,9 +1200,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
 
   // ============== 墨墨同步卡片 ==============
   Widget _buildMaimemoCard(AppState s, AppColors c) {
-    final mainBtnBg = c.isLight
-        ? Color.alphaBlend(c.primary.withValues(alpha: 0.12), Colors.white)
-        : c.primaryBg;
+    final mainBtnBg = _accentBg(c);
     return _settingsCard(
       c: c,
       icon: Icons.auto_stories_outlined,
@@ -1237,9 +1239,9 @@ class _SettingsDialogState extends State<SettingsDialog> {
             style: FilledButton.styleFrom(
               // 主操作：主色淡底（浅色 12% 蓝，深色保持深色适配）
               backgroundColor: mainBtnBg,
-              foregroundColor: c.primaryText,
+              foregroundColor: _accent(c),
               disabledBackgroundColor: mainBtnBg.withValues(alpha: 0.5),
-              disabledForegroundColor: c.primaryText.withValues(alpha: 0.45),
+              disabledForegroundColor: _accent(c).withValues(alpha: 0.45),
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
             ),
             onPressed: s.maimemoToken.trim().isEmpty || _maimemoBusy
@@ -1248,11 +1250,11 @@ class _SettingsDialogState extends State<SettingsDialog> {
             child: _maimemoBusy
                 ? SizedBox(
                     width: 18, height: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2, color: c.primaryText),
+                    child: CircularProgressIndicator(strokeWidth: 2, color: _accent(c)),
                   )
                 : Text(
                     s.maimemoLastSync > 0 ? '再次同步今日单词' : '同步今日单词',
-                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: c.primaryText),
+                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: _accent(c)),
                   ),
           ),
         ),
@@ -1275,7 +1277,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
       trailing: Row(mainAxisSize: MainAxisSize.min, children: [
         Switch(
           value: s.searchEnabled,
-          activeColor: c.primary,
+          activeColor: _accent(c),
           onChanged: (v) {
             s.setSearchEnabled(v);
             setState(() {});
@@ -1619,7 +1621,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
             border: Border.all(color: c.border),
           ),
           child: Row(children: [
-            Icon(Icons.palette_outlined, size: 18, color: c.primary),
+            Icon(Icons.palette_outlined, size: 18, color: _accent(c)),
             const SizedBox(width: 10),
             Expanded(
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -1634,7 +1636,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
               customized > 0 ? '已自定义 $customized/3' : '未自定义',
               style: TextStyle(
                 fontSize: 11.5,
-                color: customized > 0 ? c.primary : c.textTertiary,
+                color: customized > 0 ? _accent(c) : c.textTertiary,
               ),
             ),
             Icon(Icons.chevron_right_rounded, size: 20, color: c.textSecondary),
@@ -1708,7 +1710,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
     final bd = _diyBd(s);
     final btn = _diyBtn(s);
     final customized = s.diyThemes.isCustomized(_diyTarget);
-    final accent = c.primary;
+    final accent = _accent(c);
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       // 桌面端没有系统返回键，给一个返回高级功能的文字入口；手机端由 AppBar 返回
       LayoutBuilder(builder: (context, box) {
@@ -1835,7 +1837,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
   /// 主题 tab 行：三个主题等宽分段，已自定义的主题名前带小圆点
   Widget _diyThemeTabs(AppState s, AppColors c) {
     final isLight = c.isLight;
-    final accent = c.primary;
+    final accent = _accent(c);
     return Container(
       padding: const EdgeInsets.all(3),
       decoration: BoxDecoration(
@@ -1884,7 +1886,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
     final isLight = c.isLight;
     final isMobile = MediaQuery.of(context).size.width < 600;
     final onPrimary = (btn.fill == DiyButtonFill.glass || btn.fill == DiyButtonFill.outline || btn.fill == DiyButtonFill.ghost)
-        ? (btn.color ?? (c.primary))
+        ? (btn.color ?? (_accent(c)))
         : Colors.white;
     return ClipRRect(
       borderRadius: BorderRadius.circular(14),
@@ -1900,13 +1902,13 @@ class _SettingsDialogState extends State<SettingsDialog> {
               // 用工作副本样式绘制示例按钮（不走全局主题：编辑中的可能不是当前主题）
               ElevatedButton(
                 onPressed: () {},
-                style: diyToButtonStyle(btn, primary: c.primary, onPrimary: onPrimary, foreground: c.primary, isLight: isLight),
+                style: diyToButtonStyle(btn, primary: _accent(c), onPrimary: onPrimary, foreground: _accent(c), isLight: isLight),
                 child: const Text('开始学习'),
               ),
               const SizedBox(width: 10),
               OutlinedButton(
                 onPressed: () {},
-                style: diyToButtonStyle(btn.copyWith(fill: DiyButtonFill.outline), primary: btn.color ?? (c.primary), onPrimary: Colors.white, foreground: c.primary, isLight: isLight),
+                style: diyToButtonStyle(btn.copyWith(fill: DiyButtonFill.outline), primary: btn.color ?? (_accent(c)), onPrimary: Colors.white, foreground: _accent(c), isLight: isLight),
                 child: const Text('换个说法'),
               ),
               const Spacer(),
@@ -2077,7 +2079,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
 
   /// 按钮编辑器：填充方式 + 颜色 + 形状 + 描边 + 阴影 + 字重
   Widget _diyButtonEditor(AppState s, AppColors c, DiyButtonStyle btn) {
-    final accent = c.primary;
+    final accent = _accent(c);
     final showBorder = btn.fill == DiyButtonFill.glass || btn.fill == DiyButtonFill.outline;
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       _diySegmented<DiyButtonFill>(
@@ -2207,7 +2209,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
       decoration: BoxDecoration(
         color: isLight ? Colors.white : const Color(0xFF2C2C33),
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: expanded ? (c.primary.withValues(alpha: 0.35)) : c.border),
+        border: Border.all(color: expanded ? (_accent(c).withValues(alpha: 0.35)) : c.border),
       ),
       child: Column(children: [
         // 摘要行
@@ -2217,7 +2219,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
             child: Row(children: [
-              Icon(_diyLayerIcon(l.kind), size: 17, color: c.primary),
+              Icon(_diyLayerIcon(l.kind), size: 17, color: _accent(c)),
               const SizedBox(width: 9),
               Text(l.kind.label, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: c.text)),
               const SizedBox(width: 8),
@@ -2383,7 +2385,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
               child: Padding(
                 padding: const EdgeInsets.symmetric(vertical: 6),
                 child: Row(children: [
-                  Icon(_diyLayerIcon(k), size: 18, color: c.primary),
+                  Icon(_diyLayerIcon(k), size: 18, color: _accent(c)),
                   const SizedBox(width: 12),
                   Expanded(child: Text(k.label, style: TextStyle(fontSize: 13.5, color: c.text))),
                 ]),
@@ -2456,7 +2458,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
     required ValueChanged<double> onChangeEnd,
     String? hint,
   }) {
-    final accent = c.primary;
+    final accent = _accent(c);
     return Padding(
       padding: const EdgeInsets.only(bottom: 2),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -2513,7 +2515,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
           child: Switch(
             value: value,
             onChanged: onChanged,
-            activeColor: c.primary,
+            activeColor: _accent(c),
             materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
           ),
         ),
@@ -2564,19 +2566,19 @@ class _SettingsDialogState extends State<SettingsDialog> {
       padding: const EdgeInsets.symmetric(horizontal: 9),
       decoration: BoxDecoration(
         color: following
-            ? (c.primary.withValues(alpha: 0.1))
+            ? (_accent(c).withValues(alpha: 0.1))
             : (isLight ? Colors.white : const Color(0xFF33333A)),
         borderRadius: BorderRadius.circular(8),
         border: Border.all(
           color: following
-              ? (c.primary.withValues(alpha: 0.5))
+              ? (_accent(c).withValues(alpha: 0.5))
               : (isLight ? Colors.black.withValues(alpha: 0.12) : Colors.white.withValues(alpha: 0.2)),
         ),
       ),
       child: Row(mainAxisSize: MainAxisSize.min, children: [
         Container(width: 10, height: 10, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
         const SizedBox(width: 5),
-        Text(label, style: TextStyle(fontSize: 10.5, fontWeight: following ? FontWeight.w700 : FontWeight.w500, color: following ? (c.primary) : c.textSecondary)),
+        Text(label, style: TextStyle(fontSize: 10.5, fontWeight: following ? FontWeight.w700 : FontWeight.w500, color: following ? (_accent(c)) : c.textSecondary)),
       ]),
     );
   }
@@ -2585,7 +2587,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
   Future<void> _pickDiyColor(AppColors c, Color current,
       {required bool allowFollow, required ValueChanged<Color?> onPicked}) async {
     final isLight = c.isLight;
-    final accent = c.primary;
+    final accent = _accent(c);
     final hexCtrl = TextEditingController(text: diyColorToHex(current));
     Color? picked = current;
     final result = await showDialog<Color?>(
@@ -2726,11 +2728,11 @@ class _SettingsDialogState extends State<SettingsDialog> {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 9),
         decoration: BoxDecoration(
-          color: sel ? c.primaryBg : c.chipUnselected,
+          color: sel ? _accentBg(c) : c.chipUnselected,
           borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: sel ? c.primary : c.chipBorder, width: 1),
+          border: Border.all(color: sel ? _accent(c) : c.chipBorder, width: 1),
         ),
-        child: Text(label, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: sel ? c.primaryText : c.textSecondary)),
+        child: Text(label, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: sel ? _accent(c) : c.textSecondary)),
       ),
     );
   }
@@ -2948,8 +2950,8 @@ class _StylePreviewCard extends StatelessWidget {
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(14),
             color: c.card,
-            border: Border.all(color: selected ? c.primary : c.border, width: selected ? 1.6 : 1),
-            boxShadow: selected ? [BoxShadow(color: c.primary.withValues(alpha: 0.2), blurRadius: 14, offset: const Offset(0, 4))] : null,
+            border: Border.all(color: selected ? _accent(c) : c.border, width: selected ? 1.6 : 1),
+            boxShadow: selected ? [BoxShadow(color: _accent(c).withValues(alpha: 0.2), blurRadius: 14, offset: const Offset(0, 4))] : null,
           ),
           child: value == 'classic'
               ? Center(child: Icon(Icons.grid_3x3_outlined, size: 42, color: c.textSecondary))
@@ -2965,7 +2967,7 @@ class _StylePreviewCard extends StatelessWidget {
                 ),
         ),
         const SizedBox(height: 6),
-        Padding(padding: const EdgeInsets.only(left: 2), child: Text(label, style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: selected ? c.primary : c.textSecondary))),
+        Padding(padding: const EdgeInsets.only(left: 2), child: Text(label, style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: selected ? _accent(c) : c.textSecondary))),
       ]),
     );
   }
@@ -3127,20 +3129,20 @@ class _ChatSettingsDialogState extends State<ChatSettingsDialog> {
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                   decoration: BoxDecoration(
-                    color: active ? c.primary.withValues(alpha: 0.12) : (c.isLight ? const Color(0xFFF3F3F7) : const Color(0xFF26262C)),
+                    color: active ? _accent(c).withValues(alpha: 0.12) : (c.isLight ? const Color(0xFFF3F3F7) : const Color(0xFF26262C)),
                     borderRadius: BorderRadius.circular(9),
-                    border: Border.all(color: active ? c.primary.withValues(alpha: 0.5) : c.border),
+                    border: Border.all(color: active ? _accent(c).withValues(alpha: 0.5) : c.border),
                   ),
                   child: Row(mainAxisSize: MainAxisSize.min, children: [
                     Text(m,
                         style: TextStyle(
                           fontSize: 11.5,
-                          color: active ? c.primary : c.textSecondary,
+                          color: active ? _accent(c) : c.textSecondary,
                           fontWeight: active ? FontWeight.w700 : FontWeight.w400,
                         )),
                     if (active) ...[
                       const SizedBox(width: 4),
-                      Icon(Icons.check_rounded, size: 13, color: c.primary),
+                      Icon(Icons.check_rounded, size: 13, color: _accent(c)),
                     ],
                   ]),
                 ),
@@ -3242,11 +3244,11 @@ class _ChatSettingsDialogState extends State<ChatSettingsDialog> {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 9),
         decoration: BoxDecoration(
-          color: sel ? c.primaryBg : c.chipUnselected,
+          color: sel ? _accentBg(c) : c.chipUnselected,
           borderRadius: BorderRadius.circular(999),
-          border: Border.all(color: sel ? c.primary.withValues(alpha: 0.4) : c.border, width: 1),
+          border: Border.all(color: sel ? _accent(c).withValues(alpha: 0.4) : c.border, width: 1),
         ),
-        child: Text(label, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: sel ? c.primaryText : c.textSecondary)),
+        child: Text(label, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: sel ? _accent(c) : c.textSecondary)),
       ),
     );
   }
@@ -3260,7 +3262,7 @@ class _ChatSettingsDialogState extends State<ChatSettingsDialog> {
       backgroundColor: c.card,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
       title: Row(children: [
-        Icon(Icons.tune_rounded, size: 20, color: c.primary),
+        Icon(Icons.tune_rounded, size: 20, color: _accent(c)),
         const SizedBox(width: 8),
         Text('对话助手设置', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: c.text)),
       ]),
@@ -3383,7 +3385,7 @@ class _ChatSettingsDialogState extends State<ChatSettingsDialog> {
                         style: TextButton.styleFrom(
                           padding: const EdgeInsets.symmetric(horizontal: 10),
                           minimumSize: Size.zero,
-                          foregroundColor: c.primary,
+                          foregroundColor: _accent(c),
                           textStyle: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600),
                         ),
                         child: const Text('获取'),
@@ -3458,12 +3460,12 @@ class _ChatSettingsDialogState extends State<ChatSettingsDialog> {
               Container(
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
-                  color: c.primaryBg.withValues(alpha: isLight ? 0.5 : 0.2),
+                  color: _accentBg(c).withValues(alpha: isLight ? 0.5 : 0.2),
                   borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: c.primary.withValues(alpha: 0.25)),
+                  border: Border.all(color: _accent(c).withValues(alpha: 0.25)),
                 ),
                 child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Icon(Icons.info_outline, size: 16, color: c.primary),
+                  Icon(Icons.info_outline, size: 16, color: _accent(c)),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
@@ -3519,7 +3521,7 @@ class _ChatSettingsDialogState extends State<ChatSettingsDialog> {
         TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('取消')),
         FilledButton(
           style: FilledButton.styleFrom(
-            backgroundColor: c.primary,
+            backgroundColor: _accent(c),
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
           ),
           onPressed: () {
