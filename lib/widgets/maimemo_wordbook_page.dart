@@ -4,7 +4,7 @@ library;
 import 'package:flutter/material.dart';
 import '../models.dart';
 import '../state.dart';
-import '../theme_colors.dart' show kPrimary, kSuccess, AppColors;
+import '../theme_colors.dart' show kSuccess, AppColors;
 import '../services/dict_service.dart';
 import '../services/tts_service.dart';
 import 'settings_dialog.dart';
@@ -247,7 +247,11 @@ class _MaimemoWordbookPageState extends State<MaimemoWordbookPage> {
               Text('请前往设置 → 账户与同步 中配置', style: TextStyle(fontSize: 13, color: c.textTertiary)),
               const SizedBox(height: 20),
               FilledButton(
-                style: FilledButton.styleFrom(backgroundColor: kPrimary),
+                style: FilledButton.styleFrom(
+                  backgroundColor: c.primaryBg,
+                  foregroundColor: c.primaryText,
+                  side: BorderSide(color: c.primaryBorder),
+                ),
                 onPressed: () => showDialog(context: context, builder: (_) => const SettingsDialog()),
                 child: const Text('前往设置'),
               ),
@@ -280,15 +284,17 @@ class _MaimemoWordbookPageState extends State<MaimemoWordbookPage> {
           if (list.isNotEmpty)
             FilledButton.icon(
               style: FilledButton.styleFrom(
-                backgroundColor: kPrimary,
+                backgroundColor: c.primaryBg,
+                foregroundColor: c.primaryText,
+                side: BorderSide(color: c.primaryBorder),
                 padding: const EdgeInsets.symmetric(horizontal: 16),
                 minimumSize: const Size(0, 40),
               ),
               onPressed: _generating ? null : _generateFromMaimemo,
               icon: _generating
-                  ? const SizedBox(width: 15, height: 15, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                  ? SizedBox(width: 15, height: 15, child: CircularProgressIndicator(strokeWidth: 2, color: c.primaryText))
                   : const Icon(Icons.auto_awesome_rounded, size: 16),
-              label: Text(_generating ? '生成中...' : '用词库出题', style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+              label: Text(_generating ? '生成中...' : '用词库出题', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: c.primaryText)),
             ),
           const SizedBox(width: 10),
           OutlinedButton.icon(
@@ -611,7 +617,11 @@ class _MaimemoLengthDialogState extends State<_MaimemoLengthDialog> {
       actions: [
         TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
         FilledButton(
-          style: FilledButton.styleFrom(backgroundColor: kPrimary),
+          style: FilledButton.styleFrom(
+            backgroundColor: AppColors.of(context).primaryBg,
+            foregroundColor: AppColors.of(context).primaryText,
+            side: BorderSide(color: AppColors.of(context).primaryBorder),
+          ),
           onPressed: () => Navigator.pop(context, _MaimemoLengthResult(_count.round(), _wordCount.round())),
           child: const Text('开始出题'),
         ),
@@ -636,9 +646,9 @@ class _MaimemoLengthDialogState extends State<_MaimemoLengthDialog> {
             trackHeight: 4,
             thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 9),
             overlayShape: SliderComponentShape.noOverlay,
-            activeTrackColor: kPrimary,
+            activeTrackColor: c.primary,
             inactiveTrackColor: c.sliderInactive,
-            thumbColor: kPrimary,
+            thumbColor: c.primary,
           ),
           child: Slider(
             value: value,
