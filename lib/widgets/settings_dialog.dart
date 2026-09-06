@@ -12,7 +12,7 @@ import '../models.dart';
 import '../services/data_manager.dart';
 import '../services/wechat_service.dart';
 import '../state.dart';
-import '../theme_colors.dart' show kPrimary, AppColors;
+import '../theme_colors.dart' show AppColors;
 import '../theme_diy.dart';
 import '../services/browser_register.dart';
 import 'diy_backdrop.dart';
@@ -20,7 +20,6 @@ import 'learn_page.dart' show AppScope;
 import 'model_fetch_sheet.dart';
 import 'update_dialog.dart';
 
-const _primary = kPrimary;
 
 const _models = ['gpt-5.1', 'gpt-5.1-instant', 'gpt-5.5', 'gpt-4o', 'deepseek-v4-flash', 'deepseek-v4-pro', 'kimi', 'longcat'];
 
@@ -853,7 +852,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
         height: 46,
         child: FilledButton(
           style: FilledButton.styleFrom(
-            backgroundColor: _primary,
+            backgroundColor: c.primary,
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
             textStyle: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
           ),
@@ -1156,7 +1155,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
               ]),
             ),
             const SizedBox(width: 10),
-            Text(_formatTokens(e.value), style: TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: _primary)),
+            Text(_formatTokens(e.value), style: TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: c.primary)),
           ]),
         ),
       const SizedBox(height: 6),
@@ -1620,7 +1619,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
             border: Border.all(color: c.border),
           ),
           child: Row(children: [
-            Icon(Icons.palette_outlined, size: 18, color: isLight ? kPrimary : const Color(0xFFA78BFA)),
+            Icon(Icons.palette_outlined, size: 18, color: c.primary),
             const SizedBox(width: 10),
             Expanded(
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -1635,7 +1634,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
               customized > 0 ? '已自定义 $customized/3' : '未自定义',
               style: TextStyle(
                 fontSize: 11.5,
-                color: customized > 0 ? (isLight ? kPrimary : const Color(0xFFA78BFA)) : c.textTertiary,
+                color: customized > 0 ? c.primary : c.textTertiary,
               ),
             ),
             Icon(Icons.chevron_right_rounded, size: 20, color: c.textSecondary),
@@ -1709,7 +1708,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
     final bd = _diyBd(s);
     final btn = _diyBtn(s);
     final customized = s.diyThemes.isCustomized(_diyTarget);
-    final accent = isLight ? kPrimary : const Color(0xFFA78BFA);
+    final accent = c.primary;
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       // 桌面端没有系统返回键，给一个返回高级功能的文字入口；手机端由 AppBar 返回
       LayoutBuilder(builder: (context, box) {
@@ -1836,7 +1835,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
   /// 主题 tab 行：三个主题等宽分段，已自定义的主题名前带小圆点
   Widget _diyThemeTabs(AppState s, AppColors c) {
     final isLight = c.isLight;
-    final accent = isLight ? kPrimary : const Color(0xFFA78BFA);
+    final accent = c.primary;
     return Container(
       padding: const EdgeInsets.all(3),
       decoration: BoxDecoration(
@@ -1885,7 +1884,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
     final isLight = c.isLight;
     final isMobile = MediaQuery.of(context).size.width < 600;
     final onPrimary = (btn.fill == DiyButtonFill.glass || btn.fill == DiyButtonFill.outline || btn.fill == DiyButtonFill.ghost)
-        ? (btn.color ?? (isLight ? kPrimary : const Color(0xFFA78BFA)))
+        ? (btn.color ?? (c.primary))
         : Colors.white;
     return ClipRRect(
       borderRadius: BorderRadius.circular(14),
@@ -1901,13 +1900,13 @@ class _SettingsDialogState extends State<SettingsDialog> {
               // 用工作副本样式绘制示例按钮（不走全局主题：编辑中的可能不是当前主题）
               ElevatedButton(
                 onPressed: () {},
-                style: diyToButtonStyle(btn, primary: isLight ? kPrimary : const Color(0xFFA78BFA), onPrimary: onPrimary, foreground: isLight ? kPrimary : const Color(0xFFA78BFA), isLight: isLight),
+                style: diyToButtonStyle(btn, primary: c.primary, onPrimary: onPrimary, foreground: c.primary, isLight: isLight),
                 child: const Text('开始学习'),
               ),
               const SizedBox(width: 10),
               OutlinedButton(
                 onPressed: () {},
-                style: diyToButtonStyle(btn.copyWith(fill: DiyButtonFill.outline), primary: btn.color ?? (isLight ? kPrimary : const Color(0xFFA78BFA)), onPrimary: Colors.white, foreground: isLight ? kPrimary : const Color(0xFFA78BFA), isLight: isLight),
+                style: diyToButtonStyle(btn.copyWith(fill: DiyButtonFill.outline), primary: btn.color ?? (c.primary), onPrimary: Colors.white, foreground: c.primary, isLight: isLight),
                 child: const Text('换个说法'),
               ),
               const Spacer(),
@@ -2078,7 +2077,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
 
   /// 按钮编辑器：填充方式 + 颜色 + 形状 + 描边 + 阴影 + 字重
   Widget _diyButtonEditor(AppState s, AppColors c, DiyButtonStyle btn) {
-    final accent = c.isLight ? kPrimary : const Color(0xFFA78BFA);
+    final accent = c.primary;
     final showBorder = btn.fill == DiyButtonFill.glass || btn.fill == DiyButtonFill.outline;
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       _diySegmented<DiyButtonFill>(
@@ -2208,7 +2207,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
       decoration: BoxDecoration(
         color: isLight ? Colors.white : const Color(0xFF2C2C33),
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: expanded ? (isLight ? kPrimary.withValues(alpha: 0.35) : const Color(0xFFA78BFA).withValues(alpha: 0.4)) : c.border),
+        border: Border.all(color: expanded ? (c.primary.withValues(alpha: 0.35)) : c.border),
       ),
       child: Column(children: [
         // 摘要行
@@ -2218,7 +2217,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
             child: Row(children: [
-              Icon(_diyLayerIcon(l.kind), size: 17, color: isLight ? kPrimary : const Color(0xFFA78BFA)),
+              Icon(_diyLayerIcon(l.kind), size: 17, color: c.primary),
               const SizedBox(width: 9),
               Text(l.kind.label, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: c.text)),
               const SizedBox(width: 8),
@@ -2384,7 +2383,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
               child: Padding(
                 padding: const EdgeInsets.symmetric(vertical: 6),
                 child: Row(children: [
-                  Icon(_diyLayerIcon(k), size: 18, color: isLight ? kPrimary : const Color(0xFFA78BFA)),
+                  Icon(_diyLayerIcon(k), size: 18, color: c.primary),
                   const SizedBox(width: 12),
                   Expanded(child: Text(k.label, style: TextStyle(fontSize: 13.5, color: c.text))),
                 ]),
@@ -2457,7 +2456,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
     required ValueChanged<double> onChangeEnd,
     String? hint,
   }) {
-    final accent = c.isLight ? kPrimary : const Color(0xFFA78BFA);
+    final accent = c.primary;
     return Padding(
       padding: const EdgeInsets.only(bottom: 2),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -2514,7 +2513,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
           child: Switch(
             value: value,
             onChanged: onChanged,
-            activeColor: c.isLight ? kPrimary : const Color(0xFFA78BFA),
+            activeColor: c.primary,
             materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
           ),
         ),
@@ -2565,19 +2564,19 @@ class _SettingsDialogState extends State<SettingsDialog> {
       padding: const EdgeInsets.symmetric(horizontal: 9),
       decoration: BoxDecoration(
         color: following
-            ? (isLight ? kPrimary.withValues(alpha: 0.1) : const Color(0xFFA78BFA).withValues(alpha: 0.16))
+            ? (c.primary.withValues(alpha: 0.1))
             : (isLight ? Colors.white : const Color(0xFF33333A)),
         borderRadius: BorderRadius.circular(8),
         border: Border.all(
           color: following
-              ? (isLight ? kPrimary.withValues(alpha: 0.5) : const Color(0xFFA78BFA).withValues(alpha: 0.55))
+              ? (c.primary.withValues(alpha: 0.5))
               : (isLight ? Colors.black.withValues(alpha: 0.12) : Colors.white.withValues(alpha: 0.2)),
         ),
       ),
       child: Row(mainAxisSize: MainAxisSize.min, children: [
         Container(width: 10, height: 10, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
         const SizedBox(width: 5),
-        Text(label, style: TextStyle(fontSize: 10.5, fontWeight: following ? FontWeight.w700 : FontWeight.w500, color: following ? (isLight ? kPrimary : const Color(0xFFA78BFA)) : c.textSecondary)),
+        Text(label, style: TextStyle(fontSize: 10.5, fontWeight: following ? FontWeight.w700 : FontWeight.w500, color: following ? (c.primary) : c.textSecondary)),
       ]),
     );
   }
@@ -2586,7 +2585,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
   Future<void> _pickDiyColor(AppColors c, Color current,
       {required bool allowFollow, required ValueChanged<Color?> onPicked}) async {
     final isLight = c.isLight;
-    final accent = isLight ? kPrimary : const Color(0xFFA78BFA);
+    final accent = c.primary;
     final hexCtrl = TextEditingController(text: diyColorToHex(current));
     Color? picked = current;
     final result = await showDialog<Color?>(
@@ -2729,7 +2728,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
         decoration: BoxDecoration(
           color: sel ? c.primaryBg : c.chipUnselected,
           borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: sel ? _primary : c.chipBorder, width: 1),
+          border: Border.all(color: sel ? c.primary : c.chipBorder, width: 1),
         ),
         child: Text(label, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: sel ? c.primaryText : c.textSecondary)),
       ),
@@ -2949,8 +2948,8 @@ class _StylePreviewCard extends StatelessWidget {
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(14),
             color: c.card,
-            border: Border.all(color: selected ? _primary : c.border, width: selected ? 1.6 : 1),
-            boxShadow: selected ? [BoxShadow(color: _primary.withValues(alpha: 0.2), blurRadius: 14, offset: const Offset(0, 4))] : null,
+            border: Border.all(color: selected ? c.primary : c.border, width: selected ? 1.6 : 1),
+            boxShadow: selected ? [BoxShadow(color: c.primary.withValues(alpha: 0.2), blurRadius: 14, offset: const Offset(0, 4))] : null,
           ),
           child: value == 'classic'
               ? Center(child: Icon(Icons.grid_3x3_outlined, size: 42, color: c.textSecondary))
@@ -2966,7 +2965,7 @@ class _StylePreviewCard extends StatelessWidget {
                 ),
         ),
         const SizedBox(height: 6),
-        Padding(padding: const EdgeInsets.only(left: 2), child: Text(label, style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: selected ? _primary : c.textSecondary))),
+        Padding(padding: const EdgeInsets.only(left: 2), child: Text(label, style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: selected ? c.primary : c.textSecondary))),
       ]),
     );
   }
