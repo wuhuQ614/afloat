@@ -9,6 +9,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:path_provider/path_provider.dart';
 import '../models.dart';
+import '../services/data_manager.dart';
 import '../services/wechat_service.dart';
 import '../state.dart';
 import '../theme_colors.dart' show kPrimary, AppColors;
@@ -945,6 +946,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
     required String title,
     required Widget child,
     Color? iconColor,
+    String? subtitle,
   }) {
     return Container(
       padding: const EdgeInsets.all(16),
@@ -966,6 +968,10 @@ class _SettingsDialogState extends State<SettingsDialog> {
           Expanded(
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Text(title, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: c.text)),
+              if (subtitle != null) ...[
+                const SizedBox(height: 3),
+                Text(subtitle, style: TextStyle(fontSize: 11.5, color: c.textTertiary, height: 1.4)),
+              ],
             ]),
           ),
         ]),
@@ -975,12 +981,14 @@ class _SettingsDialogState extends State<SettingsDialog> {
     );
   }
 
-  // ============== Section: 账户安全（含数据备份、墨墨、联网） ==============
+  // ============== Section: 账户安全（含数据备份、数据管理、墨墨、联网） ==============
   Widget _sectionAccountContent(AppState s, AppColors c) {
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       _sectionTitle('账户安全', c),
       const SizedBox(height: 14),
       _buildBackupCard(s, c),
+      const SizedBox(height: 22),
+      _buildDataManageCard(s, c),
       const SizedBox(height: 22),
       _buildMaimemoCard(s, c),
       const SizedBox(height: 22),
@@ -994,29 +1002,184 @@ class _SettingsDialogState extends State<SettingsDialog> {
       c: c,
       icon: Icons.cloud_sync_outlined,
       title: '数据备份',
+      subtitle: '备份你的聊天记录、配置与偏好设置，防止数据丢失',
       iconColor: c.textTertiary,
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         SizedBox(
           width: double.infinity,
+          height: 42,
           child: FilledButton.icon(
             onPressed: () => _backup(s),
             icon: const Icon(Icons.save_alt, size: 16),
-            label: const Text('一键备份数据'),
-            // 数据备份/墨墨/搜索统一用中性灰（避免品牌紫/纯黑）
+            label: const Text('一键备份数据', style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600)),
+            // 主操作：主色淡底（浅蓝主题下为很浅的蓝底 + 主题色文字）
             style: FilledButton.styleFrom(
-              backgroundColor: c.isLight ? const Color(0xFF6B7280) : const Color(0xFF8A8D94),
-              foregroundColor: Colors.white,
+              backgroundColor: c.primaryBg,
+              foregroundColor: c.primaryText,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
             ),
           ),
         ),
         const SizedBox(height: 10),
         Row(children: [
-          Expanded(child: OutlinedButton.icon(onPressed: () => _export(s), icon: const Icon(Icons.download, size: 16), label: const Text('导出备份'))),
+          Expanded(
+            child: OutlinedButton.icon(
+              onPressed: () => _export(s),
+              icon: const Icon(Icons.download, size: 16),
+              label: const Text('导出备份'),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: c.primaryText,
+                side: BorderSide(color: c.primaryBorder),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+            ),
+          ),
           const SizedBox(width: 10),
-          Expanded(child: OutlinedButton.icon(onPressed: () => _import(s), icon: const Icon(Icons.upload, size: 16), label: const Text('导入备份'))),
+          Expanded(
+            child: OutlinedButton.icon(
+              onPressed: () => _import(s),
+              icon: const Icon(Icons.upload, size: 16),
+              label: const Text('导入备份'),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: c.primaryText,
+                side: BorderSide(color: c.primaryBorder),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+            ),
+          ),
         ]),
       ]),
     );
+  }
+
+  // ============== 数据管理卡片（对话记录 zip 导入导出 + Token 用量） ==============
+  Widget _buildDataManageCard(AppState s, AppColors c) {
+    return _settingsCard(
+      c: c,
+      icon: Icons.folder_copy_outlined,
+      title: '数据管理',
+      iconColor: c.textTertiary,
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        // Token 用量统计
+        _dataSectionLabel('Token 用量', c),
+        ..._buildTokenUsageRows(s, c),
+        const SizedBox(height: 14),
+        // 对话记录 zip 导入 / 导出
+        _dataSectionLabel('对话记录（zip）', c),
+        const SizedBox(height: 8),
+        Row(children: [
+          Expanded(
+            child: OutlinedButton.icon(
+              onPressed: () => _exportChatZip(s),
+              icon: const Icon(Icons.file_download_outlined, size: 16),
+              label: const Text('导出对话记录'),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: OutlinedButton.icon(
+              onPressed: () => _importChatZip(s),
+              icon: const Icon(Icons.folder_open_outlined, size: 16),
+              label: const Text('导入对话记录'),
+            ),
+          ),
+        ]),
+        const SizedBox(height: 8),
+        Text(
+          '导入会与现有历史会话合并（同 id 覆盖，其余追加）；zip 内需包含 ${kChatBackupFile}。',
+          style: TextStyle(fontSize: 11, color: c.textTertiary, height: 1.5),
+        ),
+      ]),
+    );
+  }
+
+  Widget _dataSectionLabel(String t, AppColors c) => Padding(
+        padding: const EdgeInsets.only(bottom: 6),
+        child: Text(t, style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w700, color: c.textSecondary)),
+      );
+
+  /// Token 用量列表：按接口地址分组，显示每个 API 对应的模型与累计 tokens。
+  /// key 格式为「接口地址#模型名」。
+  List<Widget> _buildTokenUsageRows(AppState s, AppColors c) {
+    final usage = s.tokenUsage;
+    if (usage.isEmpty) {
+      return [
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          decoration: BoxDecoration(
+            color: c.isLight ? Colors.white : const Color(0xFF26262C),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: c.isLight ? const Color(0xFFEDEDF0) : const Color(0xFF3A3A42)),
+          ),
+          child: Text('暂无用量，对话后自动累计', style: TextStyle(fontSize: 12.5, color: c.textTertiary)),
+        ),
+      ];
+    }
+    // 按 key 排序：模型名升序
+    final entries = usage.entries.toList()
+      ..sort((a, b) => _tokenModelOf(a.key).compareTo(_tokenModelOf(b.key)));
+    final total = entries.fold<int>(0, (sum, e) => sum + e.value);
+    return [
+      for (final e in entries)
+        Container(
+          margin: const EdgeInsets.only(bottom: 6),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+          decoration: BoxDecoration(
+            color: c.isLight ? Colors.white : const Color(0xFF26262C),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: c.isLight ? const Color(0xFFEDEDF0) : const Color(0xFF3A3A42)),
+          ),
+          child: Row(children: [
+            Expanded(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(_tokenModelOf(e.key), style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: c.text)),
+                const SizedBox(height: 2),
+                Text(
+                  _tokenUrlOf(e.key),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 10.5, color: c.textTertiary),
+                ),
+              ]),
+            ),
+            const SizedBox(width: 10),
+            Text(_formatTokens(e.value), style: TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: _primary)),
+          ]),
+        ),
+      const SizedBox(height: 6),
+      Row(children: [
+        Expanded(child: Text('合计', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: c.textSecondary))),
+        Text(_formatTokens(total), style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: c.text)),
+      ]),
+    ];
+  }
+
+  /// 从「url#model」key 解析模型名（截取 # 之后部分；无 # 时兜底为新加入的名字，去掉 url 协议头）
+  String _tokenModelOf(String key) {
+    final idx = key.lastIndexOf('#');
+    if (idx >= 0 && idx < key.length - 1) return key.substring(idx + 1);
+    return key.replaceFirst(RegExp(r'^https?://'), '').split('/').first;
+  }
+
+  /// 从「url#model」key 解析接口地址（# 之前部分）
+  String _tokenUrlOf(String key) {
+    final idx = key.lastIndexOf('#');
+    return idx > 0 ? key.substring(0, idx) : '';
+  }
+
+  /// 数字格式化：≥1 万显示「1.2万」，否则千分位
+  String _formatTokens(int v) {
+    if (v >= 10000) {
+      final d = (v / 10000).toStringAsFixed(v >= 100000 ? 0 : 1);
+      return '${d.endsWith('.0') ? d.substring(0, d.length - 2) : d}万';
+    }
+    final s = v.toString();
+    final buf = StringBuffer();
+    for (var i = 0; i < s.length; i++) {
+      if (i > 0 && (s.length - i) % 3 == 0) buf.write(',');
+      buf.write(s[i]);
+    }
+    return buf.toString();
   }
 
   // ============== 墨墨同步卡片 ==============
@@ -1025,6 +1188,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
       c: c,
       icon: Icons.auto_stories_outlined,
       title: '墨墨背单词同步',
+      subtitle: '同步你的学习数据，跨设备保持一致',
       iconColor: c.textTertiary,
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         TextField(
@@ -1055,22 +1219,24 @@ class _SettingsDialogState extends State<SettingsDialog> {
           height: 42,
           child: FilledButton(
             style: FilledButton.styleFrom(
-              // 同步按钮同样改为中性灰（避免品牌紫/纯黑）
-              backgroundColor: c.isLight ? const Color(0xFF6B7280) : const Color(0xFF8A8D94),
-              disabledBackgroundColor: c.isLight ? const Color(0xFFC9CBD0) : const Color(0xFF8A8D94).withValues(alpha: 0.5),
+              // 主操作：主色淡底
+              backgroundColor: c.primaryBg,
+              foregroundColor: c.primaryText,
+              disabledBackgroundColor: c.primaryBg.withValues(alpha: 0.5),
+              disabledForegroundColor: c.primaryText.withValues(alpha: 0.45),
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
             ),
             onPressed: s.maimemoToken.trim().isEmpty || _maimemoBusy
                 ? null
                 : () => _syncMaimemo(s),
             child: _maimemoBusy
-                ? const SizedBox(
+                ? SizedBox(
                     width: 18, height: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                    child: CircularProgressIndicator(strokeWidth: 2, color: c.primaryText),
                   )
                 : Text(
                     s.maimemoLastSync > 0 ? '再次同步今日单词' : '同步今日单词',
-                    style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
+                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: c.primaryText),
                   ),
           ),
         ),
@@ -1088,6 +1254,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
       c: c,
       icon: Icons.travel_explore,
       title: '联网搜索服务',
+      subtitle: '开启后将提升模型响应速度，但会增加一定的电量消耗',
       iconColor: c.textTertiary,
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         TextField(
@@ -2598,6 +2765,80 @@ class _SettingsDialogState extends State<SettingsDialog> {
       final ok = s.importBackup(content);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(ok ? '导入成功' : '导入失败：文件格式不正确'), behavior: SnackBarBehavior.floating));
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('导入失败：$e'), behavior: SnackBarBehavior.floating));
+    }
+  }
+
+  // ============== 对话记录 zip 导出 / 导入 ==============
+  Future<void> _exportChatZip(AppState s) async {
+    try {
+      if (s.chatSessions.isEmpty) {
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('暂无对话记录可导出'), behavior: SnackBarBehavior.floating));
+        return;
+      }
+      String destPath;
+      if (Platform.isAndroid || Platform.isIOS) {
+        // 手机：应用专属外部存储（同 _backup）
+        Directory? dir;
+        try {
+          dir = await getExternalStorageDirectory();
+        } catch (_) {
+          dir = null;
+        }
+        dir ??= await getApplicationDocumentsDirectory();
+        destPath = '${dir.path}${Platform.pathSeparator}afloat-chat-${DateTime.now().millisecondsSinceEpoch}.zip';
+      } else {
+        final path = await FilePicker.platform.saveFile(
+          dialogTitle: '导出对话记录',
+          fileName: 'afloat-chat-${DateTime.now().millisecondsSinceEpoch}.zip',
+          type: FileType.custom,
+          allowedExtensions: ['zip'],
+        );
+        if (path == null) return;
+        destPath = path;
+      }
+      final file = buildChatBackupZip(s.chatSessions, s.chatSessionMessages, destPath: destPath);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('对话记录已导出到 ${file.path}'),
+        duration: const Duration(seconds: 4),
+        behavior: SnackBarBehavior.floating,
+      ));
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('导出失败：$e'), behavior: SnackBarBehavior.floating));
+    }
+  }
+
+  Future<void> _importChatZip(AppState s) async {
+    try {
+      final res = await FilePicker.platform.pickFiles(type: FileType.custom, allowedExtensions: ['zip']);
+      if (res == null || res.files.isEmpty) return;
+      final file = File(res.files.first.path!);
+      final parsed = extractChatBackupZip(file);
+      if (parsed == null || parsed.sessions.isEmpty) {
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('导入失败：zip 中未找到对话记录（${kChatBackupFile}）'), behavior: SnackBarBehavior.floating));
+        return;
+      }
+      if (!mounted) return;
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('导入对话记录'),
+          content: Text('将从 zip 导入 ${parsed.sessions.length} 条会话，与现有历史会话合并（同 id 覆盖，其余追加）。确定继续吗？'),
+          actions: [
+            TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('取消')),
+            FilledButton(onPressed: () => Navigator.of(ctx).pop(true), child: const Text('确认导入')),
+          ],
+        ),
+      );
+      if (confirmed != true) return;
+      final added = s.importChatSessions(parsed.sessions, parsed.messages);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('导入成功：新增 $added 条，其余为更新'),
+        behavior: SnackBarBehavior.floating,
+      ));
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('导入失败：$e'), behavior: SnackBarBehavior.floating));
     }
