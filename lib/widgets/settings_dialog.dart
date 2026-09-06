@@ -50,6 +50,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
   // 墨墨同步
   late final TextEditingController _maimemoTokenCtrl;
   bool _maimemoObscure = true;
+  bool _searchExpanded = false; // 联网搜索卡：服务地址/Key 配置区默认收起
   bool _maimemoBusy = false;
   String? _maimemoMsg; // 同步结果提示
 
@@ -947,15 +948,17 @@ class _SettingsDialogState extends State<SettingsDialog> {
     required Widget child,
     Color? iconColor,
     String? subtitle,
+    Widget? trailing,
   }) {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: c.isLight ? const Color(0xFFF7F8FA) : const Color(0xFF2E2E35),
+        color: c.isLight ? Colors.white : const Color(0xFF2E2E35),
         borderRadius: BorderRadius.circular(16),
+        border: c.isLight ? Border.all(color: const Color(0xFFEEF1F6)) : null,
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withValues(alpha: c.isLight ? 0.04 : 0.15),
+            color: Colors.black.withValues(alpha: c.isLight ? 0.03 : 0.15),
             blurRadius: 8,
             offset: const Offset(0, 2),
           ),
@@ -963,17 +966,18 @@ class _SettingsDialogState extends State<SettingsDialog> {
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Row(children: [
-          Icon(icon, size: 22, color: iconColor ?? _primary),
+          Icon(icon, size: 22, color: iconColor ?? c.text),
           const SizedBox(width: 10),
           Expanded(
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(title, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: c.text)),
+              Text(title, style: TextStyle(fontSize: 14.5, fontWeight: FontWeight.w700, color: c.text)),
               if (subtitle != null) ...[
                 const SizedBox(height: 3),
                 Text(subtitle, style: TextStyle(fontSize: 11.5, color: c.textTertiary, height: 1.4)),
               ],
             ]),
           ),
+          if (trailing != null) trailing!,
         ]),
         const SizedBox(height: 14),
         child,
@@ -985,6 +989,8 @@ class _SettingsDialogState extends State<SettingsDialog> {
   Widget _sectionAccountContent(AppState s, AppColors c) {
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       _sectionTitle('账户安全', c),
+      const SizedBox(height: 4),
+      Text('管理你的账户安全设置', style: TextStyle(fontSize: 12.5, color: c.textTertiary)),
       const SizedBox(height: 14),
       _buildBackupCard(s, c),
       const SizedBox(height: 22),
@@ -998,24 +1004,29 @@ class _SettingsDialogState extends State<SettingsDialog> {
 
   // ============== 数据备份卡片 ==============
   Widget _buildBackupCard(AppState s, AppColors c) {
+    // 主操作按钮：主色 12% 淡底（浅蓝主题下为设计稿的浅蓝），深色主题保持深色适配
+    final mainBtnBg = c.isLight
+        ? Color.alphaBlend(c.primary.withValues(alpha: 0.12), Colors.white)
+        : c.primaryBg;
     return _settingsCard(
       c: c,
-      icon: Icons.cloud_sync_outlined,
+      icon: Icons.backup_outlined,
       title: '数据备份',
       subtitle: '备份你的聊天记录、配置与偏好设置，防止数据丢失',
-      iconColor: c.textTertiary,
+      iconColor: c.text,
+      trailing: Icon(Icons.chevron_right_rounded, size: 20, color: c.textTertiary),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         SizedBox(
           width: double.infinity,
-          height: 42,
+          height: 44,
           child: FilledButton.icon(
             onPressed: () => _backup(s),
-            icon: const Icon(Icons.save_alt, size: 16),
+            icon: const Icon(Icons.download_rounded, size: 16),
             label: const Text('一键备份数据', style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600)),
-            // 主操作：主色淡底（浅蓝主题下为很浅的蓝底 + 主题色文字）
             style: FilledButton.styleFrom(
-              backgroundColor: c.primaryBg,
+              backgroundColor: mainBtnBg,
               foregroundColor: c.primaryText,
+              elevation: 0,
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
             ),
           ),
@@ -1025,10 +1036,11 @@ class _SettingsDialogState extends State<SettingsDialog> {
           Expanded(
             child: OutlinedButton.icon(
               onPressed: () => _export(s),
-              icon: const Icon(Icons.download, size: 16),
+              icon: const Icon(Icons.download_rounded, size: 16),
               label: const Text('导出备份'),
               style: OutlinedButton.styleFrom(
                 foregroundColor: c.primaryText,
+                backgroundColor: c.isLight ? Colors.white : Colors.transparent,
                 side: BorderSide(color: c.primaryBorder),
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
               ),
@@ -1038,10 +1050,11 @@ class _SettingsDialogState extends State<SettingsDialog> {
           Expanded(
             child: OutlinedButton.icon(
               onPressed: () => _import(s),
-              icon: const Icon(Icons.upload, size: 16),
+              icon: const Icon(Icons.upload_rounded, size: 16),
               label: const Text('导入备份'),
               style: OutlinedButton.styleFrom(
                 foregroundColor: c.primaryText,
+                backgroundColor: c.isLight ? Colors.white : Colors.transparent,
                 side: BorderSide(color: c.primaryBorder),
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
               ),
@@ -1184,18 +1197,22 @@ class _SettingsDialogState extends State<SettingsDialog> {
 
   // ============== 墨墨同步卡片 ==============
   Widget _buildMaimemoCard(AppState s, AppColors c) {
+    final mainBtnBg = c.isLight
+        ? Color.alphaBlend(c.primary.withValues(alpha: 0.12), Colors.white)
+        : c.primaryBg;
     return _settingsCard(
       c: c,
       icon: Icons.auto_stories_outlined,
       title: '墨墨背单词同步',
       subtitle: '同步你的学习数据，跨设备保持一致',
-      iconColor: c.textTertiary,
+      iconColor: c.text,
+      trailing: Icon(Icons.chevron_right_rounded, size: 20, color: c.textTertiary),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         TextField(
           controller: _maimemoTokenCtrl,
           obscureText: _maimemoObscure,
           style: TextStyle(fontSize: 13, color: c.text),
-          decoration: _deco(c, hint: '墨墨 App「实验功能 → 开放 API」获取').copyWith(
+          decoration: _deco(c, hint: '墨墨 App「实验功能 → 开放 API」获取', fillColor: c.isLight ? Colors.white : const Color(0xFF33333A)).copyWith(
             suffixIcon: Row(mainAxisSize: MainAxisSize.min, children: [
               IconButton(
                 tooltip: _maimemoObscure ? '显示' : '隐藏',
@@ -1219,10 +1236,10 @@ class _SettingsDialogState extends State<SettingsDialog> {
           height: 42,
           child: FilledButton(
             style: FilledButton.styleFrom(
-              // 主操作：主色淡底
-              backgroundColor: c.primaryBg,
+              // 主操作：主色淡底（浅色 12% 蓝，深色保持深色适配）
+              backgroundColor: mainBtnBg,
               foregroundColor: c.primaryText,
-              disabledBackgroundColor: c.primaryBg.withValues(alpha: 0.5),
+              disabledBackgroundColor: mainBtnBg.withValues(alpha: 0.5),
               disabledForegroundColor: c.primaryText.withValues(alpha: 0.45),
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
             ),
@@ -1248,42 +1265,68 @@ class _SettingsDialogState extends State<SettingsDialog> {
     );
   }
 
-  // ============== 联网搜索卡片 ==============
+  // ============== 联网搜索卡片（设计稿：头部行内开关 + chevron，配置默认收起） ==============
   Widget _buildSearchCard(AppState s, AppColors c) {
     return _settingsCard(
       c: c,
-      icon: Icons.travel_explore,
+      icon: Icons.public_rounded,
       title: '联网搜索服务',
       subtitle: '开启后将提升模型响应速度，但会增加一定的电量消耗',
-      iconColor: c.textTertiary,
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        TextField(
-          controller: _searchUrlCtrl,
-          style: TextStyle(fontSize: 13, color: c.text),
-          decoration: _deco(c, hint: '搜索服务地址'),
-          onChanged: (_) {
-            s.setSearchConfig(_searchUrlCtrl.text, _searchKeyCtrl.text);
+      iconColor: c.text,
+      trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+        Switch(
+          value: s.searchEnabled,
+          activeColor: c.primary,
+          onChanged: (v) {
+            s.setSearchEnabled(v);
+            setState(() {});
           },
         ),
-        const SizedBox(height: 10),
-        TextField(
-          controller: _searchKeyCtrl,
-          obscureText: _searchObscure,
-          style: TextStyle(fontSize: 13, color: c.text),
-          decoration: _deco(c, hint: 'AppBuilder API Key').copyWith(
-            suffixIcon: Row(mainAxisSize: MainAxisSize.min, children: [
-              IconButton(
-                tooltip: _searchObscure ? '显示' : '隐藏',
-                onPressed: () => setState(() => _searchObscure = !_searchObscure),
-                icon: Icon(_searchObscure ? Icons.visibility_outlined : Icons.visibility_off_outlined, size: 18, color: c.textTertiary),
-              ),
-            ]),
+        GestureDetector(
+          onTap: () => setState(() => _searchExpanded = !_searchExpanded),
+          child: AnimatedRotation(
+            turns: _searchExpanded ? 0.25 : 0,
+            duration: const Duration(milliseconds: 160),
+            child: Icon(Icons.chevron_right_rounded, size: 20, color: c.textTertiary),
           ),
-          onChanged: (_) {
-            s.setSearchConfig(_searchUrlCtrl.text, _searchKeyCtrl.text);
-          },
         ),
       ]),
+      child: AnimatedCrossFade(
+        firstChild: const SizedBox(width: double.infinity),
+        secondChild: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          TextField(
+            controller: _searchUrlCtrl,
+            style: TextStyle(fontSize: 13, color: c.text),
+            decoration: _deco(c, hint: '搜索服务地址', fillColor: c.isLight ? Colors.white : const Color(0xFF33333A)),
+            onChanged: (_) {
+              s.setSearchConfig(_searchUrlCtrl.text, _searchKeyCtrl.text);
+            },
+          ),
+          const SizedBox(height: 10),
+          TextField(
+            controller: _searchKeyCtrl,
+            obscureText: _searchObscure,
+            style: TextStyle(fontSize: 13, color: c.text),
+            decoration: _deco(c, hint: 'AppBuilder API Key', fillColor: c.isLight ? Colors.white : const Color(0xFF33333A)).copyWith(
+              suffixIcon: Row(mainAxisSize: MainAxisSize.min, children: [
+                IconButton(
+                  tooltip: _searchObscure ? '显示' : '隐藏',
+                  onPressed: () => setState(() => _searchObscure = !_searchObscure),
+                  icon: Icon(_searchObscure ? Icons.visibility_outlined : Icons.visibility_off_outlined, size: 18, color: c.textTertiary),
+                ),
+              ]),
+            ),
+            onChanged: (_) {
+              s.setSearchConfig(_searchUrlCtrl.text, _searchKeyCtrl.text);
+            },
+          ),
+          const SizedBox(height: 8),
+          Text('服务地址与 Key 供自定义搜索接入使用，默认配置无需修改。',
+              style: TextStyle(fontSize: 11, color: c.textTertiary, height: 1.5)),
+        ]),
+        crossFadeState: _searchExpanded ? CrossFadeState.showSecond : CrossFadeState.showFirst,
+        duration: const Duration(milliseconds: 160),
+      ),
     );
   }
 
@@ -2637,12 +2680,12 @@ class _SettingsDialogState extends State<SettingsDialog> {
 
   Widget _sectionTitle(String t, AppColors c) => Text(t, style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: c.text, letterSpacing: 0.2));
 
-  InputDecoration _deco(AppColors c, {String? hint}) => InputDecoration(
+  InputDecoration _deco(AppColors c, {String? hint, Color? fillColor}) => InputDecoration(
     hintText: hint, hintStyle: TextStyle(color: c.inputHint),
     isDense: true,
-    // 显式透明填充，避免 Material 3 默认的 surfaceTint 浅紫色渗入
+    // 显式填充色，避免 Material 3 默认的 surfaceTint 浅紫色渗入
     filled: true,
-    fillColor: Colors.transparent,
+    fillColor: fillColor ?? Colors.transparent,
     contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
     border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
     enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
@@ -3159,12 +3202,12 @@ class _ChatSettingsDialogState extends State<ChatSettingsDialog> {
     });
   }
 
-  InputDecoration _deco(AppColors c, {String? hint}) => InputDecoration(
+  InputDecoration _deco(AppColors c, {String? hint, Color? fillColor}) => InputDecoration(
     hintText: hint, hintStyle: TextStyle(color: c.inputHint),
     isDense: true,
-    // 显式透明填充，避免 Material 3 默认的 surfaceTint 浅紫色渗入
+    // 显式填充色，避免 Material 3 默认的 surfaceTint 浅紫色渗入
     filled: true,
-    fillColor: Colors.transparent,
+    fillColor: fillColor ?? Colors.transparent,
     contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
     border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
     enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
