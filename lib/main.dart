@@ -41,6 +41,7 @@ import 'widgets/maimemo_wordbook_page.dart';
 import 'widgets/browser_page.dart';
 import 'widgets/snake_game_page.dart';
 import 'widgets/gomoku_page.dart';
+import 'widgets/minesweeper_page.dart';
 import 'widgets/source_viewer_page.dart';
 import 'widgets/agent_rows.dart';
 import 'widgets/multi_expert_page.dart';
@@ -61,6 +62,7 @@ const _moreItemsData = [
   (Icons.language_rounded, '浏览器', '轻量网页浏览', 19),
   (Icons.videogame_asset_outlined, '贪吃蛇', '经典小游戏放松', 20),
   (Icons.grid_3x3_rounded, '五子棋', '双人对战五子连珠', 23),
+  (Icons.grid_on_rounded, '扫雷', '微软经典玩法复刻', 28),
   (Icons.forum_outlined, '辩论模式', '两个模型正反方对辩', 26),
   (Icons.groups_outlined, '多专家团', '解析·执行·验证协作', 25),
   (Icons.email_outlined, '邮箱', '收发邮件/写信', 27),
@@ -201,6 +203,24 @@ class _SidebarNavPill extends StatelessWidget {
 
 void main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
+  // ===== 沉浸全屏：让 Flutter 渐变背景延伸到状态栏后面 =====
+  // 顶部不再有系统那一条突兀的纯色横带，主界面顶部直接是极光渐变。
+  // 状态栏图标深色（适配浅色渐变背景），与 MainActivity.kt 的
+  // WindowCompat.setDecorFitsSystemWindows 配合实现真正的 edge-to-edge。
+  if (!_isWindows) {
+    await SystemChrome.setEnabledSystemUIMode(
+      SystemUiMode.edgeToEdge,
+    );
+    SystemChrome.setSystemUIOverlayStyle(
+      const SystemUiOverlayStyle(
+        statusBarColor: Colors.transparent,
+        statusBarIconBrightness: Brightness.dark,
+        statusBarBrightness: Brightness.light,
+        systemNavigationBarColor: Colors.transparent,
+        systemNavigationBarIconBrightness: Brightness.dark,
+      ),
+    );
+  }
   // 全局异常日志：捕获未处理异常写入文件，便于定位运行时白屏/崩溃
   FlutterError.onError = (details) {
     _writeErrorLog(details.exceptionAsString(), details.stack?.toString() ?? '');
@@ -595,12 +615,11 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
     // 帧率策略：
     // - 电脑端（Windows）：跟随显示器刷新率，165Hz 屏即 165fps——Flutter 桌面端
     //   垂直同步渲染，无程序化锁帧通道，不做任何限制；
-    // - 手机端：省电模式锁 60；高性能模式解锁（fps=0，跟随系统最高档，120/144Hz 跑满）；
-    //   默认锁 120。
+    // - 手机端：省电模式锁 60；其余状态一律不锁帧（fps=0，交还系统自适应，
+    //   高刷屏跑满 120/144Hz）。曾默认锁 120，高刷屏（144Hz 等）会被压帧，
+    //   毛玻璃等特效主题下感知尤其明显，故移除默认上限。
     if (_isWindows) return;
-    final targetFps = _state.powerSavingMode
-        ? 60
-        : (_state.highPerformanceMode ? 0 : 120);
+    final targetFps = _state.powerSavingMode ? 60 : 0;
     _frameRateChannel.invokeMethod('setFrameRate', {'fps': targetFps});
   }
 
@@ -918,7 +937,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
         (Icons.search_outlined, '查询', 3),
       ];
       final inMore = page >= 4;
-      final inSubFeature = page >= 4 && (page <= 8 || (page >= 12 && page <= 17) || page == 18 || page == 19 || page == 20 || page == 21 || page == 22 || page == 23 || page == 24 || page == 25 || page == 26);
+      final inSubFeature = page >= 4 && (page <= 8 || (page >= 12 && page <= 17) || page == 18 || page == 19 || page == 20 || page == 21 || page == 22 || page == 23 || page == 24 || page == 25 || page == 26 || page == 27 || page == 28);
       const moreTitle = '更多功能';
       const moreIcon = Icons.grid_view_outlined;
       final isGlass = _state.isGlassUI;
@@ -1281,29 +1300,27 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
           appBar: null,
           // body 外层 SafeArea(top:true) 兜住状态栏空间——删 AppBar 后，
           // 主页内容（LearnPage 等）顶部不再被刘海遮挡；bottom:false 让导航栏仍能紧贴底部
-          body: SafeArea(
-            top: true,
-            bottom: false,
-            child: Stack(children: [
+          body: Stack(children: [
+            // 玻璃染色层铺满全屏：edge-to-edge 下覆盖到状态栏后面，
+            // 顶部与主界面无缝同色，不再露出一截底色分界线
+            if (isGlass)
               Positioned.fill(
-                child: isGlass
-                  // 玻璃模式：半透明染色即可（背景层为静态实底，无需 BackdropFilter）
-                  ? Container(
-                      decoration: BoxDecoration(
-                        gradient: glassTintGradient(c.bg, _state.darkMode ? 0.4 : 0.45),
-                      ),
-                      // extendBody 后 Scaffold 会把导航栏高度注入 body 的 MediaQuery
-                      // padding.bottom，内容避开悬浮导航栏，染色层则连续铺满全屏
-                      child: Builder(builder: (bctx) => Padding(
-                        padding: EdgeInsets.only(bottom: MediaQuery.of(bctx).padding.bottom),
-                        child: _animatedPage(),
-                      )),
-                    )
-                  : Builder(builder: (bctx) => Padding(
-                      padding: EdgeInsets.only(bottom: MediaQuery.of(bctx).padding.bottom),
-                      child: _animatedPage(),
-                    )),
+                child: Container(
+                  decoration: BoxDecoration(
+                    gradient: glassTintGradient(c.bg, _state.darkMode ? 0.4 : 0.45),
+                  ),
+                ),
               ),
+            SafeArea(
+              top: true,
+              bottom: false,
+              child: Stack(children: [
+                Positioned.fill(
+                  child: Builder(builder: (bctx) => Padding(
+                    padding: EdgeInsets.only(bottom: MediaQuery.of(bctx).padding.bottom),
+                    child: _animatedPage(),
+                  )),
+                ),
               // 右上角"三点"设置入口（取代原 AppBar.actions）：半透明胶囊底，
               // 绝对定位、外层 SafeArea 已 top:true 自动避开状态栏；不占 AppBar 高度→顶部不再有白色挡板
               Positioned(
@@ -1359,8 +1376,9 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                     child: Container(color: Colors.transparent),
                   ),
                 ),
-            ]),
-          ),
+              ]),
+            ),
+          ]),
           bottomNavigationBar: immersiveMode
               ? (browserMode && _showBrowserNav ? NavigationBar(
             selectedIndex: navIndex,
@@ -1776,6 +1794,9 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
         return const SourceViewerPage();
       case 23:
         return const _PageScaffold(title: '五子棋', child: GomokuPage());
+      case 28:
+        // 扫雷沉浸模式：不套 _PageScaffold，页面自身就是完整游戏界面
+        return const MinesweeperPage();
       case 25:
         return const _PageScaffold(title: '多专家团', child: MultiExpertPage());
       case 26:
@@ -2151,6 +2172,38 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
       _chatCtrl.selection = TextSelection.collapsed(offset: _chatCtrl.text.length);
       _state.truncateConversationAt(msgIndex);
     }
+    // AI 消息操作栏动作：复制 / 编辑（截断本条并回填上一条用户消息）/ 重试（截断本条并自动重发）
+    Future<void> copyAiMessage() async {
+      await Clipboard.setData(ClipboardData(text: msg.content));
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('已复制', style: TextStyle(fontSize: 12.5)),
+            behavior: SnackBarBehavior.floating,
+            duration: Duration(milliseconds: 1200),
+          ),
+        );
+      }
+    }
+    void editAiMessage() {
+      final idx = msgIndex;
+      if (idx == null || msg.role != 'ai') return;
+      String? prevUser;
+      for (var i = idx - 1; i >= 0; i--) {
+        if (_state.chatHistory[i].role == 'user') {
+          prevUser = _state.chatHistory[i].content;
+          break;
+        }
+      }
+      _chatCtrl.text = prevUser ?? '';
+      _chatCtrl.selection = TextSelection.collapsed(offset: _chatCtrl.text.length);
+      _state.truncateConversationAt(idx);
+    }
+    void retryAiMessage() {
+      final idx = msgIndex;
+      if (idx == null || msg.role != 'ai') return;
+      _state.retryChatAt(idx);
+    }
     // R21: 系统提示消息（如压缩对话生成的【早期对话摘要】）渲染为细长通知条——
     // 此前按普通 AI 气泡渲染（带模型头像+名称），压缩后看起来像"对话凭空消失、AI 自言自语"
     if (msg.role == 'system') {
@@ -2275,7 +2328,19 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
       // 首轮流式决策期间（"正在分析请求"已按需求移除）：
       // 无思考/步骤/正文时不渲染任何内容，等首个 token 到达正文自然顶格出现
       if (running && msg.content.isEmpty) return const SizedBox.shrink();
-      return bubble;
+      if (running) return bubble;
+      // AI 消息生成完成：气泡下方常驻操作栏（复制/编辑/重试/输出 token 统计）
+      return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        bubble,
+        _AiBubbleActionBar(
+          msg: msg,
+          msgIndex: msgIndex,
+          light: isLight,
+          onCopy: copyAiMessage,
+          onEdit: editAiMessage,
+          onRetry: retryAiMessage,
+        ),
+      ]);
     }
     // 内容尚未到达时（纯思考/工具阶段）不渲染空气泡
     final bool showBubble = msg.content.isNotEmpty || !running;
@@ -2304,6 +2369,16 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
         const SizedBox(height: 4),
       ],
       if (showBubble) bubble,
+      // AI 消息生成完成：气泡下方常驻操作栏（复制/编辑/重试/输出 token 统计）
+      if (showBubble && !running)
+        _AiBubbleActionBar(
+          msg: msg,
+          msgIndex: msgIndex,
+          light: isLight,
+          onCopy: copyAiMessage,
+          onEdit: editAiMessage,
+          onRetry: retryAiMessage,
+        ),
     ]);
   }
 
@@ -2518,10 +2593,16 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
       }
 
       // R7: 水平分割线（--- / *** / ___）
+      // R47: HR 必须独立成行。原实现（R17）会移除前面的换行符，把 HR 占位符
+      // 内联拼在上一行文字尾部，完全依赖 Flutter 自动换行把横线挤到下一行——
+      // 占位行高在这种内联形态下计算不稳定，部分行宽/字体组合会把后续文本
+      // 挤出可视区（表现为"横线下面内容看不见"）。改为确保占位符前有且仅有
+      // 一个换行：横线独占一行，后续文本从新行开始，布局确定性 100%。
       if (_reHorizontalRule.hasMatch(line)) {
-        // R17: 折叠紧邻的前置换行（HR 自带外边距），分割线上下不再叠出大空洞
-        if (spans.isNotEmpty && spans.last is TextSpan && (spans.last as TextSpan).text == '\n') {
-          spans.removeLast();
+        if (spans.isNotEmpty) {
+          final last = spans.last;
+          final lastIsNewline = last is TextSpan && last.text == '\n';
+          if (!lastIsNewline) spans.add(const TextSpan(text: '\n'));
         }
         spans.add(WidgetSpan(
           alignment: PlaceholderAlignment.middle,
@@ -5701,6 +5782,102 @@ class _AgentPromptHostState extends State<AgentPromptHost> {
 
   @override
   Widget build(BuildContext context) => const SizedBox.shrink();
+}
+
+/// AI 消息生成的最终回复下方常驻操作栏：token 统计（输出 · 输入缓存命中/未命中 ·
+/// 输出速度）+ 复制 / 编辑（截断本条并回填上一条用户消息）/ 重试（截断本条自动重发）。
+/// 灰调小字 + 细图标按钮，与用户消息悬停操作（_UserBubbleHover）风格一致。
+class _AiBubbleActionBar extends StatelessWidget {
+  final ChatMessage msg;
+  final int? msgIndex;
+  final bool light;
+  final VoidCallback onCopy;
+  final VoidCallback onEdit;
+  final VoidCallback onRetry;
+  const _AiBubbleActionBar({
+    required this.msg,
+    required this.msgIndex,
+    required this.light,
+    required this.onCopy,
+    required this.onEdit,
+    required this.onRetry,
+  });
+
+  /// "输出 312 · 命中 400 · 未命中 800 · 45.2 tok/s"；
+  /// 命中/未命中为 DeepSeek 等网关的输入缓存统计（无该信息时不显示该项）；
+  /// 生成耗时缺失时省略速度；无任何 token 信息时返回 null。
+  String? get _tokenText {
+    final out = msg.outputTokens;
+    final hit = msg.inputCacheHitTokens;
+    final miss = msg.inputCacheMissTokens;
+    if (out == null && hit == null && miss == null) return null;
+    final parts = <String>[];
+    if (out != null) parts.add('输出 $out');
+    if (miss != null) parts.add('未命中 $miss');
+    if (hit != null) parts.add('命中 $hit');
+    final ms = msg.generationMs;
+    if (out != null && ms != null && ms > 0) {
+      parts.add('${(out / (ms / 1000.0)).toStringAsFixed(1)} tok/s');
+    }
+    return parts.join(' · ');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppColors(light);
+    return Padding(
+      padding: const EdgeInsets.only(left: 4, top: 4, bottom: 10),
+      child: Row(children: [
+        if (_tokenText != null)
+          Flexible(
+            child: Padding(
+              padding: const EdgeInsets.only(right: 10),
+              child: Tooltip(
+                message: '输出 token · 输入缓存未命中/命中（DeepSeek 命中输入免费）',
+                child: Text(
+                  _tokenText!,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 11, color: c.textSecondary),
+                ),
+              ),
+            ),
+          ),
+        _AiActionIcon(icon: Icons.copy_rounded, tip: '复制', light: light, onTap: onCopy),
+        const SizedBox(width: 2),
+        if (msgIndex != null)
+          _AiActionIcon(icon: Icons.edit_outlined, tip: '编辑（截断本条并回填上一条消息）', light: light, onTap: onEdit),
+        if (msgIndex != null) const SizedBox(width: 2),
+        if (msgIndex != null)
+          _AiActionIcon(icon: Icons.refresh_rounded, tip: '重试', light: light, onTap: onRetry),
+      ]),
+    );
+  }
+}
+
+/// AI 消息操作栏细图标按钮（灰调无边框，悬停加深）
+class _AiActionIcon extends StatelessWidget {
+  final IconData icon;
+  final String tip;
+  final VoidCallback onTap;
+  final bool light;
+  const _AiActionIcon({required this.icon, required this.tip, required this.onTap, required this.light});
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppColors(light);
+    return Tooltip(
+      message: tip,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(6),
+        child: Padding(
+          padding: const EdgeInsets.all(4),
+          child: Icon(icon, size: 14, color: c.textSecondary),
+        ),
+      ),
+    );
+  }
 }
 
 /// R22: 用户消息气泡悬停操作（复制 / 编辑重答）——仿 ChatGPT。
