@@ -724,7 +724,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                                     // 浏览器页（19）与考场/游戏一样全屏独占：隐藏侧边栏与 AI 对话栏
                                     // 内容区不再包 _state ListenableBuilder：内部已用 pageNotifier
                                     // 细粒度控制，AI 流式输出等高频通知不会连带重建学习/答题页
-                                    body: (_state.page == 10 || _state.page == 11 || _state.page == 20 || _state.page == 19)
+                                    body: (_state.page == 10 || _state.page == 11 || _state.page == 20 || _state.page == 19 || _state.page == 28)
                                         ? _buildMainContent()
                                         : (_state.agentFullscreen
                                             // R14: 专注全屏：图标导航栏 + 全宽聊天页（可带侧边浏览器）
@@ -749,13 +749,10 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                                                   ]);
                                                 },
                                               )
-                                            : (_state.page == 28
-                                                // 扫雷：全屏沉浸（游戏内设置菜单可退出），不显示侧边栏
-                                                ? Expanded(child: _buildMainContent())
-                                                : Row(children: [
-                                                    _buildSidebar(),
-                                                    Expanded(child: _buildMainContent()),
-                                                  ]))),
+                                            : Row(children: [
+                                                _buildSidebar(),
+                                                Expanded(child: _buildMainContent()),
+                                              ])),
                                     ),
                                   )
                                 : KeyedSubtree(

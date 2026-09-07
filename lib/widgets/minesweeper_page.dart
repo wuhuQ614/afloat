@@ -32,6 +32,7 @@ class MinesweeperPage extends StatefulWidget {
 class _MinesweeperPageState extends State<MinesweeperPage> {
   MinesweeperLogic? _logic;
   bool _logicError = false;
+  String _logicErrorText = '';
 
   int _rows = 9, _cols = 9, _mines = 10;
   _Level _level = _Level.beginner;
@@ -86,8 +87,12 @@ class _MinesweeperPageState extends State<MinesweeperPage> {
       }
       _logic!.sync();
       _logicError = false;
-    } on MsLoadException {
+    } catch (e) {
+      // 任何加载/初始化异常都不允许灰屏：显示错误提示
       _logicError = true;
+      _logicErrorText = e.toString();
+      _logic?.dispose();
+      _logic = null;
     }
     _over = false;
     _won = false;
@@ -184,6 +189,11 @@ class _MinesweeperPageState extends State<MinesweeperPage> {
                           style: TextStyle(fontSize: 13.5, color: c.textSecondary)),
                       const SizedBox(height: 6),
                       Text('请重新构建项目后再次进入', style: TextStyle(fontSize: 12, color: c.textTertiary)),
+                      if (_logicErrorText.isNotEmpty) ...[
+                        const SizedBox(height: 8),
+                        Text(_logicErrorText,
+                            style: TextStyle(fontSize: 10.5, color: c.textTertiary)),
+                      ],
                     ]),
                   )
                 : Center(
