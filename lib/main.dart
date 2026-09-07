@@ -749,10 +749,13 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                                                   ]);
                                                 },
                                               )
-                                            : Row(children: [
-                                                _buildSidebar(),
-                                                Expanded(child: _buildMainContent()),
-                                              ])),
+                                            : (_state.page == 28
+                                                // 扫雷：全屏沉浸（游戏内设置菜单可退出），不显示侧边栏
+                                                ? Expanded(child: _buildMainContent())
+                                                : Row(children: [
+                                                    _buildSidebar(),
+                                                    Expanded(child: _buildMainContent()),
+                                                  ]))),
                                     ),
                                   )
                                 : KeyedSubtree(
@@ -1215,7 +1218,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
         final isGlass = _state.isGlassUI;
         // 考场/游戏/浏览器沉浸模式（page==10/11/20/19）：隐藏 AI 对话栏（右侧30%），内容独占
         // page==25 多专家团：自身就是多角色对话页，右侧再挂 AI 对话栏没有意义，同样独占
-        if (_state.page == 10 || _state.page == 11 || _state.page == 20 || _state.page == 19 || _state.page == 25) {
+        if (_state.page == 10 || _state.page == 11 || _state.page == 20 || _state.page == 19 || _state.page == 25 || _state.page == 28) {
           return Row(children: [
             Expanded(child: _animatedPage()),
           ]);

@@ -52,6 +52,9 @@ add_subdirectory(${FLUTTER_MANAGED_DIR})
 # Windows 端贪吃蛇 C++ 逻辑库（dart:ffi 调用，须在 runner 之前定义）
 add_subdirectory("snake_logic")
 
+# Windows 端扫雷 C++ 逻辑库（dart:ffi 调用，须在 runner 之前定义）
+add_subdirectory("minesweeper_logic")
+
 # Application build; see runner/CMakeLists.txt.
 add_subdirectory("runner")
 
