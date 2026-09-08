@@ -6,12 +6,14 @@ import 'dart:io';
 import 'dart:math';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:path_provider/path_provider.dart';
 import '../models.dart';
 import '../services/data_manager.dart';
 import '../services/wechat_service.dart';
 import '../state.dart';
+import '../services/ai_providers.dart';
 import '../theme_colors.dart' show AppColors;
 import '../theme_diy.dart';
 import '../services/browser_register.dart';
@@ -675,9 +677,343 @@ class _SettingsDialogState extends State<SettingsDialog> {
     overlay.insert(_cfgMenuEntry!);
   }
 
+  // ============== 通过服务商添加模型（设计稿：网格 → 表单 → 获取模型） ==============
+
+  /// 服务商网格弹窗（设计稿一）：自定义模型置顶，其余服务商两列网格
+  void _showProviderGridDialog(AppState s) {
+    showDialog<void>(
+      context: context,
+      barrierColor: Colors.black.withValues(alpha: 0.45),
+      builder: (ctx) {
+        final c = AppColors.of(ctx);
+        return Dialog(
+          backgroundColor: c.cardSolid,
+          insetPadding: const EdgeInsets.symmetric(horizontal: 40, vertical: 60),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 560, maxHeight: 560),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 18, 8, 6),
+                child: Row(children: [
+                  Expanded(child: Text('添加模型', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700, color: c.text))),
+                  IconButton(
+                    onPressed: () => Navigator.pop(ctx),
+                    icon: Icon(Icons.close_rounded, size: 20, color: c.textTertiary),
+                    visualDensity: VisualDensity.compact,
+                  ),
+                ]),
+              ),
+              Expanded(
+                child: ListView(padding: const EdgeInsets.fromLTRB(12, 4, 12, 16), children: [
+                  // 自定义模型：置顶全宽（走手动填写流程，等同新建配置）
+                  _providerTile(c, null, onTap: () {
+                    Navigator.pop(ctx);
+                    setState(() {
+                      _editIdx = -1;
+                      _url.clear();
+                      _key.clear();
+                      _modelCtrl.clear();
+                    });
+                  }),
+                  const SizedBox(height: 8),
+                  GridView.count(
+                    crossAxisCount: 2,
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(),
+                    mainAxisSpacing: 8,
+                    crossAxisSpacing: 8,
+                    childAspectRatio: 3.4,
+                    children: [
+                      for (final p in kAiProviders)
+                        _providerTile(c, p, onTap: () {
+                          Navigator.pop(ctx);
+                          _showProviderAddDialog(s, p);
+                        }),
+                    ],
+                  ),
+                ]),
+              ),
+            ]),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _providerTile(AppColors c, AiProvider? p, {required VoidCallback onTap}) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        decoration: BoxDecoration(
+          color: c.isLight ? const Color(0xFFF6F7F9) : const Color(0xFF2E2E35),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: c.isLight ? const Color(0xFFECECF0) : const Color(0xFF3A3A42)),
+        ),
+        child: Row(children: [
+          _providerBadge(c, p),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(p?.name ?? '自定义模型',
+                style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: c.text),
+                overflow: TextOverflow.ellipsis),
+          ),
+          Icon(Icons.chevron_right_rounded, size: 18, color: c.textTertiary),
+        ]),
+      ),
+    );
+  }
+
+  /// 服务商徽章：品牌色圆角方块 + 缩写文字
+  Widget _providerBadge(AppColors c, AiProvider? p) {
+    if (p == null) {
+      return Container(
+        width: 26,
+        height: 26,
+        decoration: BoxDecoration(color: c.cardAlt, borderRadius: BorderRadius.circular(7)),
+        child: Icon(Icons.tune_rounded, size: 15, color: c.textSecondary),
+      );
+    }
+    return Container(
+      width: 26,
+      height: 26,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(color: p.color, borderRadius: BorderRadius.circular(7)),
+      child: Text(p.badge, style: const TextStyle(fontSize: 10.5, fontWeight: FontWeight.w800, color: Colors.white)),
+    );
+  }
+
+  /// 通过服务商添加（设计稿三，第二/三项调换：服务商 → API密钥 → 模型）
+  Future<void> _showProviderAddDialog(AppState s, AiProvider provider) async {
+    final keyCtrl = TextEditingController();
+    final modelCtrl = TextEditingController(text: provider.defaultModel ?? '');
+    bool obscure = true;
+    bool advanced = false;
+    String temp = '0.3';
+    int contextLen = 200000;
+    AiProvider cur = provider;
+
+    await showDialog<void>(
+      context: context,
+      barrierColor: Colors.black.withValues(alpha: 0.45),
+      builder: (ctx) => StatefulBuilder(builder: (ctx, setD) {
+        final c = AppColors.of(ctx);
+        return Dialog(
+          backgroundColor: c.cardSolid,
+          insetPadding: const EdgeInsets.symmetric(horizontal: 40, vertical: 60),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 440),
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Row(children: [
+                  Expanded(child: Text('通过服务商添加', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: c.text))),
+                  IconButton(
+                    onPressed: () => Navigator.pop(ctx),
+                    icon: Icon(Icons.close_rounded, size: 20, color: c.textTertiary),
+                    visualDensity: VisualDensity.compact,
+                  ),
+                ]),
+                const SizedBox(height: 14),
+                // ① 服务商（点击可回到服务商网格重新选择）
+                Text('服务商', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: c.textSecondary)),
+                const SizedBox(height: 6),
+                InkWell(
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _showProviderGridDialog(s);
+                  },
+                  borderRadius: BorderRadius.circular(10),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: c.isLight ? const Color(0xFFF6F7F9) : const Color(0xFF2E2E35),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: c.border),
+                    ),
+                    child: Row(children: [
+                      _providerBadge(c, cur),
+                      const SizedBox(width: 10),
+                      Expanded(child: Text(cur.name, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: c.text))),
+                      Icon(Icons.expand_more_rounded, size: 18, color: c.textTertiary),
+                    ]),
+                  ),
+                ),
+                const SizedBox(height: 14),
+                // ② API 密钥（调换后第二项）
+                Row(children: [
+                  Text('API 密钥', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: c.textSecondary)),
+                  const Spacer(),
+                  GestureDetector(
+                    onTap: () => launchUrl(Uri.parse(cur.keyUrl), mode: LaunchMode.externalApplication),
+                    child: Text('获取 API 密钥', style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600, color: _accent(c))),
+                  ),
+                ]),
+                const SizedBox(height: 6),
+                TextField(
+                  controller: keyCtrl,
+                  obscureText: obscure,
+                  style: TextStyle(fontSize: 13, color: c.text),
+                  decoration: _deco(c, hint: '请输入 API Key', fillColor: c.isLight ? Colors.white : const Color(0xFF26262C)).copyWith(
+                    suffixIcon: IconButton(
+                      tooltip: obscure ? '显示' : '隐藏',
+                      onPressed: () => setD(() => obscure = !obscure),
+                      icon: Icon(obscure ? Icons.visibility_off_rounded : Icons.visibility_rounded, size: 18, color: c.textTertiary),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 14),
+                // ③ 模型（调换后第三项）：手动输入或「获取」拉取远端列表挑选
+                Text('模型', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: c.textSecondary)),
+                const SizedBox(height: 6),
+                TextField(
+                  controller: modelCtrl,
+                  style: TextStyle(fontSize: 13, color: c.text),
+                  decoration: _deco(c, hint: '手动输入或点击「获取」选择', fillColor: c.isLight ? Colors.white : const Color(0xFF26262C)).copyWith(
+                    suffixIcon: Padding(
+                      padding: const EdgeInsets.only(right: 4),
+                      child: TextButton(
+                        onPressed: keyCtrl.text.trim().isEmpty
+                            ? null
+                            : () async {
+                                final picked = await ModelFetchSheet.show(
+                                  ctx,
+                                  configProvider: () => ApiConfig(url: cur.baseUrl, key: keyCtrl.text.trim()),
+                                  initialModels: const [],
+                                  currentModel: modelCtrl.text.trim(),
+                                );
+                                if (picked?.pickedModel != null) setD(() => modelCtrl.text = picked!.pickedModel!);
+                              },
+                        style: TextButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(horizontal: 10),
+                          minimumSize: Size.zero,
+                          foregroundColor: _accent(c),
+                          textStyle: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600),
+                        ),
+                        child: const Text('获取'),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                // 高级配置（折叠）：温度 / 上下文长度
+                InkWell(
+                  onTap: () => setD(() => advanced = !advanced),
+                  borderRadius: BorderRadius.circular(8),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    child: Row(children: [
+                      AnimatedRotation(
+                        turns: advanced ? 0.25 : 0,
+                        duration: const Duration(milliseconds: 160),
+                        child: Icon(Icons.chevron_right_rounded, size: 18, color: c.textTertiary),
+                      ),
+                      const SizedBox(width: 4),
+                      Text('高级配置', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: c.textSecondary)),
+                    ]),
+                  ),
+                ),
+                AnimatedCrossFade(
+                  firstChild: const SizedBox(width: double.infinity),
+                  secondChild: Padding(
+                    padding: const EdgeInsets.only(top: 10),
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Text('温度', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: c.textSecondary)),
+                      const SizedBox(height: 6),
+                      DropdownButtonFormField<String>(
+                        value: temp,
+                        decoration: _deco(c, fillColor: c.isLight ? Colors.white : const Color(0xFF26262C)),
+                        items: const [
+                          DropdownMenuItem(value: '0', child: Text('精确 (0)')),
+                          DropdownMenuItem(value: '0.3', child: Text('保守 (0.3)')),
+                          DropdownMenuItem(value: '0.7', child: Text('均衡 (0.7)')),
+                          DropdownMenuItem(value: '1.0', child: Text('创意 (1.0)')),
+                        ],
+                        onChanged: (v) => setD(() => temp = v ?? temp),
+                      ),
+                      const SizedBox(height: 10),
+                      Text('上下文长度', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: c.textSecondary)),
+                      const SizedBox(height: 6),
+                      DropdownButtonFormField<int>(
+                        value: contextLen,
+                        decoration: _deco(c, fillColor: c.isLight ? Colors.white : const Color(0xFF26262C)),
+                        items: const [
+                          DropdownMenuItem(value: 32000, child: Text('32K')),
+                          DropdownMenuItem(value: 64000, child: Text('64K')),
+                          DropdownMenuItem(value: 128000, child: Text('128K')),
+                          DropdownMenuItem(value: 200000, child: Text('200K（默认）')),
+                          DropdownMenuItem(value: 1000000, child: Text('1000K（1M）')),
+                        ],
+                        onChanged: (v) => setD(() => contextLen = v ?? contextLen),
+                      ),
+                    ]),
+                  ),
+                  crossFadeState: advanced ? CrossFadeState.showSecond : CrossFadeState.showFirst,
+                  duration: const Duration(milliseconds: 160),
+                ),
+                const SizedBox(height: 18),
+                // 添加模型：写入 apiProfiles 并载入主表单
+                SizedBox(
+                  width: double.infinity,
+                  height: 44,
+                  child: FilledButton(
+                    style: FilledButton.styleFrom(
+                      backgroundColor: _accent(c),
+                      foregroundColor: Colors.white,
+                      disabledBackgroundColor: _accent(c).withValues(alpha: 0.5),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    ),
+                    onPressed: keyCtrl.text.trim().isEmpty || modelCtrl.text.trim().isEmpty
+                        ? null
+                        : () {
+                            final cfg = ApiConfig(
+                              url: cur.baseUrl,
+                              key: keyCtrl.text.trim(),
+                              model: modelCtrl.text.trim(),
+                              temperature: temp,
+                              contextLength: contextLen,
+                            );
+                            final profiles = List.of(s.apiProfiles);
+                            profiles.add(ApiProfile(name: cur.name + ' · ' + modelCtrl.text.trim(), config: cfg));
+                            s.saveApiProfiles(profiles, profiles.length - 1);
+                            _editIdx = profiles.length - 1;
+                            _loadFrom(cfg);
+                            Navigator.pop(ctx);
+                          },
+                    child: const Text('添加模型', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700)),
+                  ),
+                ),
+              ]),
+            ),
+          ),
+        );
+      }),
+    );
+    if (mounted) setState(() {});
+  }
+
   Widget _sectionModelContent(AppState s, AppColors c) {
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       _sectionTitle('模型设置', c),
+      const SizedBox(height: 14),
+      // 通过服务商添加：内置服务商 URL，选服务商→填 Key→获取模型→一键添加
+      SizedBox(
+        width: double.infinity,
+        height: 40,
+        child: OutlinedButton.icon(
+          onPressed: () => _showProviderGridDialog(s),
+          icon: const Icon(Icons.add_rounded, size: 18),
+          label: const Text('通过服务商添加模型', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+          style: OutlinedButton.styleFrom(
+            foregroundColor: _accent(c),
+            side: BorderSide(color: _accentBorder(c)),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          ),
+        ),
+      ),
       const SizedBox(height: 14),
       // R33: 配置库选择——自绘简约选择器（替代系统 DropdownButton：无粉色高亮、白色浮层）
       Row(children: [
@@ -1166,6 +1502,42 @@ class _SettingsDialogState extends State<SettingsDialog> {
       Row(children: [
         Expanded(child: Text('合计', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: c.textSecondary))),
         Text(_formatTokens(total), style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: c.text)),
+        const SizedBox(width: 12),
+        InkWell(
+          onTap: () {
+            final dialog = AlertDialog(
+              title: const Text('清零 token 用量', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
+              content: const Text('确定要清零全部 API 的 token 用量统计吗？此操作不可撤销。', style: TextStyle(fontSize: 13)),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(false),
+                  child: Text('取消', style: TextStyle(fontSize: 13, color: c.textSecondary)),
+                ),
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(true),
+                  child: Text('清零', style: TextStyle(fontSize: 13, color: _accent(c))),
+                ),
+              ],
+            );
+            showDialog<bool>(
+              context: context,
+              builder: (_) => dialog,
+            ).then((ok) {
+              if (ok == true) {
+                s.clearTokenUsage();
+                setState(() {});
+              }
+            });
+          },
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(6),
+              color: c.isLight ? const Color(0xFFF4F4F6) : const Color(0xFF33333A),
+            ),
+            child: Text('清零', style: TextStyle(fontSize: 11.5, color: c.textSecondary)),
+          ),
+        ),
       ]),
     ];
   }
@@ -1292,7 +1664,29 @@ class _SettingsDialogState extends State<SettingsDialog> {
           ),
         ),
       ]),
-      child: AnimatedCrossFade(
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        // DeepSeek 原生搜索独立开关：与上方联网搜索服务分开控制，互不影响
+        Padding(
+          padding: const EdgeInsets.only(bottom: 10),
+          child: Row(children: [
+            Switch(
+              value: s.deepSeekSearchEnabled,
+              activeColor: _accent(c),
+              onChanged: (v) {
+                s.setDeepSeekSearchEnabled(v);
+                setState(() {});
+              },
+            ),
+            Expanded(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text('DeepSeek 原生搜索', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: c.text)),
+                Text('独立开关，与上方搜索服务互不影响；使用 DeepSeek 官方模型时免配置直接联网搜索',
+                    style: TextStyle(fontSize: 11, color: c.textTertiary, height: 1.5)),
+              ]),
+            ),
+          ]),
+        ),
+        AnimatedCrossFade(
         firstChild: const SizedBox(width: double.infinity),
         secondChild: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           TextField(
@@ -1328,6 +1722,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
         crossFadeState: _searchExpanded ? CrossFadeState.showSecond : CrossFadeState.showFirst,
         duration: const Duration(milliseconds: 160),
       ),
+      ]),
     );
   }
 
