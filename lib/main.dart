@@ -4,6 +4,7 @@ library;
 import 'dart:async' show Timer, unawaited;
 import 'dart:convert';
 import 'dart:io' show File, FileMode, Platform, Directory, Process, ProcessStartMode;
+import 'dart:typed_data' show Uint8List;
 import 'dart:ui' show FontFeature, PlatformDispatcher;
 import 'package:cross_file/cross_file.dart';
 import 'package:desktop_drop/desktop_drop.dart';
@@ -2292,7 +2293,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
           // 消息内容（支持 Markdown 渲染）——R18: 基础行距 1.5，正文更接近对话流排版
           if (msg.content.isNotEmpty)
             Text.rich(
-              _parseMarkdown(msg.content, c.text),
+              _parseMarkdown(msg.content, c.text, streaming: running),
               style: TextStyle(fontSize: 14, height: 1.5, color: c.text),
             )
           else if (msg.role == 'ai')
@@ -2410,12 +2411,27 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
 
   /// R5: 简易 Markdown 解析：支持 **粗体**、*斜体*、~~删除线~~、`行内代码`、标题、列表、代码块、引用、链接
   /// 带缓存：相同内容+颜色组合直接返回缓存结果
-  TextSpan _parseMarkdown(String text, Color textColor) {
+  TextSpan _parseMarkdown(String text, Color textColor, {bool streaming = false}) {
+    // 流式中的内容每帧变化，不进缓存
+    if (streaming) {
+      try {
+        return _parseMarkdownImpl(_normalizeDashTables(text), textColor, streaming: true);
+      } catch (e) {
+        // 解析异常绝不吞内容：回退纯文本
+        return TextSpan(text: text);
+      }
+    }
     // R29: 用完整文本做键（Map 字符串键深度相等，彻底避免哈希碰撞串显）
     final cacheKey = '$text\u0000${textColor.value}';
     final cached = _markdownCache[cacheKey];
     if (cached != null) return cached;
-    final result = _parseMarkdownImpl(_normalizeDashTables(text), textColor);
+    TextSpan result;
+    try {
+      result = _parseMarkdownImpl(_normalizeDashTables(text), textColor);
+    } catch (e) {
+      // 解析异常兜底：整条回退纯文本，防止个别消息渲染失败导致"内容消失"
+      result = TextSpan(text: text);
+    }
     // 限制缓存大小，防止无限增长
     if (_markdownCache.length > 200) _markdownCache.clear();
     _markdownCache[cacheKey] = result;
@@ -2504,7 +2520,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
     return out.join('\n');
   }
 
-  TextSpan _parseMarkdownImpl(String text, Color textColor) {
+  TextSpan _parseMarkdownImpl(String text, Color textColor, {bool streaming = false}) {
     final spans = <InlineSpan>[];
     final lines = text.split('\n');
     var inCodeBlock = false;
@@ -2711,6 +2727,19 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
       spans.add(WidgetSpan(
         alignment: PlaceholderAlignment.middle,
         child: chartAwareCodeBlock(codeBuffer.join('\n'), codeLang),
+      ));
+    }
+    // 未闭合代码块：内容以等宽文本直出（原版静默丢弃，
+    // 流式输出到代码块时"看起来输出到一半就消失了"）
+    if (inCodeBlock && codeBuffer.isNotEmpty) {
+      spans.add(TextSpan(
+        text: codeBuffer.join('\n'),
+        style: TextStyle(
+          fontSize: 12.5,
+          height: 1.45,
+          fontFamily: 'monospace',
+          color: textColor.withValues(alpha: 0.85),
+        ),
       ));
     }
     return TextSpan(children: spans, style: TextStyle(fontSize: 14.5, height: 1.5));
@@ -3125,19 +3154,51 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
     }
   }
 
+  /// 按文件头魔数识别图片类型（Android 相册/SAF 返回的文件名常无扩展名，
+  /// 仅靠扩展名判断会把图片误判成"不支持解析的文件"）
+  String? _imageMimeFromBytes(Uint8List b) {
+    if (b.length < 12) return null;
+    if (b[0] == 0x89 && b[1] == 0x50 && b[2] == 0x4E && b[3] == 0x47) return 'png';
+    if (b[0] == 0xFF && b[1] == 0xD8 && b[2] == 0xFF) return 'jpeg';
+    if (b[0] == 0x47 && b[1] == 0x49 && b[2] == 0x46 && b[3] == 0x38) return 'gif';
+    if (b[0] == 0x42 && b[1] == 0x4D) return 'bmp';
+    if (b[0] == 0x52 && b[1] == 0x49 && b[2] == 0x46 && b[3] == 0x46 &&
+        b[8] == 0x57 && b[9] == 0x45 && b[10] == 0x42 && b[11] == 0x50) {
+      return 'webp';
+    }
+    return null;
+  }
+
   /// 选择任意文件作为聊天附件：图片走 vision，文本文件读取内容注入，其余类型仅记文件名
   Future<void> _pickChatFile() async {
     try {
       final res = await FilePicker.platform.pickFiles(type: FileType.any, withData: true);
       if (res == null || res.files.isEmpty) return;
       final f = res.files.first;
-      final bytes = f.bytes;
       final name = f.name;
-      if (bytes == null || bytes.isEmpty) return;
+      // bytes 兜底链：withData 在 Android 部分相册/SAF 路径下拿不到字节，
+      // 退回用 path 直接读文件（原实现 bytes==null 直接静默 return，
+      // 即手机端"选了图没反应"的根因）
+      var bytes = f.bytes;
+      if (bytes == null || bytes.isEmpty) {
+        final p = f.path;
+        if (p != null && p.isNotEmpty) {
+          try {
+            bytes = await File(p).readAsBytes();
+          } catch (_) {}
+        }
+      }
+      if (bytes == null || bytes.isEmpty) {
+        if (mounted) _showChatToast(context, '无法读取所选文件，请换一个来源重试');
+        return;
+      }
       final lower = name.toLowerCase();
       final isImage = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'].any((e) => lower.endsWith(e));
-      if (isImage) {
-        final dataUrl = 'data:image/${_imageMime(name)};base64,${base64Encode(bytes)}';
+      // 无扩展名/不可信文件名：按字节魔数兜底识别图片
+      final mimeFromBytes = isImage ? null : _imageMimeFromBytes(bytes!);
+      if (isImage || mimeFromBytes != null) {
+        final mime = isImage ? _imageMime(name) : mimeFromBytes!;
+        final dataUrl = 'data:image/$mime;base64,${base64Encode(bytes!)}';
         setState(() {
           _chatImageData = dataUrl;
           _chatFileText = null;
@@ -3149,9 +3210,9 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
       if (textExts.any((e) => lower.endsWith(e))) {
         String text;
         try {
-          text = utf8.decode(bytes);
+          text = utf8.decode(bytes!);
         } catch (_) {
-          text = latin1.decode(bytes);
+          text = latin1.decode(bytes!);
         }
         setState(() {
           _chatAttachmentName = name;
@@ -3165,10 +3226,11 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
           _chatFileText = null;
           _chatImageData = null;
         });
-        _showChatToast(context, '该文件类型暂不支持内容解析，将以附件名发送');
+        if (mounted) _showChatToast(context, '该文件类型暂不支持内容解析，将以附件名发送');
       }
-    } catch (_) {
-      // 选择失败忽略
+    } catch (e) {
+      // 选择失败：不再静默吞掉（用户无从得知为什么没反应）
+      if (mounted) _showChatToast(context, '选择文件失败：$e');
     }
   }
 
