@@ -25,12 +25,16 @@ class ModelFetchSheet extends StatefulWidget {
   final ApiConfig Function() configProvider;
   final List<String> initialModels;
   final String currentModel;
+  /// true：点 + 添加后立即关闭面板并把该模型作为 pickedModel 返回
+  ///（服务商添加表单场景）；false：仅收藏（主表单原行为）
+  final bool autoCloseOnAdd;
 
   const ModelFetchSheet({
     super.key,
     required this.configProvider,
     required this.initialModels,
     required this.currentModel,
+    this.autoCloseOnAdd = false,
   });
 
   static Future<ModelFetchResult?> show(
@@ -38,6 +42,7 @@ class ModelFetchSheet extends StatefulWidget {
     required ApiConfig Function() configProvider,
     required List<String> initialModels,
     required String currentModel,
+    bool autoCloseOnAdd = false,
   }) {
     return showModalBottomSheet<ModelFetchResult>(
       context: context,
@@ -46,6 +51,7 @@ class ModelFetchSheet extends StatefulWidget {
       builder: (_) => ModelFetchSheet(
         configProvider: configProvider,
         initialModels: initialModels,
+        autoCloseOnAdd: autoCloseOnAdd,
         currentModel: currentModel,
       ),
     );
@@ -103,6 +109,9 @@ class _ModelFetchSheetState extends State<ModelFetchSheet> {
       if (!_added.contains(m)) _added.add(m);
       _current = m;
     });
+    if (widget.autoCloseOnAdd) {
+      Navigator.pop(context, ModelFetchResult(models: _added, pickedModel: m));
+    }
   }
 
   void _remove(String m) {

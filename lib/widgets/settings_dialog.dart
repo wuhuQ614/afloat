@@ -884,6 +884,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
                                   configProvider: () => ApiConfig(url: cur.baseUrl, key: keyCtrl.text.trim()),
                                   initialModels: const [],
                                   currentModel: modelCtrl.text.trim(),
+                                  autoCloseOnAdd: true,
                                 );
                                 if (picked?.pickedModel != null) setD(() => modelCtrl.text = picked!.pickedModel!);
                               },
