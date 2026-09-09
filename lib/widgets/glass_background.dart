@@ -2,7 +2,7 @@
 library;
 
 import 'dart:math' as math;
-import 'dart:ui' show ImageFilter;
+import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart' show Ticker;
 import '../theme_colors.dart' show kPrimary;
@@ -10,8 +10,8 @@ import '../theme_colors.dart' show kPrimary;
 /// 玻璃模糊滤镜：统一收口的玻璃高斯模糊（各面板共用同一 sigma 语义）。
 /// 玻璃的"通透感"主要靠背景层的高饱和色斑提供（见 _GlassBasePainter），
 /// 模糊只负责把色斑柔化成朦胧光晕。
-ImageFilter glassBlurFilter({double sigma = 20}) {
-  return ImageFilter.blur(sigmaX: sigma, sigmaY: sigma);
+ui.ImageFilter glassBlurFilter({double sigma = 20}) {
+  return ui.ImageFilter.blur(sigmaX: sigma, sigmaY: sigma);
 }
 
 /// 玻璃染色：左上浓、右下淡的对角微渐变（替代平面纯色，产生玻璃厚度感）
@@ -66,9 +66,22 @@ class _GlassBackgroundState extends State<GlassBackground>
   /// 静态帧固定相位：让光带/网格停在一个观感自然的时刻（呼吸中值附近）
   static const double _staticElapsed = 1.5;
 
+  /// 烘焙缩放：半分辨率绘制 + 减半 sigma，模糊观感与全分辨率 sigma 等效
+  /// （高斯模糊对均匀缩放近似可交换），省一半纹理事例与模糊耗时
+  static const double _bakeScale = 0.5;
+
+  /// 烘焙等效 sigma：上层玻璃容器原本实时 BackdropFilter 用 sigma 20，
+  /// 这里烘焙出"已模糊背景"，容器去掉模糊后透出的就是同款朦胧光晕
+  static const double _bakeSigma = 10.0;
+
   late final _GlassAnim _m;
   late final Ticker _ticker;
   double _last = 0;
+
+  /// 静态帧烘焙产物：模糊后的整幅背景（半分辨率）。null = 未烘焙（回退直绘）
+  ui.Image? _baked;
+  Size? _bakedSize;
+  bool? _bakedLight;
 
   @override
   void initState() {
@@ -112,13 +125,97 @@ class _GlassBackgroundState extends State<GlassBackground>
   void dispose() {
     _ticker.dispose();
     _m.dispose();
+    _baked?.dispose();
+    _baked = null;
     super.dispose();
+  }
+
+  /// 静态帧烘焙：确保缓存图与当前尺寸/明暗一致（不一致则同步重烘焙）
+  void _ensureBaked(Size size) {
+    if (size.isEmpty) return;
+    if (_baked != null && _bakedSize == size && _bakedLight == widget.isLight) {
+      return;
+    }
+    _baked?.dispose();
+    _baked = _bakeBlurred(size);
+    _bakedSize = size;
+    _bakedLight = widget.isLight;
+  }
+
+  /// 把原 painter 画面离屏绘制一遍，再以半分辨率 + saveLayer 高斯模糊
+  /// 烘焙成一张位图。全程同步（toImageSync，GPU 常驻纹理），仅尺寸/主题
+  /// 变化时执行一次，此后每帧合成只是 drawImageRect 一张图。
+  ui.Image _bakeBlurred(Size size) {
+    // 1) 原画面（渐变底 + 柔光斑 + 光带 + 网格）离屏录制。
+    //    用临时 anim 驱动 painter（不把离屏 painter 挂到长命 notifier 上），
+    //    画面状态与当前静态帧相位/明暗完全一致
+    final anim = _GlassAnim(widget.isLight)..elapsed = _m.elapsed;
+    final rec = ui.PictureRecorder();
+    _GlassBasePainter(anim).paint(ui.Canvas(rec), size);
+    final src = rec.endRecording();
+
+    // 2) 半分辨率画布：缩放绘制 + saveLayer 应用模糊滤镜，一次性烘焙
+    final w2 = math.max(1, (size.width * _bakeScale).round());
+    final h2 = math.max(1, (size.height * _bakeScale).round());
+    final rec2 = ui.PictureRecorder();
+    final c2 = ui.Canvas(rec2);
+    c2.scale(_bakeScale);
+    final layerRect = Offset.zero & size;
+    c2.saveLayer(
+      layerRect,
+      Paint()
+        ..imageFilter = ui.ImageFilter.blur(sigmaX: _bakeSigma, sigmaY: _bakeSigma),
+    );
+    c2.drawPicture(src);
+    c2.restore();
+    final img = rec2.endRecording().toImageSync(w2, h2);
+    src.dispose();
+    return img;
   }
 
   @override
   Widget build(BuildContext context) {
-    return CustomPaint(size: Size.infinite, painter: _GlassBasePainter(_m));
+    // 动画模式（引导页呼吸极光）：保持原每帧重绘路径
+    if (widget.animated) {
+      return CustomPaint(size: Size.infinite, painter: _GlassBasePainter(_m));
+    }
+    // 静态帧（主界面）：输出烘焙好的模糊背景。
+    // 上层玻璃容器（半透明染色卡等）不再需要各自挂 BackdropFilter——
+    // 它们透出的本就是"模糊后的背景"，观感与实时模糊几乎一致，
+    // 而整条渲染链路的实时模糊开销归零（每帧仅一张图的一次绘制）。
+    return LayoutBuilder(builder: (ctx, cons) {
+      _ensureBaked(cons.biggest);
+      final img = _baked;
+      if (img == null) {
+        // 烘焙不可用（极端小尺寸等）：回退原直绘，视觉为清晰背景
+        return CustomPaint(size: Size.infinite, painter: _GlassBasePainter(_m));
+      }
+      return CustomPaint(size: Size.infinite, painter: _BakedGlassPainter(img));
+    });
   }
+}
+
+/// 烘焙模糊背景绘制：把半分辨率模糊位图等比铺满画布。
+/// 烘焙图与画布同比例（同窗口尺寸烘焙），拉伸映射即 1:1 无变形；
+/// 双线性过滤保证放大后平滑无锯齿（模糊图本身无高频细节）。
+class _BakedGlassPainter extends CustomPainter {
+  final ui.Image image;
+  _BakedGlassPainter(this.image);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (size.isEmpty) return;
+    final srcRect = Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble());
+    canvas.drawImageRect(
+      image,
+      srcRect,
+      Offset.zero & size,
+      Paint()..filterQuality = FilterQuality.low, // 双线性：模糊图放大平滑无锯齿
+    );
+  }
+
+  @override
+  bool shouldRepaint(_BakedGlassPainter old) => old.image != image;
 }
 
 /// 一条呼吸光带的静态描述（锚点/宽度/摆动均为归一化坐标，运行时换算像素）
@@ -501,7 +598,7 @@ class GlassFilledButton extends StatelessWidget {
     final btn = ClipRRect(
       borderRadius: radius,
       child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: blur, sigmaY: blur),
+        filter: ui.ImageFilter.blur(sigmaX: blur, sigmaY: blur),
         child: Material(
           color: disabled
               ? kPrimary.withValues(alpha: 0.35)
@@ -562,7 +659,7 @@ class GlassOutlinedButton extends StatelessWidget {
     final btn = ClipRRect(
       borderRadius: radius,
       child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: blur, sigmaY: blur),
+        filter: ui.ImageFilter.blur(sigmaX: blur, sigmaY: blur),
         child: Material(
           color: tint.withValues(alpha: 0.12),
           shape: RoundedRectangleBorder(
@@ -623,7 +720,7 @@ class GlassIconButton extends StatelessWidget {
     Widget btn = ClipRRect(
       borderRadius: radius,
       child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: blur, sigmaY: blur),
+        filter: ui.ImageFilter.blur(sigmaX: blur, sigmaY: blur),
         child: Material(
           color: tint.withValues(alpha: opacity),
           shape: RoundedRectangleBorder(
@@ -669,7 +766,7 @@ class GlassSendButton extends StatelessWidget {
     return ClipRRect(
       borderRadius: BorderRadius.circular(size / 2),
       child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: blur, sigmaY: blur),
+        filter: ui.ImageFilter.blur(sigmaX: blur, sigmaY: blur),
         child: Material(
           color: Colors.transparent,
           shape: const CircleBorder(side: BorderSide(color: Colors.white24, width: 1)),
@@ -745,7 +842,7 @@ class GlassFab extends StatelessWidget {
     return ClipRRect(
       borderRadius: BorderRadius.circular(28),
       child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: blur, sigmaY: blur),
+        filter: ui.ImageFilter.blur(sigmaX: blur, sigmaY: blur),
         child: Material(
           color: Colors.transparent,
           shape: RoundedRectangleBorder(
@@ -888,7 +985,7 @@ class _GlassSelectedTileState extends State<GlassSelectedTile>
                 // 层1：真实模糊（透出底层动态光斑）
                 Positioned.fill(
                   child: BackdropFilter(
-                    filter: ImageFilter.blur(sigmaX: widget.blur, sigmaY: widget.blur),
+                    filter: ui.ImageFilter.blur(sigmaX: widget.blur, sigmaY: widget.blur),
                     child: const SizedBox.expand(),
                   ),
                 ),

@@ -1707,9 +1707,11 @@ class _LearnPageState extends State<LearnPage> {
       ),
       child: child,
     );
-    return isGlass
-        ? ClipRRect(borderRadius: BorderRadius.circular(20), child: BackdropFilter(filter: glassBlurFilter(sigma: 20), child: card))
-        : card;
+    // 玻璃观感由"烘焙模糊背景 + 半透明染色"提供：背景层（GlassBackground
+    // 静态帧）已整体烘焙为模糊位图，卡片透出的本就是朦胧光晕，与实时
+    // BackdropFilter 几乎一致——不再逐卡挂实时模糊（一屏 3 个 saveLayer
+    // 的全窗口模糊采样是玻璃主题下滚动/流式输出掉帧的来源）
+    return card;
   }
 
   // ===== 01. 题型 3x2 网格 — 每张卡片自带毛玻璃 =====
@@ -2003,39 +2005,39 @@ class _PureGlassGenerateButton extends StatelessWidget {
         ),
       );
     }
+    // 性能优化：不再挂 BackdropFilter——按钮底下是主面板白玻璃（alpha 0.78）
+    // + 卡片白底（alpha 0.7），多层叠加已近均匀浅白，模糊无视觉贡献；
+    // 用极淡白底 + 顶部受光渐变补偿玻璃质感
     return ClipRRect(
       borderRadius: radius,
-      child: BackdropFilter(
-        filter: glassBlurFilter(sigma: 18),
-        child: Material(
-          color: Colors.transparent, // 纯玻璃：无底色
-          shape: RoundedRectangleBorder(
-            borderRadius: radius,
-            side: BorderSide(
-              color: disabled
-                  ? kPrimary.withValues(alpha: 0.25)
-                  : kPrimary.withValues(alpha: 0.65),
-              width: 1.3,
-            ),
+      child: Material(
+        color: Colors.white.withValues(alpha: 0.12), // 极淡玻璃底
+        shape: RoundedRectangleBorder(
+          borderRadius: radius,
+          side: BorderSide(
+            color: disabled
+                ? kPrimary.withValues(alpha: 0.25)
+                : kPrimary.withValues(alpha: 0.65),
+            width: 1.3,
           ),
-          child: InkWell(
-            onTap: onPressed,
-            borderRadius: radius,
-            child: SizedBox(
-              height: double.infinity,
-              width: double.infinity,
-              child: Center(
-                child: isLoading
-                    ? const SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2.5, color: kPrimary))
-                    : Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-                        Icon(iconData, color: kPrimary, size: 20),
-                        const SizedBox(width: 8),
-                        Text(
-                          btnText,
-                          style: const TextStyle(color: kPrimary, fontSize: 15, fontWeight: FontWeight.w700, letterSpacing: 0.3),
-                        ),
-                      ]),
-              ),
+        ),
+        child: InkWell(
+          onTap: onPressed,
+          borderRadius: radius,
+          child: SizedBox(
+            height: double.infinity,
+            width: double.infinity,
+            child: Center(
+              child: isLoading
+                  ? const SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2.5, color: kPrimary))
+                  : Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                      Icon(iconData, color: kPrimary, size: 20),
+                      const SizedBox(width: 8),
+                      Text(
+                        btnText,
+                        style: const TextStyle(color: kPrimary, fontSize: 15, fontWeight: FontWeight.w700, letterSpacing: 0.3),
+                      ),
+                    ]),
             ),
           ),
         ),
@@ -2141,14 +2143,11 @@ class _TypeCardV2State extends State<_TypeCardV2> {
       ),
       child: content,
     );
+    // 性能优化：不再挂 BackdropFilter——卡片底下是主面板白玻璃（alpha 0.78）
+    // 叠加静态柔和背景，多层叠加后已接近均匀浅白，模糊输出≈输入、观感不变；
+    // 而每张卡片各挂一个区域高斯模糊是手机端滚动/动画掉帧的主因
     final glassBody = isGlass
-        ? ClipRRect(
-            borderRadius: cardRadius,
-            child: BackdropFilter(
-              filter: glassBlurFilter(sigma: 16),
-              child: cardBody,
-            ),
-          )
+        ? ClipRRect(borderRadius: cardRadius, child: cardBody)
         : cardBody;
 
     return MouseRegion(
