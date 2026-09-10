@@ -14,10 +14,12 @@ import 'package:pdf/widgets.dart' as pw;
 import 'package:excel/excel.dart';
 import 'models.dart';
 import 'exam_real_papers.dart';
+import 'i18n.dart';
 import 'theme_diy.dart';
 import 'timetable_models.dart';
 import 'theme_colors.dart' show AppColors;
 import 'services/api_service.dart';
+import 'services/browser_bridge.dart';
 import 'services/maimemo_service.dart';
 import 'services/storage.dart';
 import 'services/wechat_service.dart';
@@ -103,9 +105,10 @@ class ToolStep {
 class ReasoningSegment {
   int round;
   String text = '';
-  final DateTime startedAt = DateTime.now();
+  final DateTime startedAt;
   DateTime? endedAt;
-  ReasoningSegment(this.round);
+  ReasoningSegment(this.round, {DateTime? startedAt})
+      : startedAt = startedAt ?? DateTime.now();
 }
 
 /// AI 任务清单（dsh-tool-todo 风格）
@@ -248,6 +251,16 @@ class ChatMessage {
   String? statusLabel;
 
   ChatMessage({required this.role, required this.content, this.showReasoning = false, this.reasoningExpanded = true, this.reasoning, this.imageData, this.imageDark = false, this.modelLabel});
+
+  /// 本条 AI 消息累计的输出 token 数（Agent 多轮逐轮累加；无 usage 信息时为 null）。
+  /// 供气泡下方的"总输出 token / 输出速度"统计展示，不参与持久化。
+  int? outputTokens;
+  /// 累计的输入缓存命中 token（DeepSeek 等网关返回 prompt_cache_hit_tokens，免费）
+  int? inputCacheHitTokens;
+  /// 累计的输入缓存未命中 token（prompt_cache_miss_tokens，按量计费）
+  int? inputCacheMissTokens;
+  /// 本条 AI 消息的生成耗时（毫秒，从用户发送到内容落定；Agent 含工具循环全程）。
+  int? generationMs;
 
   /// 获取解码后的图片字节（带缓存）
   Uint8List? get imageBytes {
@@ -400,6 +413,9 @@ class AppState extends ChangeNotifier {
   String activeExpert = '';
   /// 联网搜索连接器开关（关闭后 search_web 工具不可用）
   bool searchEnabled = true;
+  /// DeepSeek 原生搜索独立开关：与上方联网搜索服务分开控制，无需额外配置
+  /// （默认开启：未配置其他搜索服务时，使用 DeepSeek 官方模型即可直接联网搜索）
+  bool deepSeekSearchEnabled = true;
   /// 联网搜索服务配置（百度千帆 AI 搜索组件）
   String searchUrl = 'https://qianfan.baidubce.com/v2/ai_search/chat/completions';
   String searchKey = '';
@@ -716,6 +732,7 @@ class AppState extends ChangeNotifier {
       } catch (_) {}
     }();
     searchEnabled = Storage.loadSearchEnabled();
+    deepSeekSearchEnabled = Storage.loadDeepSeekSearchEnabled();
     searchUrl = Storage.loadSearchUrl();
     searchKey = Storage.loadSearchKey();
     devMode = Storage.loadDevMode();
@@ -741,6 +758,9 @@ class AppState extends ChangeNotifier {
     }
     // 应用模式与课程表数据（timetable 为独立模式，解析失败按未导入处理，不阻塞启动）
     appMode = Storage.loadAppMode() == 'timetable' ? 'timetable' : 'english';
+    // 界面语言（zh-Hans / zh-Hant / en / ja / ko / id / ru）：越早载入越好，
+    // 首帧就按保存的语言渲染，避免启动后闪一下再切
+    I18n.load();
     final timetableJson = Storage.loadTimetableJson();
     if (timetableJson.isNotEmpty) {
       try {
@@ -797,6 +817,9 @@ class AppState extends ChangeNotifier {
     }
     // 加载会话快照与个性化记忆（每次对话自动保存；历史会话可继续对话）
     _loadPersistedChatSessions();
+    // Token 用量统计：加载持久化累计值，并注册 ApiService 用量回调
+    _loadTokenUsage();
+    ApiService.onTokenUsage = recordTokenUsage;
     agentMemory = _decodeMemoryList(Storage.loadAgentMemory());
     // 加载题库
     try {
@@ -2398,6 +2421,9 @@ class AppState extends ChangeNotifier {
   List<Map<String, dynamic>> chatSessions = [];
   List<List<Map<String, dynamic>>> chatSessionMessages = []; // 每个会话的完整消息（content + role + 时间）
   static const int _kMaxSessions = 50;
+  /// Token 用量统计（数据管理展示）：key = '接口地址#模型名'，value = 累计 total_tokens。
+  /// 由 ApiService.onTokenUsage 回调实时累加，写入 Storage.tokenUsage 持久化。
+  Map<String, int> tokenUsage = {};
   /// 当前活动会话 id：首次对话时创建，之后每次 sendChat 更新同一条快照；从历史加载后切到对应会话。
   String? _activeSessionId;
   /// UI 只读访问当前活动会话 id（历史对话列表高亮当前会话）
@@ -2570,8 +2596,14 @@ class AppState extends ChangeNotifier {
     final trimmed = text.trim();
     final attachContent = (attachmentText ?? '').trim();
     final hasAttachment = attachContent.isNotEmpty;
-    if ((trimmed.isEmpty && !hasAttachment) || chatSending) return '';
+    // 守卫必须放行"仅图片"消息：原判断 (trimmed.isEmpty && !hasAttachment)
+    // 会把"只选图片、没输文字、没附件名"的发送静默吞掉（UI 已清空预览条，
+    // 表现为点击发送后什么都没发生——桌面端"图片发不出去"的根因）
+    final hasImage = imageData != null && imageData.isNotEmpty;
+    if ((trimmed.isEmpty && !hasAttachment && !hasImage) || chatSending) return '';
     chatSending = true;
+    // 本轮生成起点：Agent 工具循环 / 流式 / 非流式全含，用于气泡下方"输出速度"统计
+    final sendStartMs = DateTime.now().millisecondsSinceEpoch;
     // 开始新一轮发送：清零 abort 标志
     _chatAbortRequested = false;
     // 新一轮对话：清零 bash 命令熔断计数（兑现字段注释承诺）。
@@ -2586,7 +2618,6 @@ class AppState extends ChangeNotifier {
       }
     }
     final cfg = effectiveChatConfig;
-    final hasImage = imageData != null && imageData.isNotEmpty;
     final hasVision = hasImage && cfg.vision;
     // 真正发送给 AI 的文本：附加文件内容拼接在用户输入之后
     var sendText = hasAttachment
@@ -2594,6 +2625,8 @@ class AppState extends ChangeNotifier {
             ? '[用户附加了文件内容]\n$attachContent'
             : '$trimmed\n\n[用户附加的文件内容]\n$attachContent')
         : trimmed;
+    // 仅图片无文字：给个占位文本——空 text 段会被部分 API 判为非法请求
+    if (sendText.isEmpty && hasImage) sendText = '[图片]';
     // 若已选择技能，在 API 文本前加上技能名前缀，强化模型感知
     final skillPrefix = activeSkillName;
     if (skillPrefix.isNotEmpty && !sendText.startsWith('[$skillPrefix]')) {
@@ -2602,7 +2635,9 @@ class AppState extends ChangeNotifier {
     // 模型无图形能力时图片不发送（仅保留黑色占位），有图形能力时以多模态发送
     chatHistory.add(ChatMessage(
       role: 'user',
-      content: trimmed.isEmpty && hasAttachment ? '[附加了文件]' : trimmed,
+      content: trimmed.isEmpty
+          ? (hasAttachment ? '[附加了文件]' : (hasImage ? '[图片]' : ''))
+          : trimmed,
       imageData: hasVision ? imageData : null,
       imageDark: hasImage && !hasVision,
     ));
@@ -2614,6 +2649,10 @@ class AppState extends ChangeNotifier {
     _releaseAutoOverride();
     if (agentResult != null) {
       // Agent 成功：占位消息已更新为最终回复，无需再添加
+      // 生成耗时包含工具循环全程（多次 AI 调用的总耗时）
+      if (chatHistory.isNotEmpty && chatHistory.last.role == 'ai') {
+        chatHistory.last.generationMs = DateTime.now().millisecondsSinceEpoch - sendStartMs;
+      }
       chatSending = false;
       notifyListeners();
       _notifyChatUpdate(true);
@@ -2681,6 +2720,12 @@ class AppState extends ChangeNotifier {
           prompt,
           config: effectiveChatConfig,
           extraParams: thinkingParams,
+          // 单条消息 token 统计：usage 在收尾 chunk 到达，累加到本条 AI 消息
+          onUsage: (completion, total, cacheHit, cacheMiss) {
+            msg.outputTokens = (msg.outputTokens ?? 0) + completion;
+            msg.inputCacheHitTokens = (msg.inputCacheHitTokens ?? 0) + cacheHit;
+            msg.inputCacheMissTokens = (msg.inputCacheMissTokens ?? 0) + cacheMiss;
+          },
           onReasoning: (chunk) {
             rawReasoning += chunk;
             msg.reasoning = rawReasoning;
@@ -2712,12 +2757,23 @@ class AppState extends ChangeNotifier {
       } else {
         msg.content = reply.isNotEmpty ? reply : msg.content;
       }
+      msg.generationMs = DateTime.now().millisecondsSinceEpoch - sendStartMs;
       _notifyChatUpdate();
     } else {
       try {
+        final aiMsg = ChatMessage(role: 'ai', content: '', modelLabel: cfg.model);
         final r = await ApiService.callAI(history, prompt,
-            config: effectiveChatConfig, extraParams: thinkingParams);
+            config: effectiveChatConfig,
+            extraParams: thinkingParams,
+            onUsage: (completion, total, cacheHit, cacheMiss) {
+              aiMsg.outputTokens = (aiMsg.outputTokens ?? 0) + completion;
+              aiMsg.inputCacheHitTokens = (aiMsg.inputCacheHitTokens ?? 0) + cacheHit;
+              aiMsg.inputCacheMissTokens = (aiMsg.inputCacheMissTokens ?? 0) + cacheMiss;
+            });
         reply = (r == null || r.isEmpty) ? fallbackReply(trimmed) : r;
+        aiMsg.content = reply;
+        aiMsg.generationMs = DateTime.now().millisecondsSinceEpoch - sendStartMs;
+        chatHistory.add(aiMsg);
       } catch (e) {
         // R40: 同上——异常必须兜住并复位 chatSending
         debugPrint('[sendChat] 非流式回退异常: $e');
@@ -2728,7 +2784,6 @@ class AppState extends ChangeNotifier {
         notifyListeners();
         return reply;
       }
-      chatHistory.add(ChatMessage(role: 'ai', content: reply, modelLabel: cfg.model));
       _notifyChatUpdate();
     }
     chatSending = false;
@@ -2823,7 +2878,25 @@ class AppState extends ChangeNotifier {
       'createdAt': createdAt ?? DateTime.now().toIso8601String(),
       'messageCount': chatHistory.length,
     };
-    final msgs = chatHistory.map((m) => {'role': m.role, 'content': m.content}).toList();
+    // 序列化消息时必须带上推理过程，否则"切换会话记录再切回"后思考过程丢失。
+    // 此前只存 role/content：AI 消息的 reasoning/reasoningSegs/showReasoning
+    // 全部丢弃，恢复后气泡只剩最终回复，思考链不可回溯（本 bug 根因）。
+    final msgs = chatHistory.map((m) {
+      final map = <String, dynamic>{'role': m.role, 'content': m.content};
+      if (m.role == 'ai') {
+        map['showReasoning'] = m.showReasoning || (m.reasoning?.isNotEmpty ?? false);
+        if (m.reasoning != null && m.reasoning!.isNotEmpty) map['reasoning'] = m.reasoning;
+        if (m.reasoningSegs.isNotEmpty) {
+          map['reasoningSegs'] = m.reasoningSegs.map((s) => {
+            'round': s.round,
+            'text': s.text,
+            'startedAt': s.startedAt.toIso8601String(),
+            'endedAt': s.endedAt?.toIso8601String(),
+          }).toList();
+        }
+      }
+      return map;
+    }).toList();
     if (existingIdx >= 0) {
       chatSessions[existingIdx] = snap;
       chatSessionMessages[existingIdx] = msgs;
@@ -2887,7 +2960,28 @@ class AppState extends ChangeNotifier {
     final msgs = (idx < chatSessionMessages.length) ? chatSessionMessages[idx] : <Map<String, dynamic>>[];
     chatHistory = msgs.map((m) {
       final role = (m['role'] as String?) == 'ai' ? 'ai' : 'user';
-      return ChatMessage(role: role, content: (m['content'] as String?) ?? '');
+      final msg = ChatMessage(role: role, content: (m['content'] as String?) ?? '');
+      // 恢复推理过程：保存侧已带上 reasoning/reasoningSegs/showReasoning。
+      // 旧快照（仅 role/content）无这些字段时走默认值，兼容历史数据。
+      if (role == 'ai') {
+        msg.showReasoning = (m['showReasoning'] as bool?) ?? false;
+        msg.reasoning = (m['reasoning'] as String?) ?? '';
+        final segs = m['reasoningSegs'];
+        if (segs is List && segs.isNotEmpty) {
+          for (final s in segs) {
+            if (s is! Map) continue;
+            final seg = ReasoningSegment(
+              ((s['round'] as num?) ?? 0).toInt(),
+              startedAt: DateTime.tryParse((s['startedAt'] as String?) ?? ''),
+            );
+            seg.text = (s['text'] as String?) ?? '';
+            final end = (s['endedAt'] as String?) ?? '';
+            if (end.isNotEmpty) seg.endedAt = DateTime.tryParse(end);
+            msg.reasoningSegs.add(seg);
+          }
+        }
+      }
+      return msg;
     }).toList();
     _activeSessionId = id;
     notifyListeners();
@@ -2902,6 +2996,25 @@ class AppState extends ChangeNotifier {
     chatHistory.removeRange(index, chatHistory.length);
     _notifyChatUpdate(true);
     notifyListeners();
+  }
+
+  /// AI 消息"重试"：从该条 AI 消息（含本条）截断会话，自动用紧邻其前的用户消息
+  /// 重新发送（含图片多模态一并重发），效果等同于"让 AI 重新答一遍"。
+  Future<void> retryChatAt(int aiMsgIndex) async {
+    if (chatSending) return;
+    if (aiMsgIndex < 0 || aiMsgIndex >= chatHistory.length) return;
+    if (chatHistory[aiMsgIndex].role != 'ai') return;
+    ChatMessage? prevUser;
+    for (var i = aiMsgIndex - 1; i >= 0; i--) {
+      if (chatHistory[i].role == 'user') {
+        prevUser = chatHistory[i];
+        break;
+      }
+    }
+    final prev = prevUser;
+    if (prev == null) return;
+    truncateConversationAt(aiMsgIndex);
+    await sendChat(prev.content.trim().isEmpty ? '继续' : prev.content, imageData: prev.imageData);
   }
 
   /// R23: 置顶 / 取消置顶历史会话（最多同时置顶 10 个）
@@ -2934,6 +3047,84 @@ class AppState extends ChangeNotifier {
     Storage.saveChatSessions(jsonEncode(chatSessions));
     Storage.saveChatSessionMessages(jsonEncode(chatSessionMessages));
     notifyListeners();
+  }
+
+  // ===== Token 用量统计 =====
+  /// 加载持久化的 token 用量累计值
+  void _loadTokenUsage() {
+    try {
+      final raw = jsonDecode(Storage.loadTokenUsage());
+      if (raw is Map) {
+        tokenUsage = raw.map(
+          (k, v) => MapEntry(k.toString(), (v as num?)?.toInt() ?? 0),
+        )..removeWhere((_, v) => v <= 0);
+      }
+    } catch (_) {}
+  }
+
+  /// ApiService.onTokenUsage 回调：按「接口地址#模型名」累加 total_tokens 并持久化
+  void recordTokenUsage(int totalTokens, String model, String url) {
+    final key = '${url.trimRight()}#$model';
+    tokenUsage[key] = (tokenUsage[key] ?? 0) + totalTokens;
+    Storage.saveTokenUsage(jsonEncode(tokenUsage));
+  }
+
+  /// 清零 token 用量统计（数据管理页「清零」按钮；也用于清除历史脏数据）
+  void clearTokenUsage() {
+    tokenUsage.clear();
+    Storage.saveTokenUsage('{}');
+    notifyListeners();
+  }
+
+  // ===== 数据管理：导入对话记录（zip 解析结果，按 id 合并去重）=====
+  /// 将会话列表合并进历史会话：同 id 覆盖快照与消息，新会话插入头部。
+  /// 返回本次"新增"的会话数（覆盖不算），供 UI 提示导入结果。
+  int importChatSessions(List<Map<String, dynamic>> sessions, List<List<Map<String, dynamic>>> messages) {
+    if (sessions.isEmpty) return 0;
+    var added = 0;
+    for (var i = 0; i < sessions.length; i++) {
+      final raw = sessions[i];
+      final id = ((raw['id'] as String?)?.isNotEmpty == true)
+          ? raw['id'] as String
+          : DateTime.now().millisecondsSinceEpoch.toString();
+      final title = (raw['title'] as String?)?.trim();
+      final createdAt = (raw['createdAt'] as String?)?.isNotEmpty == true
+          ? raw['createdAt'] as String
+          : DateTime.now().toIso8601String();
+      final normMsgs = <Map<String, dynamic>>[];
+      if (i < messages.length) {
+        for (final m in messages[i]) {
+          normMsgs.add({
+            'role': (m['role'] == 'ai' ? 'ai' : 'user'),
+            'content': (m['content'] ?? '').toString(),
+          });
+        }
+      }
+      final snap = <String, dynamic>{
+        'id': id,
+        'title': title != null && title.isNotEmpty ? (title.length > 40 ? '${title.substring(0, 40)}...' : title) : '(导入会话)',
+        'createdAt': createdAt,
+        'messageCount': normMsgs.length,
+      };
+      final existingIdx = chatSessions.indexWhere((s) => s['id'] == id);
+      if (existingIdx >= 0) {
+        chatSessions[existingIdx] = snap;
+        if (existingIdx < chatSessionMessages.length) chatSessionMessages[existingIdx] = normMsgs;
+      } else {
+        chatSessions.insert(0, snap);
+        chatSessionMessages.insert(0, normMsgs);
+        added++;
+      }
+    }
+    if (chatSessions.length > _kMaxSessions) {
+      chatSessions.removeRange(_kMaxSessions, chatSessions.length);
+      chatSessionMessages.removeRange(_kMaxSessions, chatSessionMessages.length);
+    }
+    Storage.saveChatSessions(jsonEncode(chatSessions));
+    Storage.saveChatSessionMessages(jsonEncode(chatSessionMessages));
+    notifyListeners();
+    _notifyChatUpdate(true);
+    return added;
   }
 
   // ===== 个性化记忆服务 =====
@@ -3100,8 +3291,12 @@ class AppState extends ChangeNotifier {
       // 记录工具调用（dsh-guard 用）：仅保留最近 20 条
       recentToolCalls.add({'name': name, 'args': args, 'at': DateTime.now().toIso8601String()});
       if (recentToolCalls.length > 20) recentToolCalls.removeRange(0, recentToolCalls.length - 20);
-      // 联网搜索连接器关闭时，拦截 search_web
-      if (name == 'search_web' && !searchEnabled) {
+      // 联网搜索拦截：两条独立通道——
+      // 1) searchEnabled 关闭 → 拦截已配置的搜索服务；
+      // 2) DeepSeek 搜索开关或模型条件不满足 → 拦截 DeepSeek 原生搜索。
+      // 任一条通道有效即可放行（见 _toolSearchWeb 内的优先级）
+      final dsSearchOk = deepSeekSearchEnabled && _canUseDeepSeekSearch;
+      if (name == 'search_web' && !searchEnabled && !dsSearchOk) {
         return ToolExecResult(
           content: '{"ok":false,"reason":"search_disabled"}',
           ok: false,
@@ -3128,6 +3323,8 @@ class AppState extends ChangeNotifier {
           return await _toolMailSend(args);
         case 'browser_open':
           return _toolBrowserOpen(args);
+        case 'browser_fetch':
+          return await _toolBrowserFetch(args);
         case 'generate_questions':
           return await _toolGenerateQuestions(args);
         case 'generate_full_exam':
@@ -3166,6 +3363,8 @@ class AppState extends ChangeNotifier {
           return _toolGetStudyReport();
         case 'config_settings':
           return _toolConfigSettings(args);
+        case 'set_language':
+          return await _toolSetLanguage(args);
         case 'config_api_preset':
           return _toolConfigApiPreset(args);
         case 'search_web':
@@ -3276,6 +3475,36 @@ class AppState extends ChangeNotifier {
       content: jsonEncode({'ok': true, 'opened': url}),
       ok: true,
       actionLabel: '已在浏览器中打开 $url',
+    );
+  }
+
+  /// 打开内置浏览器加载指定网页并抓取渲染后的文本内容（Agent 工具 browser_fetch）：
+  /// 走真实 WebView 渲染（JS 执行完整），适合 web_fetch 拿不到内容的动态页面。
+  Future<ToolExecResult> _toolBrowserFetch(Map<String, dynamic> args) async {
+    var url = (args['url'] as String?)?.trim() ?? '';
+    final maxChars = (args['max_chars'] as num?)?.toInt() ?? 8000;
+    if (url.isEmpty) {
+      return const ToolExecResult(content: '{"ok":false,"reason":"missing_url"}', ok: false);
+    }
+    if (!url.contains('://')) {
+      url = 'https://$url';
+    }
+    // 确保内置浏览器可见：桌面端开侧边面板（不动 pendingBrowserUrl，由桥直接导航），
+    // 移动端跳全屏浏览器页；已在浏览器页则复用现有 WebView
+    if (uiMode == 'mobile') {
+      if (page != 19) {
+        setPage(19);
+      }
+    } else if (page != 19 && !sideBrowserOpen) {
+      toggleSideBrowser(open: true);
+    }
+    // 等待 WebView 就绪 → 导航 → 渲染稳定 → 抓取正文
+    final text = await BrowserBridge.instance.fetchContent(url, maxChars: maxChars);
+    final ok = !text.startsWith('ERROR:');
+    return ToolExecResult(
+      content: ok ? text : '{"ok":false,"reason":"fetch_failed","detail":${jsonEncode(text)}}',
+      ok: ok,
+      actionLabel: ok ? '已抓取网页内容：$url' : '网页抓取失败：$url',
     );
   }
 
@@ -4631,6 +4860,34 @@ class AppState extends ChangeNotifier {
     );
   }
 
+  /// 切换界面语言（agent 工具 set_language）。
+  /// 只改 UI 文案，不影响模型回复语言；切换后由根节点的 ValueListenableBuilder 全树重建。
+  Future<ToolExecResult> _toolSetLanguage(Map<String, dynamic> args) async {
+    final raw = (args['language'] ?? args['lang'] ?? '').toString().trim();
+    final target = AppLangMeta.fromCode(raw);
+    if (target == null) {
+      return ToolExecResult(
+        content: jsonEncode({'ok': false, 'reason': 'unsupported_language', 'got': raw}),
+        ok: false,
+        actionLabel: I18n.tr('tool.lang.bad', {'lang': raw.isEmpty ? '?' : raw}),
+      );
+    }
+    final before = I18n.current;
+    await I18n.set(target);
+    final name = I18n.displayName(target);
+    return ToolExecResult(
+      content: jsonEncode({
+        'ok': true,
+        'language': target.code,
+        'nativeName': I18n.nativeName(target),
+        'previous': before.code,
+        'reason': (args['reason'] ?? '').toString(),
+      }),
+      ok: true,
+      actionLabel: I18n.tr('tool.lang.ok', {'lang': name}),
+    );
+  }
+
   /// 读取或修改应用设置。action=get 返回全部设置；action=set 修改指定项。
   ToolExecResult _toolConfigSettings(Map<String, dynamic> args) {
     final action = (args['action'] as String?) ?? 'get';
@@ -4805,32 +5062,68 @@ class AppState extends ChangeNotifier {
     );
   }
 
-  /// 联网搜索：调用百度千帆 AI 搜索组件，返回 answer + references。
+  /// 是否可用 DeepSeek 官方原生搜索：当前对话使用 DeepSeek 官方模型（api.deepseek.com）且已配 API Key。
+  bool get _canUseDeepSeekSearch {
+    final u = chatApiConfig.url.trim().toLowerCase();
+    final m = chatApiConfig.model.trim().toLowerCase();
+    return chatApiConfig.key.trim().isNotEmpty &&
+        u.contains('api.deepseek.com') &&
+        m.startsWith('deepseek');
+  }
+
+  /// 联网搜索：两条独立通道（互不影响、各自开关控制）——
+  /// 1) 用户配置的搜索服务（千帆/自定义端点，受 [searchEnabled] 控制）；
+  /// 2) DeepSeek 官方原生搜索（受 [deepSeekSearchEnabled] 控制，使用 DeepSeek 官方模型时免配置）。
+  /// 两者同时可用时优先走用户配置的服务。
   Future<ToolExecResult> _toolSearchWeb(Map<String, dynamic> args) async {
-    if (searchKey.trim().isEmpty) {
-      return ToolExecResult(
-        content: '{"ok":false,"reason":"请先在设置中配置联网搜索服务的 API Key"}',
-        ok: false,
-      );
-    }
     final query = (args['query'] as String? ?? '').trim();
     if (query.isEmpty) {
       return ToolExecResult(content: '{"ok":false,"reason":"搜索关键词为空"}', ok: false);
     }
-    try {
-      final result = await ApiService.searchWeb(url: searchUrl, key: searchKey, query: query);
-      return ToolExecResult(
-        content: jsonEncode({'ok': true, ...result}),
-        ok: true,
-        actionLabel: '已联网搜索"$query"',
-      );
-    } catch (e) {
-      return ToolExecResult(
-        content: '{"ok":false,"reason":"${e.toString()}"}',
-        ok: false,
-        actionLabel: '联网搜索失败',
-      );
+    // 1) 用户已配置搜索服务 → 走配置的服务（千帆/自定义端点）
+    if (searchEnabled && searchKey.trim().isNotEmpty && searchUrl.trim().isNotEmpty) {
+      try {
+        final result = await ApiService.searchWeb(url: searchUrl, key: searchKey, query: query);
+        return ToolExecResult(
+          content: jsonEncode({'ok': true, 'source': 'custom', ...result}),
+          ok: true,
+          actionLabel: '已联网搜索"$query"',
+        );
+      } catch (e) {
+        return ToolExecResult(
+          content: '{"ok":false,"reason":"${e.toString()}"}',
+          ok: false,
+          actionLabel: '联网搜索失败',
+        );
+      }
     }
+    // 2) DeepSeek 官方原生搜索（独立开关，无需额外配置）
+    if (deepSeekSearchEnabled && _canUseDeepSeekSearch) {
+      try {
+        final result = await ApiService.searchWebDeepSeek(
+          key: chatApiConfig.key,
+          query: query,
+          model: chatApiConfig.model,
+        );
+        return ToolExecResult(
+          content: jsonEncode({'ok': true, 'source': 'deepseek', ...result}),
+          ok: true,
+          actionLabel: '已用 DeepSeek 原生搜索"$query"',
+        );
+      } catch (e) {
+        return ToolExecResult(
+          content: '{"ok":false,"reason":"${e.toString()}"}',
+          ok: false,
+          actionLabel: 'DeepSeek 搜索失败',
+        );
+      }
+    }
+    // 3) 均不可用 → 提示配置
+    return ToolExecResult(
+      content: '{"ok":false,"reason":"search_disabled"}',
+      ok: false,
+      actionLabel: '未配置搜索服务；使用 DeepSeek 官方模型且开启 DeepSeek 搜索时可直接搜索',
+    );
   }
 
   /// 备份数据：将全部数据（API 配置、收藏、错题、学习记录、生词本等）导出到电脑下载/手机默认文件夹。
@@ -6857,6 +7150,12 @@ class AppState extends ChangeNotifier {
           maxTokens: effectiveOutputLimit,
           // 暂停按钮：流式期间逐行探测，命中立即断开
           isAborted: () => _chatAbortRequested,
+          // 多轮 token 累加到占位消息：气泡下方"总输出 token"为整轮 Agent 会话的总和
+          onUsage: (completion, total, cacheHit, cacheMiss) {
+            placeholder.outputTokens = (placeholder.outputTokens ?? 0) + completion;
+            placeholder.inputCacheHitTokens = (placeholder.inputCacheHitTokens ?? 0) + cacheHit;
+            placeholder.inputCacheMissTokens = (placeholder.inputCacheMissTokens ?? 0) + cacheMiss;
+          },
           onReasoning: (chunk) {
             // R9: 思考分段：每轮 reasoning 独立成段（带起止时间），时间线按轮次穿插
             if (roundThink == null) {
@@ -7373,6 +7672,8 @@ class AppState extends ChangeNotifier {
         return '正在切换题目';
       case 'toggle_favorite':
         return '正在收藏';
+      case 'set_language':
+        return '正在切换界面语言';
       case 'get_current_question':
         return '正在读取题目';
       case 'get_progress':
@@ -7530,6 +7831,8 @@ class AppState extends ChangeNotifier {
         return '切换题目';
       case 'toggle_favorite':
         return '收藏题目';
+      case 'set_language':
+        return '切换界面语言';
       case 'get_current_question':
         return '读取当前题目';
       case 'get_progress':
@@ -8494,6 +8797,13 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 开关 DeepSeek 原生搜索（独立于上方联网搜索服务）
+  void setDeepSeekSearchEnabled(bool v) {
+    deepSeekSearchEnabled = v;
+    Storage.saveDeepSeekSearchEnabled(v);
+    notifyListeners();
+  }
+
   /// 设置 AI 助手工作目录（harness 工具 fs root）。
   /// 设置后所有本地文件/Shell 工具只能在该目录及其子目录下操作。
   /// 传空字符串恢复默认（C:\Users 下所有位置）。
@@ -9029,6 +9339,7 @@ class AppState extends ChangeNotifier {
       chatMode = Storage.loadChatMode();
       activeExpert = Storage.loadActiveExpert();
       searchEnabled = Storage.loadSearchEnabled();
+      deepSeekSearchEnabled = Storage.loadDeepSeekSearchEnabled();
       searchUrl = Storage.loadSearchUrl();
       searchKey = Storage.loadSearchKey();
       devMode = Storage.loadDevMode();

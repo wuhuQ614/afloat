@@ -97,6 +97,10 @@ class Storage {
   static String loadChatSessionMessages() => _get('chatSessionMessages', '');
   static void saveChatSessionMessages(String json) => _set('chatSessionMessages', json);
 
+  /// Token 用量统计（JSON 对象：key='接口地址#模型名'，value=累计 total_tokens）
+  static String loadTokenUsage() => _get('tokenUsage', '{}');
+  static void saveTokenUsage(String json) => _set('tokenUsage', json);
+
   /// 个性化记忆库（JSON 数组，每项 {id,type,content,source,createdAt}）
   static String loadAgentMemory() => _get('agentMemory', '[]');
   static void saveAgentMemory(String v) => _set('agentMemory', v);
@@ -198,6 +202,9 @@ class Storage {
   static void saveSearchUrl(String v) => _set('searchUrl', v);
   static String loadSearchKey() => _get('searchKey', '');
   static void saveSearchKey(String v) => _set('searchKey', v);
+  /// DeepSeek 原生搜索独立开关（与上方联网搜索服务互不影响，无需额外配置）
+  static bool loadDeepSeekSearchEnabled() => _getBool('deepSeekSearchEnabled', true);
+  static void saveDeepSeekSearchEnabled(bool v) => _setBool('deepSeekSearchEnabled', v);
 
   // ===== 墨墨背单词同步 =====
   static String loadMaimemoToken() => _get('maimemoToken', '');
@@ -315,6 +322,11 @@ class Storage {
   /// 'english' = 英语学习 | 'timetable' = 课程表
   static String loadAppMode() => _get('appMode', 'english');
   static void saveAppMode(String v) => _set('appMode', v);
+
+  // ===== 界面语言 =====
+  /// BCP-47 代码：zh-Hans（默认）/ zh-Hant / en / ja / ko / id / ru
+  static String loadLanguage() => _get('uiLanguage', 'zh-Hans');
+  static void saveLanguage(String v) => _set('uiLanguage', v);
 
   // ===== 课程表数据 =====
   /// 导入的课程表 JSON 原文（含节次时间分布与课程列表），空串=未导入
@@ -780,5 +792,14 @@ class Storage {
 
   static Future<void> saveMailAccounts(List<Map<String, dynamic>> accounts) async {
     _set(_mailAccountsKey, jsonEncode(accounts));
+  }
+
+  // ---- Google OAuth client id（Gmail 免密登录）----
+  static String _googleOauthClientIdKey = 'googleOauthClientId';
+
+  static String loadGoogleClientId() => _get(_googleOauthClientIdKey, '');
+
+  static void saveGoogleClientId(String id) {
+    _set(_googleOauthClientIdKey, id.trim());
   }
 }

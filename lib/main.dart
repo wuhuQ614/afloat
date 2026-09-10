@@ -19,6 +19,7 @@ import 'services/api_service.dart';
 import 'package:window_manager/window_manager.dart';
 import 'state.dart';
 import 'models.dart';
+import 'i18n.dart';
 import 'services/tts_service.dart';
 import 'services/chat_capabilities.dart';
 import 'services/knowledge_base.dart';
@@ -34,7 +35,7 @@ import 'widgets/dev_console.dart';
 import 'widgets/settings_dialog.dart';
 import 'widgets/update_dialog.dart';
 import 'widgets/platform_select_page.dart';
-import 'widgets/timetable_page.dart';
+import 'widgets/timetable_google_page.dart';
 import 'widgets/glass_background.dart';
 import 'widgets/code_card.dart';
 import 'widgets/chart_card.dart';
@@ -52,21 +53,23 @@ import 'pages/mail_page.dart';
 final bool _isWindows = !kIsWeb && Platform.isWindows;
 
 // 更多功能列表：(图标, 标题, 副标题, 页面索引)
-const _moreItemsData = [
-  (Icons.list_alt_outlined, '题库', '管理题目集', 4),
-  (Icons.error_outline_outlined, '错题本', '复习做错的题', 5),
-  (Icons.star_outline_outlined, '生词本', '收藏的生词', 6),
-  (Icons.bookmark_add_outlined, '答题记录', '记录已答单词', 7),
-  (Icons.edit_note_outlined, '默写', '单词默写练习', 8),
-  (Icons.auto_stories_outlined, '墨墨', '同步墨墨词库', 18),
-  (Icons.school_outlined, '语法学习', '从零学会专升本语法', 12),
-  (Icons.language_rounded, '浏览器', '轻量网页浏览', 19),
-  (Icons.videogame_asset_outlined, '贪吃蛇', '经典小游戏放松', 20),
-  (Icons.grid_3x3_rounded, '五子棋', '双人对战五子连珠', 23),
-  (Icons.grid_on_rounded, '扫雷', '微软经典玩法复刻', 28),
-  (Icons.forum_outlined, '辩论模式', '两个模型正反方对辩', 26),
-  (Icons.groups_outlined, '多专家团', '解析·执行·验证协作', 25),
-  (Icons.email_outlined, '邮箱', '收发邮件/写信', 27),
+/// 更多功能入口。**函数而非常量**：标题/副标题要跟随界面语言，
+/// agent 调 set_language 后由根树重建时重新取词。
+List<(IconData, String, String, int)> _moreItemsData() => [
+  (Icons.list_alt_outlined, tr('more.bank.t'), tr('more.bank.s'), 4),
+  (Icons.error_outline_outlined, tr('more.wrong.t'), tr('more.wrong.s'), 5),
+  (Icons.star_outline_outlined, tr('more.star.t'), tr('more.star.s'), 6),
+  (Icons.bookmark_add_outlined, tr('more.record.t'), tr('more.record.s'), 7),
+  (Icons.edit_note_outlined, tr('more.dictation.t'), tr('more.dictation.s'), 8),
+  (Icons.auto_stories_outlined, tr('more.maimemo.t'), tr('more.maimemo.s'), 18),
+  (Icons.school_outlined, tr('more.grammar.t'), tr('more.grammar.s'), 12),
+  (Icons.language_rounded, tr('more.browser.t'), tr('more.browser.s'), 19),
+  (Icons.videogame_asset_outlined, tr('more.snake.t'), tr('more.snake.s'), 20),
+  (Icons.grid_3x3_rounded, tr('more.gomoku.t'), tr('more.gomoku.s'), 23),
+  (Icons.grid_on_rounded, tr('more.mine.t'), tr('more.mine.s'), 28),
+  (Icons.forum_outlined, tr('more.debate.t'), tr('more.debate.s'), 26),
+  (Icons.groups_outlined, tr('more.expert.t'), tr('more.expert.s'), 25),
+  (Icons.email_outlined, tr('more.mail.t'), tr('more.mail.s'), 27),
 ];
 
 // 更多功能选择页索引
@@ -486,9 +489,16 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
     _lastAgentFullscreen = _state.agentFullscreen;
     _lastDevMode = _state.devMode;
     _state.addListener(_onState);
+    // 语言切换（含 agent 调用 set_language）→ 整棵根树重建，界面文案即时生效。
+    // 比在每个被翻译的子树外各套一层 ValueListenableBuilder 更省事、也更不容易漏。
+    I18n.lang.addListener(_onLangChanged);
     _init();
     // 全局键盘监听（不受焦点转移影响）
     HardwareKeyboard.instance.addHandler(_onGlobalKey);
+  }
+
+  void _onLangChanged() {
+    if (mounted) setState(() {});
   }
 
   bool _onGlobalKey(KeyEvent event) {
@@ -629,6 +639,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
     _browserNavTimer?.cancel();
     HardwareKeyboard.instance.removeHandler(_onGlobalKey);
     _state.removeListener(_onState);
+    I18n.lang.removeListener(_onLangChanged);
     super.dispose();
   }
 
@@ -653,7 +664,16 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
           GlobalCupertinoLocalizations.delegate,
           GlobalWidgetsLocalizations.delegate,
         ],
-        supportedLocales: const [Locale('zh', 'CN'), Locale('en', 'US')],
+        // 覆盖全部界面语言：Material 组件（日期选择器、菜单等）按系统 locale 本地化
+        supportedLocales: const [
+          Locale('zh', 'CN'),
+          Locale('zh', 'TW'),
+          Locale('en', 'US'),
+          Locale('ja', 'JP'),
+          Locale('ko', 'KR'),
+          Locale('id', 'ID'),
+          Locale('ru', 'RU'),
+        ],
         theme: _buildTheme(Brightness.light),
         darkTheme: _buildTheme(Brightness.dark),
         themeMode: _state.darkMode ? ThemeMode.dark : ThemeMode.light,
@@ -711,7 +731,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                         : _state.appMode == 'timetable'
                             ? KeyedSubtree(
                                 key: const ValueKey('timetable'),
-                                child: TimetablePage(state: _state),
+                                child: TimetableGooglePage(state: _state),
                               )
                             : _state.uiMode.isEmpty
                             ? PlatformSelectPage(
@@ -931,15 +951,15 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
       builder: (context, _) {
         final c = AppColors.of(context);
         final page = _state.page;
-      const mainItems = [
-        (Icons.home_outlined, '学习', 0),
-        (Icons.help_outline, '答题', 1),
-        (Icons.bar_chart_rounded, '学习报告', 2),
-        (Icons.search_outlined, '查询', 3),
+      final mainItems = [
+        (Icons.home_outlined, tr('nav.study'), 0),
+        (Icons.help_outline, tr('nav.quiz'), 1),
+        (Icons.bar_chart_rounded, tr('nav.report'), 2),
+        (Icons.search_outlined, tr('nav.lookup'), 3),
       ];
       final inMore = page >= 4;
       final inSubFeature = page >= 4 && (page <= 8 || (page >= 12 && page <= 17) || page == 18 || page == 19 || page == 20 || page == 21 || page == 22 || page == 23 || page == 24 || page == 25 || page == 26 || page == 27 || page == 28);
-      const moreTitle = '更多功能';
+      final moreTitle = tr('nav.more');
       const moreIcon = Icons.grid_view_outlined;
       final isGlass = _state.isGlassUI;
       return RepaintBoundary(
@@ -966,11 +986,11 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
     final c = AppColors.of(context);
     final page = _state.page;
     final isGlass = _state.isGlassUI;
-    const railItems = [
-      (Icons.home_outlined, '学习', 0),
-      (Icons.help_outline, '答题', 1),
-      (Icons.bar_chart_rounded, '学习报告', 2),
-      (Icons.search_outlined, '查询', 3),
+    final railItems = [
+      (Icons.home_outlined, tr('nav.study'), 0),
+      (Icons.help_outline, tr('nav.quiz'), 1),
+      (Icons.bar_chart_rounded, tr('nav.report'), 2),
+      (Icons.search_outlined, tr('nav.lookup'), 3),
     ];
     Widget railBtn(IconData icon, String tip, bool selected, VoidCallback onTap) {
       return Tooltip(
@@ -1669,7 +1689,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                   // R29: 历史对话（移动端此前没有入口）
                   IconButton(
                     icon: const Icon(Icons.space_dashboard_rounded, size: 18, color: Color(0xFFADADB8)),
-                    tooltip: '历史对话',
+                    tooltip: tr('agent.history'),
                     onPressed: () => _showHistoryPicker(ctx, c, _state),
                   ),
                   // R15: 专注全屏切换（全屏时对话面板满宽）
@@ -1679,7 +1699,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                       size: 18,
                       color: c.textTertiary,
                     ),
-                    tooltip: _state.agentFullscreen ? '退出专注全屏' : '专注全屏',
+                    tooltip: _state.agentFullscreen ? tr('agent.focus.off') : tr('agent.focus.on'),
                     onPressed: () => _state.toggleAgentFullscreen(),
                   ),
                   IconButton(
@@ -2025,7 +2045,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                   size: 18,
                   color: c.textTertiary,
                 ),
-                tooltip: s.agentFullscreen ? '退出专注全屏' : '专注全屏',
+                tooltip: s.agentFullscreen ? tr('agent.focus.off') : tr('agent.focus.on'),
                 onPressed: () => s.toggleAgentFullscreen(),
               ),
               // R12: 工作区选择已移入输入框左下角；头部仅保留清空与历史对话
@@ -2033,7 +2053,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                 padding: const EdgeInsets.all(8),
                 constraints: const BoxConstraints.tightFor(width: 32, height: 32),
                 icon: Icon(Icons.refresh_rounded, size: 18, color: c.textTertiary),
-                tooltip: '清空对话',
+                tooltip: tr('agent.clear'),
                 onPressed: () => s.clearChat(),
               ),
               // R12: 历史对话移到最右（原「对话设置」位置，设置入口已移除）
@@ -2041,7 +2061,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                 padding: const EdgeInsets.all(8),
                 constraints: const BoxConstraints.tightFor(width: 32, height: 32),
                 icon: Icon(Icons.space_dashboard_rounded, size: 18, color: c.textTertiary),
-                tooltip: '历史对话',
+                tooltip: tr('agent.history'),
                 onPressed: () => _showHistoryPicker(hsCtx, c, s),
               )),
               // 侧边浏览器：对话栏右侧滑出内嵌浏览器面板（普通布局与专注全屏均支持）
@@ -2049,7 +2069,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                   padding: const EdgeInsets.all(8),
                   constraints: const BoxConstraints.tightFor(width: 32, height: 32),
                   icon: Icon(Icons.public_rounded, size: 18, color: s.sideBrowserOpen ? c.primary : c.textTertiary),
-                  tooltip: s.sideBrowserOpen ? '关闭侧边浏览器' : '打开侧边浏览器',
+                  tooltip: s.sideBrowserOpen ? tr('agent.browser.close') : tr('agent.browser.open'),
                   onPressed: () => s.toggleSideBrowser(),
                 ),
             ]),
@@ -3872,22 +3892,22 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
           children: [
             Container(
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
-              child: Row(children: const [
-                Icon(Icons.shield_outlined, size: 18, color: Color(0xFFA78BFA)),
-                SizedBox(width: 8),
-                Text('权限设置', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: Color(0xFFE4E4E8))),
+              child: Row(children: [
+                const Icon(Icons.shield_outlined, size: 18, color: Color(0xFFA78BFA)),
+                const SizedBox(width: 8),
+                Text(tr('agent.perm.t'), style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: Color(0xFFE4E4E8))),
               ]),
             ),
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
               child: Text(
-                '当前为默认权限，所有操作都会在安全沙箱约束内进行，超出范围会请求你的允许。',
+                tr('agent.perm.desc'),
                 style: TextStyle(fontSize: 12, color: const Color(0xFFADADB8), height: 1.5),
               ),
             ),
             _darkMenuItem(
               icon: const Icon(Icons.verified_user_outlined, size: 20, color: Color(0xFFADADB8)),
-              title: '允许完全访问',
+              title: tr('agent.perm.full'),
               trailing: Switch(
                 value: s.chatFullAccess,
                 onChanged: (v) {
@@ -4114,7 +4134,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                 return Padding(
                   padding: const EdgeInsets.fromLTRB(24, 80, 24, 24),
                   child: Column(children: [
-                    Text('还没有历史对话',
+                    Text(tr('agent.history.empty'),
                         style: TextStyle(
                           fontSize: 14,
                           color: textTertiary,
@@ -5053,7 +5073,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
               maxLines: compact ? 5 : 7,
               style: TextStyle(fontSize: 14, color: c.text, height: 1.5),
               decoration: InputDecoration(
-                hintText: '今天帮你做些什么？@ 引用文件',
+                hintText: tr('agent.composer.hint'),
                 hintStyle: TextStyle(fontSize: 14, color: c.hintText),
                 filled: false,
                 border: InputBorder.none,
@@ -5081,7 +5101,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
             _ChatInputIconButton(
               key: isMobile ? null : _plusBtnKey,
               icon: Icons.add_rounded,
-              tooltip: '工具',
+              tooltip: tr('agent.composer.tools'),
               onPressed: () => _showChatPlusMenu(context, c, s),
               c: c,
             ),
@@ -5091,7 +5111,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                 _ChatInputIconButton(
                   key: isMobile ? null : _permissionBtnKey,
                   icon: s.chatFullAccess ? Icons.shield_rounded : Icons.shield_outlined,
-                  tooltip: s.chatFullAccess ? '完全访问' : '默认权限',
+                  tooltip: s.chatFullAccess ? tr('agent.composer.fullAccess') : tr('agent.composer.defaultPerm'),
                   onPressed: () => _showChatPermissionMenu(context, c, s),
                   c: c,
                 )
@@ -5099,7 +5119,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                 _ChatInputTextButton(
                   key: isMobile ? null : _permissionBtnKey,
                   icon: Icons.shield_outlined,
-                  label: s.chatFullAccess ? '完全访问' : '默认权限',
+                  label: s.chatFullAccess ? tr('agent.composer.fullAccess') : tr('agent.composer.defaultPerm'),
                   onPressed: () => _showChatPermissionMenu(context, c, s),
                   c: c,
                 ),
@@ -5110,7 +5130,7 @@ class _SmartEnglishAppState extends State<SmartEnglishApp> {
                 key: isMobile ? null : _modelSelectorBtnKey,
                 icon: null,
                 leading: aiIcon,
-                label: s.chatApiIndependent ? '$modelLabel·独立' : modelLabel,
+                label: s.chatApiIndependent ? '$modelLabel${tr('agent.model.independent')}' : modelLabel,
                 onPressed: () => _showChatModelSelector(context, c, s),
                 c: c,
               ),
@@ -5437,10 +5457,10 @@ class _MoreSelectPageState extends State<_MoreSelectPage> {
     // 手机端：隐藏贪吃蛇单机/双人（桌面独占体验）；查询入口从底部导航移入这里
     final moreItems = isMobile
         ? [
-            (Icons.search_rounded, '查词', '查单词/翻译', 3),
-            ..._moreItemsData.where((e) => e.$4 != 20 && e.$4 != 24),
+            (Icons.search_rounded, tr('more.lookup.t'), tr('more.lookup.s'), 3),
+            ..._moreItemsData().where((e) => e.$4 != 20 && e.$4 != 24),
           ]
-        : _moreItemsData;
+        : _moreItemsData();
     // 功能网格（glass/classic 共用）
     final moreGrid = GridView.builder(
       physics: const BouncingScrollPhysics(),

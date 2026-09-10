@@ -125,6 +125,27 @@ class AgentService {
         {
           'type': 'function',
           'function': {
+            'name': 'browser_fetch',
+            'description': '在内置浏览器中加载指定网页并抓取渲染后的文本内容（标题+正文）。走真实 WebView 渲染，JS 动态页面（SPA/懒加载/需登录态）也能拿到内容。当 web_fetch 返回空/乱码/被反爬拦截，或用户要求"看看某网页上写了什么/抓取某页面内容"时调用。抓取过程用户可在侧边浏览器中看到。',
+            'parameters': {
+              'type': 'object',
+              'properties': {
+                'url': {
+                  'type': 'string',
+                  'description': '要抓取的网址，例如 https://example.com/article',
+                },
+                'max_chars': {
+                  'type': 'integer',
+                  'description': '返回正文的最大字符数，默认 8000；长文可调大',
+                },
+              },
+              'required': ['url'],
+            },
+          },
+        },
+        {
+          'type': 'function',
+          'function': {
             'name': 'generate_questions',
             'description': '为用户生成英语练习题并放入答题区。当用户要求出题、练习、做题、生成综合模拟全卷时调用。',
             'parameters': {
@@ -598,6 +619,37 @@ class AgentService {
                 },
               },
               'required': ['action'],
+            },
+          },
+        },
+        {
+          'type': 'function',
+          'function': {
+            'name': 'set_language',
+            'description':
+                '切换**应用界面语言**（菜单、按钮、页面文案的语言，不是你的回复语言）。'
+                '两种触发场景：'
+                '① 你判断用户是以英语 / 日语 / 韩语 / 印尼语 / 俄语为母语，或使用繁体中文，'
+                '且当前界面语言与其不一致 → 在回答前先调用本工具把界面切过去；'
+                '② 用户明确要求「换成英文界面 / 用日语显示 / 切繁体」等。'
+                '只改界面文案，不会改变你用什么语言回复用户。'
+                '若用户只是用某语言提问但未表现出母语倾向，也不要擅自切换。',
+            'parameters': {
+              'type': 'object',
+              'properties': {
+                'language': {
+                  'type': 'string',
+                  'enum': ['zh-Hans', 'zh-Hant', 'en', 'ja', 'ko', 'id', 'ru'],
+                  'description':
+                      '目标语言代码：zh-Hans=简体中文（默认）、zh-Hant=繁体中文、'
+                      'en=English、ja=日本語、ko=한국어、id=Bahasa Indonesia、ru=Русский。',
+                },
+                'reason': {
+                  'type': 'string',
+                  'description': '可选：切换原因（如「用户以日语提问」），仅用于日志与回执。',
+                },
+              },
+              'required': ['language'],
             },
           },
         },
@@ -1334,6 +1386,7 @@ class AgentService {
 | "OCR/表格/手写/公式识别、文生图、股票分析、简历筛选、PDF转PPT/网页、GitHub操作等专项任务" | skill（按下方「可用技能目录」匹配技能名，加载完整指令后按其工作流执行） |
 | "修改/新增/理解应用自身功能（迭代开发）、排查应用功能问题" | skill（**必须先加载 project-structure 技能**了解项目目录、模块职责与硬约束，再制定改动方案；禁止在不了解结构的情况下盲目修改） |
 | "抓取网页内容（已去除脚本样式）" | web_fetch |
+| "抓取 JS 动态渲染页面（web_fetch 空内容/被反爬/SPA）、看看某网页上写了什么" | browser_fetch（内置浏览器渲染后取正文） |
 | "查找之前对话、列出会话清单" | session_query |
 | "派生子 Agent 处理子任务（research/coder/general）" | spawn_subagent |
 | "写周报/日报/会议纪要/邮件草稿/求职简历文案" | skill（「办公效率」类技能，如 work-weekly-report / work-meeting-notes / work-email-draft），产出必须写成文件交付 |
@@ -1348,6 +1401,20 @@ class AgentService {
 | "复杂多步任务开始前" | submit_plan（先让用户审批整个计划） |
 | "跑长时间命令（编译/训练/下载）" | run_background_job → job_output / job_kill |
 | "怀疑自己在重复同一个工具调用" | check_repeat |
+| 用户以英语/日语/韩语/印尼语/俄语为母语，或使用繁体中文（判断依据见下节） | set_language（**在正式回答前先切换界面语言**） |
+| "换成英文界面 / 用日语显示 / 切繁体 / switch the UI to English" | set_language |
+
+## 界面语言自适应（set_language）
+你可以在**回答之前**先调用 set_language 把界面文案切到用户的语言。判断依据（按优先级）：
+
+1. 用户直接用非中文书写（如全英文、日本語、한국어、Bahasa Indonesia、русский）→ 切到对应语言。
+2. 用户用繁体字（「學習」「設定」「軟體」「這個」等，而非「学习/设置/软件/这个」）→ 切到 zh-Hant。
+3. 用户明确要求换界面语言 → 按其要求切。
+4. 用户用简体字提问 → 保持 zh-Hans，不要切换。
+
+**边界**：仅当用户表现出母语倾向时才切；用户只是让你「翻译成英文」「查个英文单词」
+「用英语回答我」这类**内容层**诉求，**不要**调用 set_language——那是回复语言，不是界面语言。
+切换成功后无需向用户解释工具细节，正常继续对话即可（回执里已含当前语言名）。
 
 **重要**：
 - 用户说"出题"但没指明题型 → 调 generate_questions，type 用 "translation"（翻译题最常见），并在回复里告知可指定其他题型
